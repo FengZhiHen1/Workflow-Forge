@@ -1,0 +1,24 @@
+{
+  "schema_version": "3.0.0",
+  "instance_id": "<instance_id>",
+  "workflow_id": "<workflow_id>",
+  "version": "<version>",
+  "status": "ACTIVE",
+  "parent_instance_id": null,
+  "consumed_message_ids": [],
+  "stages": [
+    {
+      "stage_id": "<stage_id>",
+      "stage_instance_id": "<stage_id>",
+      "status": "PENDING",
+      "agent_id": null,
+      "system_agent_id": null,
+      "output_message_id": null,
+      "loop_counter": 0,
+      "attempt_count": 0,
+      "model": null,
+      "child_instance_id": null,
+      "fan_out_target": null
+    }
+  ]
+}

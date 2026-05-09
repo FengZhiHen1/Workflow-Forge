@@ -1,0 +1,12 @@
+# 工作流运行时状态
+.agent/
+
+# 过程产物草稿
+.tmp/
+
+# 业务运行时产物（由 Skill 管理，不在通用架构内）
+# 以下仅为示例，具体由项目决定
+# workspace/**/results/
+# workspace/**/tmp/
+# **/__pycache__/
+# **/.pytest_cache/

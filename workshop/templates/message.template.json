@@ -1,0 +1,14 @@
+{
+  "schema_version": "3.0.0",
+  "message_id": "<generated_by_wfctl>",
+  "instance_id": "<injected_by_wfctl>",
+  "stage_id": "<injected_by_wfctl>",
+  "stage_instance_id": "<injected_by_wfctl>",
+  "status": "<RUNNING|DONE|ERROR|PENDING_CONFIRM>",
+  "report": "<人类可读的执行摘要>",
+  "checkpoint_summary": "已完成：...；关键结论：...；待处理：...",
+  "confirm_questions": [],
+  "parallel_targets": null,
+  "modified_files": [],
+  "timestamp": "<injected_by_wfctl>"
+}

@@ -1,0 +1,25 @@
+{
+  "_comment": "AskUserQuestion 调用模板 | 来源: docs/message规范.md §6.2",
+  "questions": [
+    {
+      "question": "<question_text>",
+      "header": "[<workflow_instance_id>] Skill: <skill_id> | Agent: <agent_id>",
+      "options": [
+        {
+          "label": "确认执行",
+          "description": "<description>",
+          "preview": "<preview_markdown>"
+        },
+        {
+          "label": "拒绝/跳过",
+          "description": "<description>"
+        },
+        {
+          "label": "需要修改",
+          "description": "<description>"
+        }
+      ],
+      "multiSelect": false
+    }
+  ]
+}

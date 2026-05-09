@@ -1,0 +1,53 @@
+schema_version: "3.0.0"
+workflow_id: "<workflow-id>"
+version: "<version>"
+max_parallel_agents: 6
+# anchor_prefix: "wf"  # 可选，默认 wf
+
+stages:
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+
+  - stage_id: s01
+    name: "<展示名称>"
+    skill_id: <skill_id>           # 与 workflow 互斥
+    # workflow: <子工作流引用>     # 与 skill_id 互斥
+    mandatory: true
+    confirmation_point: true       # true 时完成即暂停等用户确认
+    retry: 2                       # 可选，默认 1（不重试）
+    model: standard                # 可选，light / standard / heavy
+    # exclusive: true              # 可选，排他执行
+    # parallel:                    # 可选，并行拆分
+    #   source: <上游 stage_id>
+    #   max_instances: 10
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+
+edges:
+  - from: s00-workflow-start
+    to: s01
+    condition: always
+
+  - from: s01
+    to: s99-workflow-end
+    condition: confirmed
+
+  # 确认被拒 → 回跳重做
+  # - from: s01
+  #   to: s01
+  #   condition: rejected
+  #   max_loop: 3
+
+  # 失败 → 回跳
+  # - from: s01
+  #   to: s01
+  #   condition: failure
+  #   max_loop: 3
+  #   loop_counter_stage: s01       # 可选，默认 = from
+
+  # 多实例聚合（仅 parallel stage 的下游需要写明）
+  # - from: s02
+  #   to: s99-workflow-end
+  #   condition: success
+  #   aggregation: all              # 可选，默认 all
