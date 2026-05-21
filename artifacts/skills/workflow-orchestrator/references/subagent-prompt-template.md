@@ -34,7 +34,6 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 | SKILL.md 写的是 | 你实际上报 |
 |----------------|-----------|
 | `AskUserQuestion`（任何需要用户决策的场景） | `--status AWAITING_CONFIRM --questions "问题1" "问题2"` |
-
 编排器收到你的 AWAITING_CONFIRM 后，会自动将其翻译回 `AskUserQuestion` 呈现给用户，并将用户的选择回传。
 
 工作完成后调用（--checkpoint 用于向下游 stage 传递交接上下文）：
@@ -105,6 +104,9 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 
 continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id 命中映射表）。SubAgent 已持有身份和契约——只需注入新 worktree 和 task。
 
+**发送机制**：编排器分两条消息发送。第一条注入 continue prompt（恢复上下文），第二条触发工具调用回合。原因是 `SendMessage` 首次到达时仅恢复会话上下文，不自动创建新的工具调用回合——需要第二条消息推动实际执行。
+
+**第一条消息**（continue prompt）：
 ```
 你正在继续处理 stage `<stage_id>`。工作目录已切换到 `<worktree>`，请执行 `cd <worktree>` 后重新读取文件以获取最新状态。
 
@@ -116,6 +118,11 @@ continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id
 用户反馈：`<feedback>`
 
 继续按 SKILL.md 的指导完成本阶段工作。上报规则不变。
+```
+
+**第二条消息**（激活）：
+```
+收到请开始执行上述任务。
 ```
 
 | 占位符 | 来源 |

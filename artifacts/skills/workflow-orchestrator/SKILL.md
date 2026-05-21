@@ -197,8 +197,9 @@ wfctl next --instance <instance_id>
 
 1. 按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
 2. **不**调用 `Agent()` 创建新实例——向已有 SubAgent（`system_agent_id`）发送继续消息
-3. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
-4. **不等待**——继续处理下一个 action
+3. **发送激活消息**：第一条消息恢复上下文后 SubAgent 可能不触发新的工具调用回合（`SendMessage` 返回 "resumed from transcript" 但 agent 仍 idle）。紧接发送第二条简短消息（如"收到请开始执行上述任务"）触发实际的工具调用回合
+4. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
+5. **不等待**——继续处理下一个 action
 
 ### 映射表维护
 

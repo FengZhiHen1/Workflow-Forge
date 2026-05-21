@@ -107,7 +107,6 @@ SubAgent 启动时，框架按以下顺序注入内容：
 当 SKILL.md 指导 SubAgent 发起 AskUserQuestion 时，SubAgent 自觉将其替换为：
 1. 调用 `wfctl message write` 写入 `status: AWAITING_CONFIRM` 的消息
 2. `confirm_questions` 字段携带 1-4 条来自原 AskUserQuestion 选项的具体问题
-3. 上报后暂停，等待编排器回传用户答案
 
 用户确认后，编排器将答案注回**同一个** SubAgent 实例。SubAgent 从暂停点恢复，看到 AskUserQuestion 返回了用户选择，继续执行后续逻辑。
 
