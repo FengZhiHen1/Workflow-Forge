@@ -1,0 +1,6 @@
+reference/skills/
+__pycache__/
+.tmp/
+.env
+.agent/
+.pytest_cache/

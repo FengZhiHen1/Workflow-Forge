@@ -1,0 +1,403 @@
+schema_version: "3.0.0"
+workflow_id: "mathematical-model"
+version: "2.3.0"
+description: "数学建模竞赛标准工作流 v2.3.0：小问流水线模型、双层对抗审查、确认点下沉"
+max_parallel_agents: 6
+anchor_prefix: "wf"
+
+stages:
+  # ============================================================
+  # 虚拟起止节点
+  # ============================================================
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+
+  # ============================================================
+  # 全局阶段
+  # ============================================================
+  - stage_id: p0-init
+    name: "初始化"
+    skill_id: init
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+
+  - stage_id: p1a-ambiguity-scan
+    name: "歧义扫描"
+    skill_id: topic-analyst
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+
+  - stage_id: p1a-topic-analysis
+    name: "选题分析"
+    skill_id: topic-analyst
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+
+  - stage_id: p1b-problem-analysis
+    name: "小问分析"
+    skill_id: problem-decomposer
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    parallel:
+      source: p1a-topic-analysis
+      max_instances: 6
+
+  - stage_id: p1b-data-exploration
+    name: "数据侦察"
+    skill_id: data-scout
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    parallel:
+      source: p1b-problem-analysis
+      max_instances: 6
+
+  - stage_id: p1c-dependency-analysis
+    name: "依赖分析"
+    skill_id: dependency-analyst
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+
+  # ============================================================
+  # 小问流水线（p1c 后分流，每个小问独立运行 p2→p3→p4）
+  # ============================================================
+  - stage_id: p2-scheme-design
+    name: "方案设计"
+    skill_id: model-architect
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+    parallel:
+      source: p1c-dependency-analysis
+      max_instances: 6
+
+  - stage_id: p2-adversarial-review
+    name: "方案对抗审查"
+    skill_id: scheme-reviewer
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    parallel:
+      source: p2-scheme-design
+      max_instances: 6
+
+  - stage_id: p3-math-modeling
+    name: "数学建模"
+    skill_id: math-modeler
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    parallel:
+      source: p2-adversarial-review
+      max_instances: 6
+
+  - stage_id: p3-code-core
+    name: "核心代码实现"
+    skill_id: code-builder
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    parallel:
+      source: p3-math-modeling
+      max_instances: 6
+
+  - stage_id: p3-code-extension
+    name: "扩展实现"
+    skill_id: code-builder
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    parallel:
+      source: p3-code-core
+      max_instances: 6
+
+  - stage_id: p4-validation
+    name: "验证评估"
+    skill_id: quality-inspector
+    mandatory: true
+    confirmation_point: true
+    retry: 1
+    parallel:
+      source: p3-code-extension
+      max_instances: 6
+
+  - stage_id: p4-adversarial-review
+    name: "验证对抗审查"
+    skill_id: validation-reviewer
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    parallel:
+      source: p4-validation
+      max_instances: 6
+
+  # ============================================================
+  # 全局汇聚收尾
+  # ============================================================
+  - stage_id: p5-paper-materializer
+    name: "论文素材生成"
+    skill_id: paper-materializer
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+
+edges:
+  # ============================================================
+  # 全局启动
+  # ============================================================
+  - from: s00-workflow-start
+    to: p0-init
+    condition: always
+
+  - from: p0-init
+    to: p1a-ambiguity-scan
+    condition: success
+
+  - from: p0-init
+    to: s99-workflow-end
+    condition: failure
+
+  # ============================================================
+  # p1a-ambiguity-scan 歧义扫描（硬门控确认）
+  # ============================================================
+  - from: p1a-ambiguity-scan
+    to: p1a-topic-analysis
+    condition: confirmed
+    choice: "确认解读"
+
+  - from: p1a-ambiguity-scan
+    to: p1a-ambiguity-scan
+    condition: rejected
+    choice: "重新扫描"
+    max_loop: 2
+
+  - from: p1a-ambiguity-scan
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p1a-topic-analysis 选题分析（全局确认）
+  # ============================================================
+  - from: p1a-topic-analysis
+    to: p1b-problem-analysis
+    condition: confirmed
+    choice: "确认继续"
+    aggregation: all
+
+  - from: p1a-topic-analysis
+    to: p1a-topic-analysis
+    condition: rejected
+    choice: "重新分析"
+    max_loop: 2
+
+  - from: p1a-topic-analysis
+    to: p1a-ambiguity-scan
+    condition: rejected
+    choice: "修正歧义"
+
+  - from: p1a-topic-analysis
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p1b 小问分析 → 数据侦察
+  # ============================================================
+  - from: p1b-problem-analysis
+    to: p1b-data-exploration
+    condition: success
+    aggregation: all
+
+  - from: p1b-problem-analysis
+    to: s99-workflow-end
+    condition: failure
+
+  - from: p1b-data-exploration
+    to: p1c-dependency-analysis
+    condition: success
+    aggregation: all
+
+  - from: p1b-data-exploration
+    to: p1b-problem-analysis
+    condition: failure
+    choice: "数据不合格"
+    max_loop: 2
+
+  - from: p1b-data-exploration
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p1c 分流 → 各小问流水线启动
+  # ============================================================
+  - from: p1c-dependency-analysis
+    to: p2-scheme-design
+    condition: success
+
+  - from: p1c-dependency-analysis
+    to: s99-workflow-end
+    condition: failure
+
+  # ============================================================
+  # p2 方案设计（小问独立确认）
+  # ============================================================
+  - from: p2-scheme-design
+    to: p2-adversarial-review
+    condition: confirmed
+    choice: "锁定方案"
+
+  - from: p2-scheme-design
+    to: p2-scheme-design
+    condition: rejected
+    choice: "重新设计"
+    max_loop: 2
+
+  - from: p2-scheme-design
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p2-adv 方案对抗审查（双层防御第一层）
+  # ============================================================
+  - from: p2-adversarial-review
+    to: p3-math-modeling
+    condition: success
+    aggregation: all
+
+  - from: p2-adversarial-review
+    to: p2-scheme-design
+    condition: failure
+    choice: "致命缺陷"
+    max_loop: 3
+
+  - from: p2-adversarial-review
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p3-math 数学建模 → p3-core 核心代码
+  # ============================================================
+  - from: p3-math-modeling
+    to: p3-code-core
+    condition: success
+    aggregation: all
+
+  - from: p3-math-modeling
+    to: p3-math-modeling
+    condition: failure
+    choice: "重试建模"
+    max_loop: 2
+
+  - from: p3-math-modeling
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  - from: p3-code-core
+    to: p3-code-extension
+    condition: success
+
+  - from: p3-code-core
+    to: p3-code-core
+    condition: failure
+    choice: "重试实现"
+    max_loop: 2
+
+  - from: p3-code-core
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p3-ext 扩展实现 → p4 验证评估
+  # ============================================================
+  - from: p3-code-extension
+    to: p4-validation
+    condition: success
+    aggregation: all
+
+  - from: p3-code-extension
+    to: p3-code-extension
+    condition: failure
+    choice: "重试扩展"
+    max_loop: 2
+
+  - from: p3-code-extension
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p4 验证评估（小问独立确认，修复路由下沉到此处）
+  # quality-inspector 产出评估报告，用户基于报告选择
+  # ============================================================
+  - from: p4-validation
+    to: p4-adversarial-review
+    condition: confirmed
+    choice: "继续审查"
+
+  - from: p4-validation
+    to: p3-code-core
+    condition: confirmed
+    choice: "调参修复"
+    max_loop: 3
+    loop_counter_stage: p4-validation
+
+  - from: p4-validation
+    to: p3-math-modeling
+    condition: confirmed
+    choice: "假设修正"
+    max_loop: 3
+    loop_counter_stage: p4-validation
+
+  - from: p4-validation
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # p4-adv 验证对抗审查（双层防御第二层）
+  # ============================================================
+  - from: p4-adversarial-review
+    to: p5-paper-materializer
+    condition: success
+    aggregation: all
+
+  - from: p4-adversarial-review
+    to: p4-validation
+    condition: failure
+    choice: "致命缺陷"
+    max_loop: 3
+
+  - from: p4-adversarial-review
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # 跨小问依赖：上游 p4-adv 完成 → 解锁下游小问的 p2
+  # ============================================================
+  - from: p4-adversarial-review
+    to: p2-scheme-design
+    condition: success
+    choice: "解锁下游"
+
+  # ============================================================
+  # p5 论文素材生成（全局汇聚确认）
+  # ============================================================
+  - from: p5-paper-materializer
+    to: s99-workflow-end
+    condition: confirmed
+    choice: "确认完成"
+
+  - from: p5-paper-materializer
+    to: p4-validation
+    condition: rejected
+    choice: "回退修改"
+    max_loop: 1
+
+  - from: p5-paper-materializer
+    to: s99-workflow-end
+    condition: loop_exceeded

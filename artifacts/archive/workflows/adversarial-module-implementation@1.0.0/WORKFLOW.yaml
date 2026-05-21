@@ -1,0 +1,306 @@
+schema_version: "2.0.0"
+workflow_id: "adversarial-module-implementation"
+version: "1.0.0"
+description: "对抗性模块实现流水线：从设计文档出发，通过信息隔离机制对实现代码进行黑盒对抗测试，发现漏洞后迭代修复直至收敛。核心特征：信息隔离四铁律、对抗性盲测、渐进收敛。"
+
+# =============================================================================
+# RESOLVED [U1] — s05-blindtest 双 failure 出边歧义消除：
+#   编排器读取 Skill 返回的 branch_target 字段：
+#   - branch_target="fix_impl" → s06-fix（实现漏洞、退化）
+#   - branch_target="fix_test" → s07-testfix（测试缺陷、契约矛盾）
+# =============================================================================
+
+stages:
+  # ==================== 虚拟起止 ====================
+
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟起始阶段，触发工作流执行，直接流转到环境就绪与契约冻结。"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟终止阶段，所有退出路径汇聚于此。"
+
+  # ==================== 核心对抗验证流水线 ====================
+
+  - stage_id: s01-init
+    name: "环境就绪与契约冻结"
+    skill_id: adversarial-module-implementation-init
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      环境检查、契约提取（P0→P1→P2 优先级）、设计仲裁、冻结 contract-expectations.md、
+      展示执行计划预览（含模块信息、契约条目数、SubAgent 调度计划）、用户确认。
+      含条件确认 AQ-004（多份文档对同一接口定义不一致时触发）。
+
+  - stage_id: s02-impl
+    name: "实现落地执行"
+    skill_id: adversarial-module-implementation-impl-executor
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: >
+      SubAgent 按设计文档优雅实现模块代码（模式 A）。
+      解析设计文档 → 扫描现有代码 → 按实现顺序编写代码（类型系统→数据契约→工具→
+      原子功能→状态机→组合层→异常处理→依赖适配）→ 生成 function-signatures.json +
+      pending-confirmations.md。
+      铁律（ISO-001）：禁止读取 .tmp/adversarial-tests/ 目录，禁止 AskUserQuestion。
+
+  - stage_id: s03-validate
+    name: "实现输出验证"
+    skill_id: adversarial-module-implementation-impl-validator
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      验证 function-signatures.json 格式与合规性，评估 pending-confirmations.md 风险等级。
+      格式/合规不通过（如签名格式错误、核心符号缺失）→ 退回 s02-impl（≤3 次）。
+      存在"重大风险"条目时触发确认点 AQ-003，用户确认后继续或退回修正。
+      风险可控项记录后在最终报告中标注。
+
+  - stage_id: s04-testgen
+    name: "对抗性测试生成"
+    skill_id: adversarial-module-implementation-test-generator
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: >
+      SubAgent 基于契约黑盒生成对抗性测试（模式 A）。
+      解析契约 → P0(契约禁止输入)→P1(边界值)→P2(类型破坏)→P3(状态/时序破坏) 优先级生成。
+      强制自检流水线（阻断级）：py_compile 语法检查 → import 可导入验证 →
+      detect_green_seeking.py 趋绿扫描（toxicity_score ≤ 2，阻断级）。
+      铁律（ISO-002）：绝对禁止读取实现源码。
+
+  - stage_id: s05-blindtest
+    name: "盲测执行与分支判定"
+    skill_id: adversarial-module-implementation-blindtest
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: >
+      运行对抗性测试 → classify_failures.py 辅助分类 + 人工复核 →
+      自动分支判定（全部通过/收敛→s08，实现漏洞→s06，测试缺陷→s07，退化→重仲裁）→
+      每轮输出进度摘要（第 N 轮结果、通过/失败数、判定方向，不阻塞）。
+      运行 generate_failure_summary.py + validate_failure_summary.py（隔离合规验证，阻断级）。
+      支持用户提前终止（在进度输出处选择"跳过剩余修复，直接生成报告"）。
+
+  - stage_id: s06-fix
+    name: "实现代码修复"
+    skill_id: adversarial-module-implementation-impl-executor
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: >
+      SubAgent 根据失败摘要最小化修复实现代码（模式 B）。
+      阅读 failure-summary-round-N.md → 按 case ID 排序修复优先级 → 最小化修复
+      （仅修改实现代码，每处修改对应一个 case ID，保持接口契约不变）→
+      输出修改说明 + pending-confirmations-round-N.md。
+      铁律（ISO-003）：不接触测试代码，仅读 failure-summary（隔离版本）。
+      修复后流转回 s05-blindtest 重新盲测。
+
+  - stage_id: s07-testfix
+    name: "测试缺陷修正"
+    skill_id: adversarial-module-implementation-test-generator
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: >
+      SubAgent 根据缺陷报告修正测试代码（模式 B）。
+      阅读 test-defects-round-N.md → 修正测试代码 → 自检流水线
+      （py_compile 语法 → import 可导入 → detect_green_seeking.py 趋绿扫描）。
+      铁律（ISO-004）：绝对不接触实现代码，仅读 test-defects（不含测试代码片段和具体输入值）。
+      修正后流转回 s05-blindtest 重新盲测。
+
+  - stage_id: s08-report
+    name: "最终报告与验收"
+    skill_id: adversarial-module-implementation-reporter
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      生成 adversarial-report.md（含契约覆盖度、循环统计、最终结论）→
+      14 项验收检查清单（公开函数覆盖、失败与修复对应、退化检测、收敛停滞检测、
+      契约一致性、隔离合规审计等）→ 运行 check_isolation.py 审计（ISO 四铁律事后验证）→
+      用户审查确认。若拒绝，须附拒绝原因，返回 s05-blindtest 追加修复。
+
+# ==================== 流转边 ====================
+
+edges:
+  # -- s00 起始 --
+  - from: s00-workflow-start
+    to: s01-init
+    condition: always
+
+  # -- s01 环境就绪与契约冻结（确认点） --
+  - from: s01-init
+    to: s02-impl
+    condition: confirmed
+  - from: s01-init
+    to: s99-workflow-end
+    condition: rejected
+  - from: s01-init
+    to: s01-init
+    condition: rejected
+    max_loop: 2
+    loop_counter_stage: s01-init
+  - from: s01-init
+    to: s99-workflow-end
+    condition: loop_exceeded
+    max_loop: 2
+    loop_counter_stage: s01-init
+
+  # -- s02 实现落地执行（非确认点，SubAgent 调用） --
+  - from: s02-impl
+    to: s03-validate
+    condition: success
+  - from: s02-impl
+    to: s99-workflow-end
+    condition: failure
+
+  # -- s03 实现输出验证（确认点） --
+  - from: s03-validate
+    to: s04-testgen
+    condition: success
+  - from: s03-validate
+    to: s04-testgen
+    condition: confirmed
+  - from: s03-validate
+    to: s02-impl
+    condition: failure
+    max_loop: 3
+    loop_counter_stage: s03-validate
+  - from: s03-validate
+    to: s02-impl
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s03-validate
+  - from: s03-validate
+    to: s08-report
+    condition: loop_exceeded
+    max_loop: 3
+    loop_counter_stage: s03-validate
+
+  # -- s04 对抗性测试生成（非确认点，SubAgent 调用） --
+  - from: s04-testgen
+    to: s05-blindtest
+    condition: success
+  - from: s04-testgen
+    to: s99-workflow-end
+    condition: failure
+
+  # -- s05 盲测执行与分支判定（非确认点，自动分支中枢） --
+  # NOTE [U1]: 两条 failure 边由 Skill 返回的 branch_target 字段消除歧义
+  - from: s05-blindtest
+    to: s08-report
+    condition: success
+  - from: s05-blindtest
+    to: s06-fix
+    condition: failure
+  - from: s05-blindtest
+    to: s07-testfix
+    condition: failure
+
+  # -- s06 实现代码修复（非确认点，SubAgent 调用） --
+  - from: s06-fix
+    to: s05-blindtest
+    condition: success
+    max_loop: 5
+    loop_counter_stage: s05-blindtest
+  - from: s06-fix
+    to: s08-report
+    condition: loop_exceeded
+    max_loop: 5
+    loop_counter_stage: s05-blindtest
+  - from: s06-fix
+    to: s99-workflow-end
+    condition: failure
+
+  # -- s07 测试缺陷修正（非确认点，SubAgent 调用） --
+  - from: s07-testfix
+    to: s05-blindtest
+    condition: success
+    max_loop: 5
+    loop_counter_stage: s05-blindtest
+  - from: s07-testfix
+    to: s08-report
+    condition: loop_exceeded
+    max_loop: 5
+    loop_counter_stage: s05-blindtest
+  - from: s07-testfix
+    to: s99-workflow-end
+    condition: failure
+
+  # -- s08 最终报告与验收（确认点） --
+  - from: s08-report
+    to: s99-workflow-end
+    condition: confirmed
+  - from: s08-report
+    to: s05-blindtest
+    condition: rejected
+    label: 用户拒绝报告（须附拒绝原因），返回对抗循环追加修复
+
+# ==================== 并发与冲突规则 ====================
+
+concurrency_rules:
+  max_parallel_agents: 2
+  allowed_parallel_stages: []
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+  isolation_rules:
+    - rule_id: ISO-001
+      description: >
+        s02-impl SubAgent 禁止读取 .tmp/adversarial-tests/ 目录及其任何内容。
+        enforcement: Prompt 铁律 + check_isolation.py 事后审计。
+    - rule_id: ISO-002
+      description: >
+        s04-testgen SubAgent 禁止读取实现源码文件。
+        enforcement: Prompt 铁律 + check_isolation.py 事后审计。
+    - rule_id: ISO-003
+      description: >
+        s06-fix SubAgent 仅可读取 failure-summary-round-N.md（信息隔离版本），
+        不可读取测试代码、输入值、文件路径等测试实现细节。
+        enforcement: validate_failure_summary.py 阻断级门控 + Prompt 铁律。
+    - rule_id: ISO-004
+      description: >
+        s07-testfix SubAgent 仅可读取 test-defects-round-N.md
+        （不含测试代码片段和具体输入值），不可读取实现代码。
+        enforcement: Prompt 铁律 + 事后审计。
+
+git_anchors:
+  enabled: true
+  tag_prefix: "wf"
+  preserve_paths:
+    - ".agent/"

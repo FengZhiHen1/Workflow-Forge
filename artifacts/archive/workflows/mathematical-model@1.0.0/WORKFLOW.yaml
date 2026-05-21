@@ -1,0 +1,257 @@
+schema_version: "2.0.0"
+workflow_id: "mathematical-model"
+version: "1.0.0"
+description: "数学建模竞赛标准工作流：从问题分析、方案设计、公式推导、代码实现到验证评估的完整流水线"
+
+stages:
+  - stage_id: p0-init
+    name: "初始化"
+    skill_id: workflow-director
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "创建工作目录结构、初始化 MANIFEST 和 VERSION.md"
+
+  - stage_id: p1a-topic-analysis
+    name: "选题分析"
+    skill_id: problem-analyst
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "评估赛题可行性、识别歧义、分析数据可得性，需用户确认"
+
+  - stage_id: p1b-problem-analysis
+    name: "小问分析"
+    skill_id: problem-analyst
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "针对单个小问进行拆解，提取约束、声明假设、定义 I/O 映射"
+
+  - stage_id: p1b-data-exploration
+    name: "数据侦察"
+    skill_id: data-scout
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "针对小问字段做定向数据质量诊断和 EDA"
+
+  - stage_id: p1c-dependency-analysis
+    name: "依赖分析"
+    skill_id: problem-analyst
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "分析多小问间的输入输出依赖关系，确定执行 DAG"
+
+  - stage_id: p2-scheme-design
+    name: "方案设计"
+    skill_id: model-architect
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "设计至少三套候选建模方案并输出对比总结，需用户确认锁定方案"
+
+  - stage_id: p2-adversarial-review
+    name: "方案对抗审查"
+    skill_id: adversarial-reviewer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "以评委视角攻击方案，发现致命缺陷时触发修复循环"
+
+  - stage_id: p3-math-modeling
+    name: "数学建模"
+    skill_id: math-modeler
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "完成符号体系构建、公式推导、假设验证、误差与敏感性分析"
+
+  - stage_id: p3-code-planning
+    name: "代码规划"
+    skill_id: code-implementer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "展示代码实现规划，需用户确认后方可生成代码"
+
+  - stage_id: p3-code-core
+    name: "核心代码实现"
+    skill_id: code-implementer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "生成主脚本、验证脚本、单元测试并运行 Toy Model 验证"
+
+  - stage_id: p3-code-extension
+    name: "扩展实现"
+    skill_id: code-implementer
+    mandatory: false
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "生成并运行敏感性分析脚本，时间紧张时可跳过"
+
+  - stage_id: p4-validation
+    name: "验证评估"
+    skill_id: quality-inspector
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "独立审查验证结果、统计反向验证假设、四维度量化评分"
+
+  - stage_id: p4-adversarial-review
+    name: "验证对抗审查"
+    skill_id: adversarial-reviewer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "攻击验证评估结果，发现致命缺陷时触发修复循环"
+
+  - stage_id: p5-complete
+    name: "工作流完成"
+    skill_id: workflow-director
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "汇报工作流完成状态，冻结版本，需用户最终确认"
+
+  - stage_id: emergency-fallback
+    name: "应急降级"
+    skill_id: emergency-fallback
+    mandatory: false
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "时间门控触发或模型完全失效时激活保底方案"
+
+edges:
+  # P0 → P1a
+  - from: p0-init
+    to: p1a-topic-analysis
+    condition: always
+
+  # P1a → P1b（用户确认后）
+  - from: p1a-topic-analysis
+    to: p1b-problem-analysis
+    condition: confirmed
+
+  # P1b 串行：problem-analyst → data-scout
+  - from: p1b-problem-analysis
+    to: p1b-data-exploration
+    condition: always
+
+  - from: p1b-data-exploration
+    to: p1c-dependency-analysis
+    condition: always
+
+  # P1c → P2
+  - from: p1c-dependency-analysis
+    to: p2-scheme-design
+    condition: always
+
+  # P2 → P2-对抗
+  - from: p2-scheme-design
+    to: p2-adversarial-review
+    condition: always
+
+  # P2-对抗 → P3 (成功通过)
+  - from: p2-adversarial-review
+    to: p3-math-modeling
+    condition: success
+
+  # P2-对抗 → P2 (失败回退修复，最多3轮)
+  - from: p2-adversarial-review
+    to: p2-scheme-design
+    condition: failure
+    max_loop: 3
+    loop_counter_stage: p2-adversarial-review
+
+  # P2-对抗 → 应急 (循环超限)
+  - from: p2-adversarial-review
+    to: emergency-fallback
+    condition: loop_exceeded
+
+  # P3 串行：math-modeler → code-implementer(planning → core → extension)
+  - from: p3-math-modeling
+    to: p3-code-planning
+    condition: always
+
+  - from: p3-code-planning
+    to: p3-code-core
+    condition: confirmed
+
+  - from: p3-code-core
+    to: p3-code-extension
+    condition: always
+
+  - from: p3-code-extension
+    to: p4-validation
+    condition: always
+
+  # P4 → P4-对抗
+  - from: p4-validation
+    to: p4-adversarial-review
+    condition: always
+
+  # P4-对抗 → P5-完成 (成功通过)
+  - from: p4-adversarial-review
+    to: p5-complete
+    condition: success
+
+  # P4-对抗 → P4 (失败回退修复，最多3轮)
+  - from: p4-adversarial-review
+    to: p4-validation
+    condition: failure
+    max_loop: 3
+    loop_counter_stage: p4-adversarial-review
+
+  # P4-对抗 → 应急 (循环超限)
+  - from: p4-adversarial-review
+    to: emergency-fallback
+    condition: loop_exceeded
+
+concurrency_rules:
+  max_parallel_agents: 6
+  allowed_parallel_stages: []
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+
+git_anchors:
+  enabled: true
+  tag_prefix: "wf"
+  preserve_paths:
+    - ".agent/"

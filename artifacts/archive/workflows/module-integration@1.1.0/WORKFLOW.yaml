@@ -1,0 +1,172 @@
+schema_version: "2.0.0"
+workflow_id: "module-integration"
+version: "1.1.0"
+description: >
+  模块集成联调工作流：解析所有模块的落地规范，构建跨模块调用链与接口兼容性矩阵，
+  构造并逐一执行跨模块调用场景，对失败进行根因诊断和代码修复（含落地规范同步修正），
+  最终汇总修复记录、跨模块接口变更和兼容性结论产出联调报告供用户验收。
+  核心特征：无确认自动化分析 → SubAgent 执行联调（内部修复循环 ≤5 轮）→ 报告级用户验收，
+  用户拒绝可追加修复（≤2 次）。
+
+# =============================================================================
+# Stage 结构：s01-analyze → s02-execute → s03-report（3 业务 Stage）
+# 确认点分布：无确认 + 无确认 + 始终确认
+# 循环：s02 内部修复 ≤5 轮，s03 拒绝追加修复 ≤2 次
+# =============================================================================
+
+stages:
+  # ==================== 虚拟起止 ====================
+
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟起始阶段，触发工作流执行，直接流转到接口依赖分析。"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟终止阶段，所有退出路径汇聚于此。"
+
+  # ==================== 业务阶段 ====================
+
+  - stage_id: s01-analyze
+    name: "接口依赖分析"
+    skill_id: module-integration-analyzer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      读取所有模块的落地规范文档（docs/功能设计/ 下各模块的 -落地规范.md），
+      提取每个模块的对外接口定义（函数签名、类型定义、异常条件、状态机约定）。
+      构建跨模块调用链：识别模块间的 import/调用关系、共享数据结构、接口消费方。
+      生成接口兼容性矩阵：逐对检查调用方期望 vs 提供方实际签名，标记潜在不兼容点
+      （类型不匹配、缺失参数、异常未处理、状态转移违规等）。
+      输出 integration_plan.json（跨模块调用链 + 兼容性矩阵 + 不兼容点清单）。
+    outputs:
+      - integration_plan.json
+
+  - stage_id: s02-execute
+    name: "联调执行"
+    skill_id: module-integration-executor
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: >
+      SubAgent 执行联调操作。读取 integration_plan.json，按调用链优先级
+      （共享数据结构 → 基础接口 → 组合调用 → 端到端场景）构造跨模块调用场景。
+      逐一执行每个场景，对失败进行根因诊断（实现缺陷 / 设计缺陷 / 契约矛盾），
+      修复代码并同步更新落地规范（当修复涉及接口变更时），重新验证直至全通过或
+      达到 5 轮上限。输出 fix_log.md（每轮修复记录：场景编号、失败根因、修改内容、验证结果）。
+      SubAgent model: sonnet。s03 拒绝后以模式 B 运行（仅增量修复指定模块对/场景）。
+    inputs:
+      - integration_plan.json
+    outputs:
+      - fix_log.md
+
+  - stage_id: s03-report
+    name: "联调报告"
+    skill_id: module-integration-reporter
+    mandatory: true
+    confirmation_point: true
+    confirmation_notes:
+      - "始终确认：向用户呈现修复记录摘要、跨模块接口变更列表、最终兼容性结论。用户审查后确认完成，或拒绝并附补充意见以追加修复。"
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      收集所有中间产物（integration_plan.json + fix_log.md），汇总生成联调报告。
+      报告内容：修复记录摘要（每轮修复的场景数、成功/失败统计）、跨模块接口变更列表
+      （因联调修改的接口签名、类型定义、异常条件变更）、最终兼容性结论（兼容矩阵最终状态、
+      未解决的已知问题、建议后续行动）。
+
+      报告输出路径：docs/integration-reports/{module_ids}-{date}/integration-report.md。
+    inputs:
+      - integration_plan.json
+      - fix_log.md
+    outputs:
+      - docs/integration-reports/{module_ids}-{date}/integration-report.md
+
+# ==================== 流转边 ====================
+
+edges:
+  # -- s00 起始 --
+  - from: s00-workflow-start
+    to: s01-analyze
+    condition: always
+    label: 工作流启动，进入接口依赖分析
+
+  # -- s01 接口依赖分析（无确认点，自动流转） --
+  - from: s01-analyze
+    to: s02-execute
+    condition: always
+    label: integration_plan.json 已生成（含调用链+兼容性矩阵+不兼容点），进入联调执行
+    note: s01 无确认点，分析完成后自动进入联调执行。
+
+  # -- s02 联调执行（Skill 内部修复循环 ≤5 轮，Stage 无自循环） --
+  - from: s02-execute
+    to: s03-report
+    condition: always
+    label: SubAgent 完成联调（全部通过或达 5 轮上限），fix_log.md 已生成，进入联调报告
+    note: >
+      修复循环在 Skill 内部完成（构造场景→执行→诊断→修复→重验证，≤5 轮）。
+      Stage 级不自循环——SubAgent 返回后直接流转。fix_log.md 中标注未解决问题（如有）。
+
+  # -- s03 联调报告（确认点：用户验收） --
+  - from: s03-report
+    to: s99-workflow-end
+    condition: confirmed
+    label: 用户确认联调报告，工作流完成
+
+  - from: s03-report
+    to: s02-execute
+    condition: rejected
+    label: 用户拒绝报告（附 rejection_context），s02-executor 以模式 B 增量修复
+    max_loop: 2
+    loop_counter_stage: s03-report
+    note: >
+      用户审查报告后不满意，附 rejection_context 返回 s02-executor。
+      s02-executor 以模式 B 运行——仅对拒绝上下文中指定的模块对/场景增量修复，
+      非全量重跑。每次返回视为一次追加修复机会，最多 2 次。
+
+  - from: s03-report
+    to: s99-workflow-end
+    condition: loop_exceeded
+    label: 报告确认达到最大次数上限（2 次），以最后一次版本为终稿
+
+# ==================== 并发与冲突规则 ====================
+
+concurrency_rules:
+  max_parallel_agents: 1
+  allowed_parallel_stages: []
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+
+# ==================== 共享资源清单 ====================
+
+shared_resources: []
+
+# ==================== Git 锚点 ====================
+
+git_anchors:
+  enabled: true
+  tag_prefix: "wf"
+  preserve_paths:
+    - ".agent/"

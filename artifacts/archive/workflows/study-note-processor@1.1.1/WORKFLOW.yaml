@@ -1,0 +1,119 @@
+schema_version: "2.0.0"
+workflow_id: "study-note-processor"
+version: "1.1.1"
+description: "PDF → 结构化 Obsidian 原子笔记（MOC + 原子笔记），精简确认点与并发，轻量格式审校交付"
+
+stages:
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟起始节点"
+
+  - stage_id: s01-pdf-parse
+    name: "PDF 材料预处理"
+    skill_id: pdf-parser
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 3
+      on: [timeout, error]
+    description: "调用 MinerU API 将 PDF 解析为结构化 Markdown。环境缺失时自动报错+修复指引（不占用确认点）。retry 耗尽→s99 终止并报错误码"
+
+  - stage_id: s02-moc-build
+    name: "MOC 知识骨架构建"
+    skill_id: moc-architect
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "消费领域配置与解析后 Markdown，自动产出带层级 [[双链]] 的 MOC 及 Mermaid 逻辑脉络图。v1.1.1 取消确认点，质量由 Skill 内部自检保证"
+
+  - stage_id: s03-atomic-produce
+    name: "原子笔记批量生产"
+    skill_id: atomic-producer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 3
+      on: [timeout, error]
+    description: "单实例顺序处理 MOC 中全部 H2 模块，生产符合领域规范的原子笔记 .md。v1.1.1 取消 fan-out 并发，失败模块在 MOC 中标注 [!warning]"
+
+  - stage_id: s04-quality-audit
+    name: "格式审校与交付确认"
+    skill_id: quality-auditor
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "轻量格式审计：检查原子笔记格式合规、文件存在性、MOC 双链有效性。输出简化质量报告，用户决定是否交付（confirmed→s99）或打回重做（rejected→s03）。v1.1.1 取消内容审校，仅做格式把关"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟终止节点"
+
+edges:
+  - from: s00-workflow-start
+    to: s01-pdf-parse
+    condition: always
+
+  - from: s01-pdf-parse
+    to: s02-moc-build
+    condition: success
+
+  - from: s01-pdf-parse
+    to: s99-workflow-end
+    condition: failure
+
+  - from: s02-moc-build
+    to: s03-atomic-produce
+    condition: confirmed
+
+  - from: s02-moc-build
+    to: s02-moc-build
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s02-moc-build
+
+  - from: s02-moc-build
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  - from: s03-atomic-produce
+    to: s04-quality-audit
+    condition: always
+
+  - from: s04-quality-audit
+    to: s99-workflow-end
+    condition: confirmed
+
+  - from: s04-quality-audit
+    to: s03-atomic-produce
+    condition: rejected
+
+concurrency_rules:
+  max_parallel_agents: 1
+  allowed_parallel_stages: []
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+
+git_anchors:
+  enabled: true
+  tag_prefix: "wf"
+  preserve_paths: [".agent/"]

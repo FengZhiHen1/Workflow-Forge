@@ -1,0 +1,23 @@
+{
+  "skill_name": "workflow-env-init",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我在当前目录初始化工作流环境，我要开始用工作流编排任务了",
+      "expected_output": "在当前目录创建 .claude/（含 contracts、skills、workflows、scripts）和 .agent/（含 instances/ 运行时目录），并更新 .gitignore",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "这个新项目需要配置 workflow 环境，请把需要的 skill、契约和脚本都拉过来",
+      "expected_output": "从生产车间拉取 workflow-orchestrator skill、契约文件、基础设施脚本和工作流定义，创建标准目录结构",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "我的 .agent 目录好像被误删了，能帮我重置一下工作流环境吗？保留已有的 .claude 内容",
+      "expected_output": "重新创建 .agent/ 运行时目录，不覆盖已有的 .claude/ 内容",
+      "files": []
+    }
+  ]
+}

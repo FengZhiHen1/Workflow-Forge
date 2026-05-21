@@ -1,0 +1,222 @@
+schema_version: "2.0.0"
+workflow_id: "module-review"
+version: "1.0.0"
+description: >
+  模块审查工作流：解析用户输入的模块编号，四级优先级定位设计文档与落地规范，
+  逐项审计代码实现完整性与跨模块联动关系，最终生成摘要+详细附录双栏审查报告。
+  核心特征：条件确认入口、自动化中间审计、报告级用户验收。
+
+# =============================================================================
+# Stage 结构：s01-identify → s02-audit → s03-report（3 业务 Stage）
+# 确认点分布：入口条件确认 + 自动化中间审计 + 出口报告验收
+# =============================================================================
+
+stages:
+  # ==================== 虚拟起止 ====================
+
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟起始阶段，触发工作流执行，直接流转到模块定位。"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟终止阶段，所有退出路径汇聚于此。"
+
+  # ==================== 业务阶段 ====================
+
+  - stage_id: s01-identify
+    name: "模块定位"
+    skill_id: module-review-identify
+    mandatory: true
+    confirmation_point: true
+    confirmation_conditional: true
+    confirmation_condition: 用户使用"所有模块"、"全部模块"等模糊范围词
+    confirmation_notes:
+      - "条件确认：仅当用户使用模糊范围词时触发。扫描 docs/功能设计/ 列出所有模块编号后请用户确认审查范围。"
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      解析用户输入的模块编号（支持 M01 / M02 / 模块1 / Module-A 等格式）。
+      若用户使用模糊范围词（"所有模块" / "全部模块"），扫描 docs/功能设计/
+      列出所有模块编号后请用户确认审查范围（条件确认）。
+      按四级优先级搜索定位设计文档与落地规范：
+      P0（独立双文件：-设计文档.md + -落地规范.md）→
+      P1（旧版单文件）→
+      P2（总设计文档）→
+      P3（其他位置）。
+      两份文档（设计文档 + 落地规范）都必须定位成功。
+      输出 identified_modules.json（模块编号 + 文档路径映射）。
+    outputs:
+      - identified_modules.json
+
+  - stage_id: s02-audit
+    name: "实现审计"
+    skill_id: module-review-auditor
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      读取 identified_modules.json，从落地规范提取交付物清单和接口契约
+      （精确编码规格），从设计文档提取模块边界和联动关系（项目上下文）。
+      逐项审计四大维度：
+      (1) 交付物完整性——文件存在性、非空验证、语法有效性检查；
+      (2) 接口实现——核心符号存在性验证、接口签名匹配；
+      (3) 核心逻辑——占位符检测（TODO / pass / 空函数视为部分实现）、条件路由覆盖；
+      (4) 测试覆盖——测试文件存在性与场景覆盖率统计。
+      多模块联动验证：构建预期联动图（从设计文档提取模块间调用/数据流关系）→
+      grep 静态分析实际调用链 → 接口签名逐项匹配 → 数据流端点验证 →
+      标记联动状态（已实现 / 部分实现 / 未实现 / 无法验证）。
+      引用 references/review-checklist.md（审查清单）和
+      references/integration-patterns.md（联动模式参考）。
+      输出 implementation_check.json（单模块实现检查结果）+
+      integration_result.json（跨模块联动验证结果）。
+    inputs:
+      - identified_modules.json
+    outputs:
+      - implementation_check.json
+      - integration_result.json
+
+  - stage_id: s03-report
+    name: "审查报告"
+    skill_id: module-review-reporter
+    mandatory: true
+    confirmation_point: true
+    confirmation_notes:
+      - "始终确认：向用户呈现总体结论和关键问题摘要，用户审查报告后确认或补充意见重新生成。"
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      收集所有中间产物（identified_modules.json + implementation_check.json +
+      integration_result.json），调用 scripts/get_timestamp.py 获取跨平台
+      准确时间戳，引用 references/report-template.md 降级模板生成报告。
+      报告结构：
+      - 摘要栏：总体结论、关键问题、审查范围、审查时间、版本记录；
+      - 详细附录：交付物检查表、接口验证表、联动矩阵、测试覆盖统计。
+      包含冲突核查指引（审查中发现的潜在设计文档矛盾）。
+      保存至 docs/审查报告/模块审查-{module_ids}-{date}.md。
+      向用户呈现总体结论和关键问题摘要。用户确认后完成工作流；
+      用户拒绝（附补充意见）→ 按反馈重新生成报告（自循环 ≤3 次）。
+    inputs:
+      - identified_modules.json
+      - implementation_check.json
+      - integration_result.json
+    outputs:
+      - docs/审查报告/模块审查-{module_ids}-{date}.md
+
+# ==================== 流转边 ====================
+
+edges:
+  # -- s00 起始 --
+  - from: s00-workflow-start
+    to: s01-identify
+    condition: always
+    label: 工作流启动，进入模块定位
+
+  # -- s01 模块定位（条件确认点） --
+  - from: s01-identify
+    to: s02-audit
+    condition: confirmed
+    label: 模块范围已确认，设计文档已定位，进入实现审计
+    note: >
+      输入明确时自动确认（不需要用户介入）；
+      仅模糊范围词时触发确认点，用户确认后继续。
+
+  - from: s01-identify
+    to: s01-identify
+    condition: rejected
+    label: 用户对识别的模块范围不满意，重新确认审查范围
+    max_loop: 2
+    loop_counter_stage: s01-identify
+    note: 最多允许 2 次重新确认。用户可调整模块编号范围后再次识别。
+
+  - from: s01-identify
+    to: s99-workflow-end
+    condition: loop_exceeded
+    label: 模块范围确认达到最大次数上限（2 次），终止工作流
+
+  # -- s02 实现审计（无确认点，自动流转） --
+  - from: s02-audit
+    to: s03-report
+    condition: always
+    label: 实现审计与联动验证完成，进入报告生成
+    note: >
+      即便存在部分缺失（文档缺失 / 代码缺失），仍然输出检查结果并进入报告阶段。
+      设计文档缺失时标记 ⚠️ 缺失仍继续检查代码存在性；
+      模块未找到任何文档时记录并继续。
+
+  # -- s03 审查报告（确认点） --
+  - from: s03-report
+    to: s99-workflow-end
+    condition: confirmed
+    label: 用户确认审查报告，工作流完成
+
+  - from: s03-report
+    to: s03-report
+    condition: rejected
+    label: 用户补充意见，按反馈调整后重新生成审查报告
+    max_loop: 3
+    loop_counter_stage: s03-report
+    note: >
+      最多允许 3 次重新生成。用户可在每次审查后补充意见
+      （如补充遗漏模块、调整结论措辞、追加联动检查等），
+      系统按反馈重新生成报告。
+
+  - from: s03-report
+    to: s99-workflow-end
+    condition: loop_exceeded
+    label: 报告修改达到最大次数上限（3 次），以最后一次版本为终稿
+
+# ==================== 并发与冲突规则 ====================
+
+concurrency_rules:
+  max_parallel_agents: 1
+  allowed_parallel_stages: []
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+
+# ==================== 共享资源清单 ====================
+
+shared_resources:
+  - resource: references/report-template.md
+    type: reference
+    used_by: [s03-report]
+    owner: s03-report
+    description: 审查报告降级模板，s03-report 从原 Skill 迁移
+
+  - resource: references/review-checklist.md
+    type: reference
+    used_by: [s02-audit]
+    owner: s02-audit
+    description: 实现审计逐项检查清单，s02-audit 从原 Skill references 迁移
+
+  - resource: references/integration-patterns.md
+    type: reference
+    used_by: [s02-audit]
+    owner: s02-audit
+    description: 跨模块联动模式参考，s02-audit 从原 Skill references 迁移
+
+  - resource: scripts/get_timestamp.py
+    type: script
+    used_by: [s03-report]
+    owner: workflow
+    description: 跨平台准确时间戳获取脚本，工作流级共享

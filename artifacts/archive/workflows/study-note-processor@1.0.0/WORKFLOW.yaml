@@ -1,0 +1,128 @@
+schema_version: "2.0.0"
+workflow_id: "study-note-processor"
+version: "1.0.0"
+description: "PDF → 结构化 Obsidian 原子笔记（MOC + 原子笔记），含自动审校修复"
+
+stages:
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟起始节点"
+
+  - stage_id: s01-pdf-parse
+    name: "PDF 材料预处理"
+    skill_id: pdf-parser
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 3
+      on: [timeout, error]
+    description: "自检环境变量（.env / Token）后调用 MinerU Precision API 解析 PDF。环境缺失时上报 PENDING_CONFIRM 引导用户补充；解析失败时可 rejected 重试"
+
+  - stage_id: s02-moc-build
+    name: "MOC 知识骨架构建"
+    skill_id: moc-architect
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "消费领域配置与解析后 Markdown，产出带层级 [[双链]] 的 MOC 及 Mermaid 逻辑脉络图。用户在此确认模块划分与原子点覆盖"
+
+  - stage_id: s03-atomic-produce
+    name: "原子笔记批量生产"
+    skill_id: atomic-producer
+    mandatory: true
+    confirmation_point: false
+    fan_out:
+      source: s02-moc-build
+      split_by: "MOC 的 H2 逻辑模块"
+      max_instances: 3
+      internal_retry:
+        max_attempts: 2
+        on: [timeout, error]
+    retry_policy:
+      max_attempts: 3
+      on: [timeout, error]
+    description: "fan-out Stage：按 MOC 的 H2 模块拆分为 N 个并行实例，每个实例一个 SubAgent 跑 atomic-producer Skill（单模块工人）。各实例独立失败隔离，内部重试；工作流级 retry 仅在调度器整体崩溃时触发"
+
+  - stage_id: s04-quality-audit
+    name: "自动审校与修复"
+    skill_id: quality-auditor
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "对照领域配置的格式契约与质量清单，自动检查原子笔记格式合规性与内容质量，自动修复后输出质量报告"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟终止节点，标记工作流结束"
+
+edges:
+  - from: s00-workflow-start
+    to: s01-pdf-parse
+    condition: always
+
+  - from: s01-pdf-parse
+    to: s02-moc-build
+    condition: confirmed
+
+  - from: s01-pdf-parse
+    to: s01-pdf-parse
+    condition: rejected
+    max_loop: 5
+    loop_counter_stage: s01-pdf-parse
+
+  - from: s01-pdf-parse
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  - from: s02-moc-build
+    to: s03-atomic-produce
+    condition: confirmed
+
+  - from: s02-moc-build
+    to: s02-moc-build
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s02-moc-build
+
+  - from: s02-moc-build
+    to: s03-atomic-produce
+    condition: loop_exceeded
+
+  - from: s03-atomic-produce
+    to: s04-quality-audit
+    condition: always
+
+  - from: s04-quality-audit
+    to: s99-workflow-end
+    condition: always
+
+concurrency_rules:
+  max_parallel_agents: 5
+  allowed_parallel_stages: [[s03-atomic-produce]]
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+
+git_anchors:
+  enabled: true
+  tag_prefix: "wf"
+  preserve_paths: [".agent/"]

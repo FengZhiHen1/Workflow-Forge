@@ -1,0 +1,860 @@
+schema_version: 2.0.0
+workflow_id: module-lifecycle
+version: 1.0.0
+mode: multi
+description: '模块全生命周期工作流。
+
+  整合模块实现、对抗性盲测验证、正式验收测试、模块审查、缺陷修复和 Git 工作树同步
+
+  为统一的多阶段流水线。
+
+  核心特征：
+
+  - 信息隔离：实现者不知测试内容，测试者不知实现细节
+
+  - 对抗性验证：黑盒测试主动寻找实现漏洞
+
+  - 渐进收敛：失败驱动循环修复直至通过或达到上限
+
+  - 多入口点：支持从任意功能组独立启动（核心流水线 / 模块审查 / 缺陷修复 / 验收测试 / Git 同步）
+
+  '
+groups:
+- group_id: core-adversarial
+  name: 核心对抗验证流水线
+  stages:
+  - orch-preflight
+  - orch-contract
+  - exec-impl
+  - orch-impl-validate
+  - testgen-create
+  - orch-blindtest
+  - exec-fix
+  - testgen-fix
+  - orch-report
+- group_id: module-review
+  name: 模块审查
+  stages:
+  - review-identify
+  - review-analyze
+  - review-verify
+  - review-report
+  entry_point: review-identify
+- group_id: defect-fixing
+  name: 缺陷修复
+  stages:
+  - fix-diagnose
+  - fix-proposal
+  - fix-execute
+  - fix-report
+  entry_point: fix-diagnose
+- group_id: test-writing
+  name: 正式验收测试编写
+  stages:
+  - testw-prep
+  - testw-scenario
+  - testw-code
+  - testw-verify
+  - testw-report
+  entry_point: testw-prep
+- group_id: git-worktree-sync
+  name: Git 工作树同步
+  stages:
+  - gitsync-check
+  - gitsync-sync
+  - gitsync-commit
+  - gitsync-merge
+  - gitsync-cleanup
+  entry_point: gitsync-check
+stages:
+- stage_id: orch-preflight
+  name: 前置环境同步与就绪检查
+  skill_id: module-lifecycle-preflight
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: false
+  stage_type: script_call
+  description: '1. 检测 git worktree 状态，同步主分支最新代码
+
+    2. 检查 docs/ 目录设计文档是否有未同步变更
+
+    3. 运行 preflight_check.py 验证 Python 版本、脚本完整性、契约目录存在性、SubAgent 可用性
+
+    不通过则阻断流水线。
+
+    '
+  inputs:
+  - module_id
+  outputs: []
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: orch-contract
+  name: 契约提取与设计仲裁
+  skill_id: module-lifecycle-contract
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: true
+  confirmation_notes:
+  - 'AQ-001: 设计文档冲突仲裁，未覆盖场景需用户确认'
+  - 'AQ-002: 展示执行计划预览，用户确认后进入实现阶段'
+  - 'AQ-004: 契约模糊或矛盾时向用户确认（条件触发：多份文档对同一接口定义不一致）'
+  stage_type: analysis
+  description: '1. 从契约文件/落地规范/设计文档按 P0→P1→P2 优先级提取接口契约
+
+    2. 生成 contract-expectations.md，运行 validate_contract_expectations.py 验证后冻结
+
+    3. 设计文档冲突仲裁：未覆盖场景向用户确认（AQ-001）；契约模糊矛盾向用户确认（AQ-004，条件性）
+
+    4. 向用户展示执行计划预览（含模块信息、契约条目数、SubAgent 调度计划），等待用户确认（AQ-002）
+
+    用户确认前阻塞所有后续阶段。
+
+    '
+  outputs:
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/contract-expectations.md'
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: exec-impl
+  name: 实现落地执行
+  skill_id: module-lifecycle-impl-executor
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: false
+  stage_type: subagent_call
+  subagent:
+    model: opus
+    prompt_template: 'references/subagent-prompts.md (模板1: 实现落地)'
+  description: 'SubAgent 执行 Phase 2 实现落地（模式 A）：
+
+    1. 解析项目结构设计文档和模块设计文档
+
+    2. 扫描现有代码，差异比对，增量优先
+
+    3. 按实现顺序编写代码（类型系统→数据契约→工具→原子功能→状态机→组合层→异常处理→依赖适配）
+
+    4. 生成 function-signatures.json 和 pending-confirmations.md
+
+    铁律：SubAgent 不可运行测试、不可读取 .tmp/adversarial-tests/、不可 AskUserQuestion。
+
+    '
+  inputs:
+  - 落地规范（编码主要来源）
+  - 设计文档（项目上下文）
+  - 项目结构设计文档（代码组织规范）
+  - contract-expectations.md（契约期望清单）
+  outputs:
+  - 实现代码文件列表（完整路径）
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/function-signatures.json'
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/pending-confirmations.md'
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: orch-impl-validate
+  name: 实现输出验证
+  skill_id: module-lifecycle-impl-validator
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: pending-confirmations.md 中存在标记为'重大风险'的条目
+  confirmation_notes:
+  - 'AQ-003: Phase 2 实现验证后发现重大风险项时向用户确认（条件触发）'
+  stage_type: validation
+  description: '1. 运行 validate_function_signatures.py 验证函数签名 JSON 格式与合规性
+
+    2. 检查 SubAgent 返回的 pending-confirmations.md，评估风险等级
+
+    3. 重大风险项向用户确认（AQ-003，条件性：仅在存在''重大风险''条目时触发）；风险可控项记录后在最终报告标注
+
+    验证不通过则退回 exec-impl 修正（最多重试 3 次）。
+
+    '
+  inputs:
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/function-signatures.json'
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/pending-confirmations.md'
+  outputs: []
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: testgen-create
+  name: 对抗性测试生成
+  skill_id: module-lifecycle-test-generator
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: false
+  stage_type: subagent_call
+  subagent:
+    model: opus
+    prompt_template: 'references/subagent-prompts.md (模板2: 对抗性测试生成)'
+  description: 'SubAgent 执行 Phase 3 对抗性测试生成（黑盒操作）：
+
+    1. 解析契约：提取参数类型、异常条件、边界约束
+
+    2. 按 P0(契约禁止输入)→P1(边界值)→P2(类型破坏)→P3(状态/时序破坏) 优先级生成对抗性测试
+
+    3. 输出测试代码文件 + __init__.py + 测试清单
+
+    4. 强制自检流水线：py_compile 语法检查 → import 可导入验证 → detect_green_seeking.py 趋绿扫描（toxicity_score ≤ 2）
+
+    铁律：SubAgent 绝对禁止读取实现源码；不通过自检不输出（阻断级门控）。
+
+    '
+  inputs:
+  - contract-expectations.md（冻结后的契约期望清单）
+  - function-signatures.json（已验证的函数签名清单）
+  - 落地规范的异常处理/类型定义章节
+  - 明确排除：实现源码路径（不可读取）
+  outputs:
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/test_{module_id}.adversarial.{ext}'
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/{module_id}.adversarial.test.list.md'
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/green-seeking-report.json'
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: orch-blindtest
+  name: 盲测执行与失败分类
+  skill_id: module-lifecycle-blindtest
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: false
+  stage_type: script_call
+  description: "1. 检查测试代码文件存在性、语法可解析性、导入路径正确性\n2. 运行对抗性测试（pytest / vitest / go test，根据技术栈自适应）\n3. 运行 classify_failures.py\
+    \ 辅助分类 + 人工复核确认\n4. 分支判定逻辑：\n   - 全部通过 → orch-report\n   - 实现漏洞 → 生成失败摘要 → exec-fix\n   - 测试缺陷 → 生成缺陷报告 → testgen-fix\n\
+    \   - 契约矛盾 → 生成缺陷报告 → testgen-fix\n   - 退化（上轮通过本轮失败）→ orch-contract（暂停并向用户报告）\n5. 运行 generate_failure_summary.py + validate_failure_summary.py（隔离合规验证，阻断级）\n\
+    6. 回归检查：检测退化（上轮通过本轮失败）和收敛停滞（连续两轮失败集合相同）\n7. 生成测试缺陷报告 test-defects-round-{N}.md（如适用，不含测试代码片段和具体输入值）\n不涉及用户确认，是自动化的判断-分支逻辑中枢。\n"
+  inputs:
+  - 测试代码文件（test_*.adversarial.*）
+  - 测试清单（*.adversarial.test.list.md）
+  - green-seeking-report.json
+  - 上轮盲测结果（从第2轮起）
+  outputs:
+  - /tmp/pytest-output.txt
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/failure-summary-round-{N}.md'
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/test-defects-round-{N}.md'
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: exec-fix
+  name: 实现代码修复
+  skill_id: module-lifecycle-impl-executor
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: false
+  stage_type: subagent_call
+  subagent:
+    model: opus
+    prompt_template: 'references/subagent-prompts.md (模板4: 修复迭代)'
+  description: 'SubAgent 执行 Phase 5 修复迭代（模式 B）：
+
+    1. 阅读失败摘要 failure-summary-round-{N}.md（铁律：不含测试代码、输入值、文件路径）
+
+    2. 按影响用例数排序修复优先级
+
+    3. 最小化修复：仅修改实现代码，每处修改对应一个 case ID，保持接口契约不变
+
+    4. 输出修改说明 + pending-confirmations-round-{N}.md
+
+    铁律：SubAgent 不接触测试代码，不可读取 .tmp/adversarial-tests/ 中除摘要外的文件。
+
+    修复后流转回 orch-blindtest 重新测试（最多 3 轮）。
+
+    '
+  inputs:
+  - failure-summary-round-{N}.md（失败摘要，信息隔离版本）
+  - 当前实现代码
+  - 落地规范
+  - contract-expectations.md（可选）
+  outputs:
+  - 修改后的代码文件列表
+  - 修改说明（含 case ID、修复文件、修复内容、对应契约条款）
+  - '{module_code_dir}/.tmp/adversarial-tests/{module_id}/pending-confirmations-round-{N}.md'
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: testgen-fix
+  name: 测试缺陷修正
+  skill_id: module-lifecycle-test-generator
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: false
+  stage_type: subagent_call
+  subagent:
+    model: opus
+    prompt_template: 'references/subagent-prompts.md (模板3: 测试缺陷修正)'
+  description: 'SubAgent 执行测试缺陷修正：
+
+    1. 根据 test-defects-round-{N}.md 修正测试代码（铁律：报告不含测试代码片段和具体输入值，仅含缺陷类型和修复方向）
+
+    2. 重新运行自检流水线（py_compile 语法 → import 可导入 → detect_green_seeking.py 趋绿扫描）
+
+    铁律：SubAgent 绝对不接触实现代码，仅修改测试文件。
+
+    修正后流转回 orch-blindtest 重新运行（最多 3 轮）。
+
+    '
+  inputs:
+  - test-defects-round-{N}.md（测试缺陷报告）
+  - 当前测试代码文件
+  outputs:
+  - 修正后的测试代码文件
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: orch-report
+  name: 完成汇报与验收
+  skill_id: module-lifecycle-reporter
+  group: core-adversarial
+  mandatory: true
+  confirmation_point: false
+  stage_type: generation
+  description: "1. 生成最终报告 adversarial-report.md 至 docs/testing-design/{module_id}/\n2. 逐项验收检查清单（14项）：\n   - 公开函数覆盖验证\n   -\
+    \ 失败原因与修复对应验证\n   - 退化检测（所有轮次）\n   - 收敛停滞检测\n   - 契约一致性验证（validate_contract_consistency.py）\n   - 角色隔离合规审计（check_isolation.py）\n\
+    \   - 各角色流程合规检查\n3. 未勾选项在诚实声明中标注\n4. 报告包含契约覆盖度、循环统计（轮次/失败数/修复数）、最终结论\n"
+  outputs:
+  - docs/testing-design/{module_id}/adversarial-report.md
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: review-identify
+  name: 模块编号识别与文档定位
+  skill_id: module-lifecycle-reviewer
+  group: module-review
+  mandatory: false
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: 用户使用'所有模块'、'全部模块'等模糊范围词
+  confirmation_notes:
+  - 'AQ-005: 需扫描目录列出所有模块编号后请用户确认审查范围（条件触发）'
+  stage_type: analysis
+  description: "1. 从用户输入提取模块编号（支持 M01/M02/模块1/Module-A 等格式）\n2. 若用户使用模糊范围词（\"所有模块\"/\"全部模块\"），扫描 docs/功能设计/ 列出所有模块编号后请用户确认（AQ-005，条件性）\n\
+    3. 四优先级搜索定位功能设计文档：\n   P0: 独立双文件（-设计文档.md + -落地规范.md）\n   P1: 旧版单文件\n   P2: 总设计文档\n   P3: 其他位置\n两份文档（设计文档 + 落地规范）都必须定位成功。\n\
+    note: \"此阶段为 Group 2 入口点，可作为独立工作流从 review-identify 启动\"\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: review-analyze
+  name: 规格提取与落地检查
+  skill_id: module-lifecycle-reviewer
+  group: module-review
+  mandatory: false
+  confirmation_point: false
+  stage_type: analysis
+  description: "1. 从落地规范提取交付物清单和接口契约（精确编码规格）\n2. 从设计文档提取模块边界和联动关系（项目上下文）\n3. 逐项验证代码落地：\n   - 文件存在性检查\n   - 文件非空验证\n   - 语法有效性检查\n\
+    \   - 核心符号存在性验证\n   - 接口签名匹配验证\n   - 核心逻辑实现检查\n   - 测试覆盖检查\n占位符（TODO/pass/空函数）视为部分实现，需标记。\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: review-verify
+  name: 联动验证
+  skill_id: module-lifecycle-reviewer
+  group: module-review
+  mandatory: false
+  confirmation_point: false
+  stage_type: analysis
+  description: "多模块联动关系验证：\n1. 构建预期联动图（从设计文档提取模块间调用/数据流关系）\n2. grep 静态分析实际调用链\n3. 接口签名逐项匹配\n4. 数据流端点验证\n5. 标记联动状态：\n   - 已实现:\
+    \ 文件存在 + 调用正确 + 签名匹配\n   - 部分实现: 文件存在但有缺漏\n   - 未实现: 文件不存在或完全无调用\n   - 无法验证: 设计文档未定义或代码不可访问\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: review-report
+  name: 审查报告生成与输出
+  skill_id: module-lifecycle-reviewer
+  group: module-review
+  mandatory: false
+  confirmation_point: true
+  confirmation_notes:
+  - 'AQ-006: 向用户输出审查摘要，用户查看报告后决定后续操作'
+  stage_type: generation
+  description: "1. 调用 get_timestamp.py 获取跨平台准确时间戳\n2. 生成审查报告（摘要 + 详细附录双栏结构）：\n   - 摘要栏：总体结论、关键问题、审查范围、审查时间、版本记录\n   - 详细附录：交付物检查表、接口验证表、联动矩阵、测试覆盖统计\n\
+    3. 报告含冲突核查指引（包含审查中发现的潜在设计文档矛盾）\n4. 保存至 docs/审查报告/模块审查-{module_ids}-{date}.md\n5. 向用户输出总体结论和关键问题摘要，用户确认（AQ-006）\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: fix-diagnose
+  name: 缺陷诊断与根因分析
+  skill_id: module-lifecycle-defect-fixer
+  group: defect-fixing
+  mandatory: false
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: 仅凭用户描述无法定位到具体代码或文档
+  confirmation_notes:
+  - 'AQ-007: 缺陷无法定位时向用户追问文件路径、复现步骤、预期行为（条件触发）'
+  stage_type: analysis
+  description: "1. 根据输入类型定位相关代码和设计文档：\n   - traceback/错误日志 → 解析堆栈定位文件和行号\n   - 审查报告条目 → 查找报告中标记的问题位置\n   - 口头描述 → 基于关键词搜索相关代码\n\
+    2. 若无法定位（信息不足），向用户追问关键信息（AQ-007，条件性）\n3. 根因分析：\n   - 判断缺陷性质（实现 bug vs 设计缺陷）\n   - 对照设计文档验证期望行为\n   - 3-5句话呈现根因和关键证据\n\
+    分析未完成前不得进入提案阶段。\nnote: \"此阶段为 Group 3 入口点，可从审查报告引用条目或用户直接描述缺陷启动\"\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: fix-proposal
+  name: 修复方案确认
+  skill_id: module-lifecycle-defect-fixer
+  group: defect-fixing
+  mandatory: false
+  confirmation_point: true
+  confirmation_notes:
+  - 'AQ-008: 呈现修复方案（根因+方案+影响范围+测试建议），用户确认后执行（核心门控）'
+  - 'AQ-009: 用户表述模糊时追问一次确认（条件触发：用户用词如''应该可以吧''等）'
+  stage_type: communication
+  description: "1. 向用户呈现完整修复方案：\n   - 根因（一句话总结）\n   - 修复方案（具体修改内容和位置）\n   - 影响范围（涉及的模块/文件/接口）\n   - 测试建议（回归测试点）\n2. 循环确认直到用户明确同意（\"\
+    可以\"、\"OK\"、\"就这样修\"、\"同意\"等明确肯定用语）\n3. 用户不同意或提出修正意见 → 调整方案后重新呈现（内部循环，最多 5 次）\n4. 用户表述模糊时（\"应该可以吧\"、\"你看着办\"）追问一次确认（AQ-009，条件性）\n\
+    这是全流程最核心的用户门控——用户不明确同意则绝对不动手修改代码。\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: fix-execute
+  name: 执行修复
+  skill_id: module-lifecycle-defect-fixer
+  group: defect-fixing
+  mandatory: false
+  confirmation_point: false
+  stage_type: generation
+  description: "1. 按确认方案修改代码文件（仅修改需修复的位置）\n2. 若为设计缺陷（非实现 bug），同步修正设计文档\n3. 若适合补充回归测试，补充测试用例\n4. 自检项：\n   - 修复覆盖度：是否所有确认的修改点都已落地\n\
+    \   - 是否引入新问题：检查修改是否影响其他功能\n   - 代码与文档一致性：如修改了设计文档，确认代码同步\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: fix-report
+  name: 修复结果汇报
+  skill_id: module-lifecycle-defect-fixer
+  group: defect-fixing
+  mandatory: false
+  confirmation_point: false
+  stage_type: communication
+  description: '向用户汇报修复结果：
+
+    - 根因（一句话）
+
+    - 修改内容列表（代码文件 / 设计文档 / 测试文件，各有对应条目）
+
+    - 后续建议（是否需重新对抗验证、是否需重新审查等）
+
+    '
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: testw-prep
+  name: 遗留审查与契约读取
+  skill_id: module-lifecycle-test-writer
+  group: test-writing
+  mandatory: false
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: 实现与设计文档存在重大差异（如缺少契约要求的异常处理）
+  confirmation_notes:
+  - 'AQ-010: 发现重大差异时记录待确认项并向用户报告（条件触发）'
+  stage_type: analysis
+  description: "1. 遗留问题审查：检查上一轮评估中的问题（宽泛异常断言、注释不一致、元数据不准确、存在性验证替代等）并修复\n2. 按 P0→P1→P2→P3 优先级读取设计文档：\n   P0: 落地规范（编码主要来源）\n\
+    \   P1: 设计文档（项目上下文）\n   P2: 项目结构文档（代码组织规范）\n   P3: 技术栈文档（开发环境约束）\n3. 白盒读取已实现代码（与 adversarial-test-generator 的关键差异——test-writer\
+    \ 可见实现）\n4. 实现与设计文档对比，重大差异向用户报告（AQ-010，条件性）\n5. 复用 orchestrator 产物（contract-expectations.md, function-signatures.json）\n\
+    门控规则：遗留问题未修复完毕前，不允许进入 testw-scenario。\nnote: \"此阶段为 Group 4 入口点，通常在对抗循环完成后启动\"\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: testw-scenario
+  name: 测试场景提取
+  skill_id: module-lifecycle-test-writer
+  group: test-writing
+  mandatory: false
+  confirmation_point: false
+  stage_type: generation
+  description: '提取四类测试场景并写入《测试场景清单》：
+
+    1. 正常路径（Happy Path）：每个公开函数至少一个正常输入→预期输出测试
+
+    2. 边界路径（Boundary）：每个契约约束至少一个边界值或临界条件测试
+
+    3. 错误路径（Error）：每个异常条件至少一个触发异常测试
+
+    4. 集成路径（Integration）：涉及外部依赖/多模块协作的端到端场景
+
+    覆盖度目标：
+
+    - 每个公开函数至少一个行为路径测试
+
+    - 每个契约约束至少一个边界或错误路径测试
+
+    - 每个异常条件至少一个触发测试
+
+    - 每个条件路由函数的每个返回值分支至少一个测试
+
+    '
+  outputs:
+  - docs/testing-design/{module_id}/test-scenarios.md
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: testw-code
+  name: 验收测试编写
+  skill_id: module-lifecycle-test-writer
+  group: test-writing
+  mandatory: false
+  confirmation_point: false
+  stage_type: generation
+  description: "根据场景清单编写正式验收测试代码：\n1. 每个测试函数必须包含：\n   - 场景编号（对应 test-scenarios.md）\n   - 契约依据（引用落地规范/contract-expectations.md\
+    \ 条款）\n   - 实现分支注释（标注测试覆盖的代码路径）\n2. 断言强度强制标准（至少一项）：\n   - 值断言：assert result == expected\n   - 结构断言：assert isinstance(result,\
+    \ ExpectedType) + 字段验证\n   - 行为断言：assert mock.call_count 或副作用验证\n   - 异常断言：pytest.raises(SpecificException, match=...)，禁止使用\
+    \ pytest.raises(Exception)\n3. Mock 规则：仅替换外部依赖（数据库、HTTP、文件系统），禁止 mock 被测接口本身\n4. 路径覆盖自检：每个条件路由函数的每个返回值分支至少一个测试\n5. 元数据头部：覆盖场景数必须与\
+    \ test-scenarios.md 场景总数一致\n"
+  outputs:
+  - test_*.py
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: testw-verify
+  name: 静态自检与运行验证
+  skill_id: module-lifecycle-test-writer
+  group: test-writing
+  mandatory: false
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: 测试期望与契约规定不一致
+  confirmation_notes:
+  - 'AQ-011: 测试运行后若期望与契约矛盾，记录为''契约疑问''向用户确认（条件触发）'
+  stage_type: validation
+  description: "1. 静态自检：\n   - python -m py_compile <test_file.py> 语法正确性检查\n   - python -c \"import <test_module>\" 可导入性验证\n\
+    2. 趋绿扫描：detect_green_seeking.py（建议性，非阻塞——与 testgen-create 的阻断级不同）\n3. pytest 运行验证：\n   - 全部通过 → 进入 testw-report\n   -\
+    \ 部分失败（测试代码 bug）→ 修复测试代码后重新验证（testw-code）\n   - 实现缺陷 → 记录为差异但保持断言不变\n   - 契约疑问（测试期望与契约不一致）→ 向用户确认（AQ-011，条件性）\n   - 无法运行（导入/依赖问题）→\
+    \ 修复环境后重新验证\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: testw-report
+  name: 测试报告输出
+  skill_id: module-lifecycle-test-writer
+  group: test-writing
+  mandatory: false
+  confirmation_point: false
+  stage_type: generation
+  description: "1. validate_header_consistency.py 数量一致性门控（非零退出码则阻塞交付，回退修正）\n2. 生成正式测试报告 test-report.md：\n   - 概要：测试范围、测试数量、通过/失败统计\n\
+    \   - 契约覆盖度：每个契约条款与测试的映射表\n   - 实现差异记录：测试运行中发现的实现问题（不改断言）\n   - 运行结果：完整 pytest 输出摘要\n   - 待确认项：所有标记为 '契约疑问' 的条目\n   -\
+    \ 诚实声明：AI 辅助生成声明 + 契约依据引用规范\n"
+  outputs:
+  - docs/testing-design/{module_id}/test-report.md
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: gitsync-check
+  name: 前置检查与分支确定
+  skill_id: module-lifecycle-git-sync
+  group: git-worktree-sync
+  mandatory: false
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: 默认主分支 dev/main/master 均不存在于 origin
+  confirmation_notes:
+  - 'AQ-012: 所有默认主分支均不存在时询问用户目标分支名称（条件触发）'
+  stage_type: script_call
+  description: "1. 环境检查：\n   - git rev-parse --git-dir（确认在 git 仓库中）\n   - git worktree list（列出所有 worktree）\n   - git branch\
+    \ --show-current（确认当前分支）\n2. 前置条件：\n   - 必须处于 git worktree 中\n   - 当前分支不能是主分支（否则无需同步）\n   - 不满足则停止流程\n3. 目标主分支确定（优先级）：dev\
+    \ > main > master\n4. 若 origin 上 dev/main/master 均不存在，询问用户目标分支名称（AQ-012，条件性）\nnote: \"此阶段为 Group 5 入口点，可作为独立工作流从 gitsync-check\
+    \ 启动\"\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: gitsync-sync
+  name: 同步主分支到当前分支
+  skill_id: module-lifecycle-git-sync
+  group: git-worktree-sync
+  mandatory: false
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: git merge 出现冲突且无法自动解决
+  confirmation_notes:
+  - 'AQ-013: 合并冲突无法自动解决时向用户展示冲突文件列表和处理选项（条件触发）'
+  stage_type: script_call
+  description: "1. git fetch origin <target-branch>（获取远程最新）\n2. git merge origin/<target-branch> --no-edit（合并到当前分支）\n3. 冲突处理策略（按优先级）：\n\
+    \   - 自动解决：文本文件冲突 → 双方保留；配置文件冲突 → 远程优先生效\n   - 无法自动解决 → 展示冲突文件列表和冲突片段，询问用户处理方式（AQ-013，条件性）\n   - 用户解决冲突后重新 merge（内部循环重试）\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: gitsync-commit
+  name: 分阶段提交
+  skill_id: module-lifecycle-git-sync
+  group: git-worktree-sync
+  mandatory: false
+  confirmation_point: false
+  stage_type: script_call
+  description: "1. 变更分析：按功能模块分析文件路径和变更内容，将同一模块文件分为一组\n2. 分阶段提交：对每组文件依次执行：\n   - git add <files>\n   - git commit -m \"<type>(<scope>):\
+    \ <subject>\"（Conventional Commits 格式，中文）\n3. 若所有文件已提交则跳过\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: gitsync-merge
+  name: 合并到主分支并推送
+  skill_id: module-lifecycle-git-sync
+  group: git-worktree-sync
+  mandatory: false
+  confirmation_point: true
+  confirmation_conditional: true
+  confirmation_condition: git merge 到主分支时出现冲突且无法自动解决
+  confirmation_notes:
+  - 'AQ-014: 推送到远程前的最后冲突裁决（条件触发）'
+  stage_type: script_call
+  description: "1. git worktree list 查找主 worktree 目录\n2. 切换到主 worktree 工作目录：\n   - git pull origin <target-branch>（拉取最新）\n\
+    \   - git merge <feature-branch> --no-edit（合并 feature 分支）\n   - git push origin <target-branch>（推送到远程）\n3. 冲突无法自动解决时询问用户处理方式（AQ-014，条件性）\n\
+    4. 用户解决冲突后重新 merge+push（内部循环重试）\n"
+  retry_policy:
+    max_attempts: 1
+    'on': []
+- stage_id: gitsync-cleanup
+  name: 清理 Worktree
+  skill_id: module-lifecycle-git-sync
+  group: git-worktree-sync
+  mandatory: false
+  confirmation_point: false
+  stage_type: script_call
+  description: 'git worktree remove <worktree-path>
+
+    保留分支 commit 历史（不删除分支），仅清理 worktree 工作目录。
+
+    '
+  retry_policy:
+    max_attempts: 1
+    'on': []
+edges:
+- from: orch-preflight
+  to: orch-contract
+  condition: always
+  label: 就绪检查通过，进入契约提取
+- from: orch-contract
+  to: exec-impl
+  condition: confirmed
+  label: 用户确认执行计划（AQ-002），启动实现落地
+  note: FROM stage (orch-contract) has confirmation_point=true
+- from: exec-impl
+  to: orch-impl-validate
+  condition: always
+  label: SubAgent 返回实现结果，进入验证
+- from: orch-impl-validate
+  to: exec-impl
+  condition: failure
+  label: 签名验证失败或实现缺失，退回修正
+  max_loop: 3
+  loop_counter_stage: orch-impl-validate
+  note: 签名格式不合规、核心符号缺失等验证失败时触发
+- from: orch-impl-validate
+  to: testgen-create
+  condition: confirmed
+  label: 实现验证通过（含条件确认已完成），进入测试生成
+  note: 信息隔离要求：testgen-create 必须在实现完全就绪后启动，不可与 exec-impl 并行
+- from: orch-impl-validate
+  to: orch-contract
+  condition: failure
+  label: pending-confirmations 发现契约层面问题，需重新仲裁
+  max_loop: 1
+  loop_counter_stage: orch-contract
+  note: 仅在契约定义矛盾导致实现无法继续时触发
+- from: testgen-create
+  to: orch-blindtest
+  condition: always
+  label: SubAgent 返回测试代码且自检通过，进入盲测
+- from: orch-blindtest
+  to: orch-report
+  condition: success
+  label: 全部测试通过，对抗循环终止，进入验收报告
+  note: 终止条件之一：所有对抗性测试均通过
+- from: orch-blindtest
+  to: orch-report
+  condition: loop_exceeded
+  label: 达到最大轮次上限或收敛停滞，终止对抗循环
+  note: 终止条件：对抗循环达到 3 轮上限，或连续两轮失败集合相同
+- from: orch-blindtest
+  to: exec-fix
+  condition: failure
+  label: 失败类型判定为'实现漏洞'，进入修复
+  note: classify_failures.py + 人工复核双重确认后触发
+- from: orch-blindtest
+  to: testgen-fix
+  condition: failure
+  label: 失败类型判定为'测试缺陷'或'契约矛盾'，进入测试修正
+- from: orch-blindtest
+  to: orch-contract
+  condition: failure
+  label: 检测到退化（上轮通过的用例本轮失败），暂停并向用户报告后重新仲裁
+  max_loop: 1
+  loop_counter_stage: orch-contract
+- from: exec-fix
+  to: orch-blindtest
+  condition: always
+  label: 第{N}轮实现修复完成，重新盲测
+  max_loop: 3
+  loop_counter_stage: orch-blindtest
+  note: 对抗循环第 N 轮（1-indexed），最多 3 轮。orch-blindtest 的全局轮次计数器递增
+- from: testgen-fix
+  to: orch-blindtest
+  condition: always
+  label: 测试修正完成，重新盲测
+  max_loop: 3
+  loop_counter_stage: orch-blindtest
+  note: 对抗循环第 N 轮（1-indexed），最多 3 轮。orch-blindtest 的全局轮次计数器递增
+- from: orch-report
+  to: testw-prep
+  condition: always
+  label: 对抗循环完成，用户可选择触发正式验收测试编写
+- from: orch-report
+  to: review-identify
+  condition: always
+  label: 对抗循环完成，用户可选择触发模块审查
+- from: review-identify
+  to: review-analyze
+  condition: confirmed
+  label: 模块编号已确认，设计文档已定位，开始规格提取与落地检查
+- from: review-analyze
+  to: review-verify
+  condition: always
+  label: 落地检查完成，开始联动验证
+- from: review-verify
+  to: review-report
+  condition: always
+  label: 联动验证完成，生成审查报告
+- from: review-report
+  to: fix-diagnose
+  condition: confirmed
+  label: 用户审查报告中发现缺陷，可选择进入修复流程
+  note: FROM stage (review-report) has confirmation_point=true
+- from: fix-diagnose
+  to: fix-proposal
+  condition: confirmed
+  label: 根因分析完成，进入方案确认
+  note: 若信息不足则先内部循环（fix-diagnose → fix-diagnose）
+- from: fix-diagnose
+  to: fix-diagnose
+  condition: failure
+  label: 信息不足，向用户追问后重新诊断
+  max_loop: 3
+  loop_counter_stage: fix-diagnose
+- from: fix-proposal
+  to: fix-proposal
+  condition: rejected
+  label: 用户不同意或提出修正意见，调整方案后重新呈现
+  max_loop: 5
+  loop_counter_stage: fix-proposal
+  note: 内部确认循环：用户可多次否定方案直到满意。达到 5 次上限后强制终止
+- from: fix-proposal
+  to: fix-execute
+  condition: confirmed
+  label: 用户明确同意修复方案（AQ-008，含 AQ-009 模糊确认追问），执行修复
+  note: FROM stage (fix-proposal) has confirmation_point=true。用户明确同意（'可以'/'OK'/'就这样修'/'同意'）后方可执行
+- from: fix-execute
+  to: fix-report
+  condition: always
+  label: 修复完成，汇报结果
+- from: fix-report
+  to: orch-blindtest
+  condition: always
+  label: 修复完成，用户可选择回到对抗验证重新测试
+- from: fix-report
+  to: review-identify
+  condition: always
+  label: 修复完成，用户可选择重新审查验证
+- from: testw-prep
+  to: testw-scenario
+  condition: confirmed
+  label: 遗留问题已修复（或无需修复），契约与代码已读取，开始提取场景
+  note: 门控规则：遗留问题未修复完毕前不可进入
+- from: testw-scenario
+  to: testw-code
+  condition: always
+  label: 场景清单完成，开始编写验收测试
+- from: testw-code
+  to: testw-verify
+  condition: always
+  label: 测试代码完成，进入验证
+- from: testw-verify
+  to: testw-code
+  condition: failure
+  label: 测试代码存在 bug 需修复，修正后重新验证
+  max_loop: 3
+  loop_counter_stage: testw-verify
+  note: 如语法错误、断言逻辑错误等测试代码自身问题
+- from: testw-verify
+  to: testw-report
+  condition: confirmed
+  label: 测试验证通过或差异已记录，输出测试报告
+- from: testw-verify
+  to: testw-prep
+  condition: failure
+  label: 发现契约疑问需用户确认后重新评估场景
+  max_loop: 1
+  loop_counter_stage: testw-verify
+- from: gitsync-check
+  to: gitsync-sync
+  condition: confirmed
+  label: 环境检查通过，目标分支已确定，开始同步
+  note: 不在 worktree 或当前即主分支则停止
+- from: gitsync-sync
+  to: gitsync-commit
+  condition: confirmed
+  label: 合并无冲突或冲突已解决，开始分阶段提交
+- from: gitsync-sync
+  to: gitsync-sync
+  condition: failure
+  label: 冲突由用户解决后重新尝试合并
+  max_loop: 3
+  loop_counter_stage: gitsync-sync
+- from: gitsync-commit
+  to: gitsync-merge
+  condition: always
+  label: 所有变更已分组提交，开始合并到主分支并推送
+- from: gitsync-merge
+  to: gitsync-cleanup
+  condition: confirmed
+  label: 合并推送成功，清理 worktree
+- from: gitsync-merge
+  to: gitsync-merge
+  condition: failure
+  label: 合并冲突由用户解决后重新尝试合并推送
+  max_loop: 3
+  loop_counter_stage: gitsync-merge
+- from: orch-preflight
+  to: gitsync-check
+  condition: always
+  label: orchestrator 前置检测到 worktree 未同步，可插入 Git 同步作为环境准备
+concurrency_rules:
+  max_parallel_agents: 6
+  allowed_parallel_stages:
+  - - exec-impl
+  resource_conflict_check: true
+conflict_resolution:
+  priority_chain:
+  - level: P0
+    source: 项目结构设计文档
+    description: 项目结构、目录规范、模块边界——最高优先级
+  - level: P1
+    source: 落地规范
+    description: 精确编码规格、接口契约、类型定义
+  - level: P2
+    source: 设计文档
+    description: 模块功能描述、业务逻辑
+  default_strategy:
+    description: '当多份文档对同一接口/字段/行为定义不一致时：
+
+      1. 按 P0 > P1 > P2 优先级裁决
+
+      2. 同优先级内冲突：记录到 pending-confirmations.md，由 orch-contract 或 orch-impl-validate 阶段向用户确认
+
+      3. 未覆盖场景（字段未定义、边界值未声明）：升级为 confirmation_point 向用户确认
+
+      '
+  isolation_rules:
+  - rule_id: ISO-001
+    description: exec-impl SubAgent 禁止读取 .tmp/adversarial-tests/ 目录
+    enforcement: Prompt 铁律 + check_isolation.py 事后审计
+  - rule_id: ISO-002
+    description: testgen-create SubAgent 禁止读取实现源码文件
+    enforcement: Prompt 铁律 + check_isolation.py 事后审计
+  - rule_id: ISO-003
+    description: exec-fix SubAgent 仅可读取 failure-summary-round-{N}.md（隔离版本），不可读取测试代码
+    enforcement: validate_failure_summary.py 阻断级门控 + Prompt 铁律
+  - rule_id: ISO-004
+    description: testgen-fix SubAgent 仅可读取 test-defects-round-{N}.md（不含测试代码片段），不可读取实现代码
+    enforcement: Prompt 铁律 + 事后审计
+git_anchors:
+  enabled: true
+  tag_prefix: wf
+  preserve_paths:
+  - .agent/

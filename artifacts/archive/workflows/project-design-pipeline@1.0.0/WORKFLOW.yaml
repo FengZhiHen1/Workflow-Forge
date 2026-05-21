@@ -1,0 +1,348 @@
+schema_version: "2.0.0"
+workflow_id: "project-design-pipeline"
+version: "1.0.0"
+description: "将项目设计全流程整合为一条可循环工作流：技术栈设计 → 模块拆解 → 依赖分析 → 模块意图编写（循环）→ 模块规格编写（循环）。支持项目级矛盾回退和同步机制。"
+
+stages:
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    skill_id: pipeline-director
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "工作流虚拟起始点，直接流转到需求收集阶段。"
+
+  - stage_id: s01-collect-requirements
+    name: "收集需求与上下文"
+    skill_id: design-tech-stack
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "收集团队技术背景、部署环境、预期规模、运维能力等约束。confirmation_point 处向用户确认需求。"
+
+  - stage_id: s02-architecture-selection
+    name: "架构关节点选型"
+    skill_id: design-tech-stack
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "在前端框架、后端语言、数据存储、实时通信、认证方案、AI集成、部署方式、架构模式等关节点向用户提问并确认选型。"
+
+  - stage_id: s03-tech-stack-output
+    name: "技术栈方案确认与输出"
+    skill_id: design-tech-stack
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "分层细化技术栈方案，呈现完整概览供用户终审，确认后输出 docs/技术栈设计.md。"
+
+  - stage_id: s04-module-breakdown
+    name: "功能模块拆解"
+    skill_id: module-breakdown-designer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "先对齐拆解需求（范围、优先级、输出偏好），用户确认后执行模块提取、边界检查、行业补充，输出 docs/功能设计/功能模块全拆解.md。"
+
+  - stage_id: s06-dependency-analysis
+    name: "模块依赖分析输出"
+    skill_id: module-dependency-analyzer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "读取功能模块全拆解.md，推断数据依赖、调用依赖、时序依赖、共享资源依赖，检测循环依赖，输出多维依赖视图。"
+
+  - stage_id: s06b-project-sync-check
+    name: "项目级同步检查"
+    skill_id: pipeline-director
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "进入模块循环前的检查点：汇报当前项目级设计状态，检查是否有待同步的项目级矛盾。用户确认后继续，或选择同步后再进入。"
+
+  - stage_id: s07-select-module
+    name: "选择目标模块"
+    skill_id: module-intent-writer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "模块级循环入口。选择下一个要处理的模块，或选择结束工作流。"
+
+  - stage_id: s08-intent-clarify
+    name: "模块意图澄清"
+    skill_id: module-intent-writer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "核心模块多轮澄清/一般模块快速确认，Skill内部循环直到满足终止条件。通过PENDING_CONFIRM上报每轮问题。"
+
+  - stage_id: s09-intent-authorize
+    name: "意图文档书写授权"
+    skill_id: module-intent-writer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "汇总澄清共识，上报PENDING_CONFIRM请求书写授权。确认后进入生成阶段。"
+
+  - stage_id: s10-intent-generate
+    name: "生成意图文档"
+    skill_id: module-intent-writer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "按模板生成意图文档，输出到 docs/功能设计/[分组]/[编号]-[名称]/[编号]-[名称]-意图文档.md。"
+
+  - stage_id: s11-intent-freeze
+    name: "意图文档冻结授权"
+    skill_id: module-intent-writer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "最重要的门控。上报PENDING_CONFIRM请求冻结授权。冻结后方可进入规格编写阶段。"
+
+  - stage_id: s12-spec-prepare
+    name: "规格编写材料准备"
+    skill_id: module-spec-writer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "定位所有输入材料路径：意图文档、全局设计文档、契约索引、已有规格文档。"
+
+  - stage_id: s13-spec-research
+    name: "技术决策预研"
+    skill_id: spec-researcher
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "SubAgent读取全部项目设计文档，做出技术上最优决策，标记业务矛盾点。输出《技术决策完整报告》。"
+
+  - stage_id: s14-spec-contradiction
+    name: "业务矛盾处理"
+    skill_id: module-spec-writer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "条件触发Stage。接收spec-researcher报告中的矛盾清单，上报PENDING_CONFIRM请求用户裁决。"
+
+  - stage_id: s15-spec-design-doc
+    name: "生成设计文档瘦身版"
+    skill_id: module-spec-writer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "基于技术决策报告生成面向维护者的瘦身版设计文档。"
+
+  - stage_id: s16-spec-contract-draft
+    name: "对外接口契约草案"
+    skill_id: module-spec-writer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "基于设计文档生成对外接口类型草案，提取到 .tmp/contract-draft/。"
+
+  - stage_id: s17-spec-contract-harmonize
+    name: "契约协调审查"
+    skill_id: contract-harmonizer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: "SubAgent扫描已有契约，检查对外接口类型冲突或可复用项。输出《契约协调报告》。"
+
+  - stage_id: s18-spec-contract-conflict
+    name: "契约冲突处理"
+    skill_id: module-spec-writer
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "条件触发Stage。接收contract-harmonizer报告中的冲突清单，上报PENDING_CONFIRM请求用户裁决。"
+
+  - stage_id: s19-spec-internal-design
+    name: "对内设计与规格输出"
+    skill_id: module-spec-writer
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "在已锁定对外接口内设计内部实现，合并输出最终落地规范.md，更新契约索引。"
+
+  - stage_id: s20-next-module-confirm
+    name: "下一模块确认"
+    skill_id: pipeline-director
+    mandatory: true
+    confirmation_point: true
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "循环控制节点。汇报当前模块完成进度，上报PENDING_CONFIRM询问是否继续处理下一个模块。"
+
+edges:
+  - from: s00-workflow-start
+    to: s01-collect-requirements
+    condition: always
+  - from: s01-collect-requirements
+    to: s02-architecture-selection
+    condition: confirmed
+  - from: s01-collect-requirements
+    to: s01-collect-requirements
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s01-collect-requirements
+  - from: s02-architecture-selection
+    to: s03-tech-stack-output
+    condition: confirmed
+  - from: s02-architecture-selection
+    to: s02-architecture-selection
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s02-architecture-selection
+  - from: s03-tech-stack-output
+    to: s04-module-breakdown
+    condition: confirmed
+  - from: s03-tech-stack-output
+    to: s03-tech-stack-output
+    condition: rejected
+    max_loop: 2
+    loop_counter_stage: s03-tech-stack-output
+  - from: s04-module-breakdown
+    to: s06-dependency-analysis
+    condition: always
+  - from: s04-module-breakdown
+    to: s04-module-breakdown
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s04-module-breakdown
+  - from: s06-dependency-analysis
+    to: s06b-project-sync-check
+    condition: always
+  - from: s06b-project-sync-check
+    to: s07-select-module
+    condition: confirmed
+  - from: s06b-project-sync-check
+    to: s06b-project-sync-check
+    condition: rejected
+    max_loop: 2
+    loop_counter_stage: s06b-project-sync-check
+  - from: s07-select-module
+    to: s08-intent-clarify
+    condition: confirmed
+  - from: s08-intent-clarify
+    to: s09-intent-authorize
+    condition: confirmed
+  - from: s08-intent-clarify
+    to: s08-intent-clarify
+    condition: rejected
+    max_loop: 5
+    loop_counter_stage: s08-intent-clarify
+  - from: s09-intent-authorize
+    to: s10-intent-generate
+    condition: confirmed
+  - from: s09-intent-authorize
+    to: s08-intent-clarify
+    condition: rejected
+  - from: s10-intent-generate
+    to: s11-intent-freeze
+    condition: always
+  - from: s11-intent-freeze
+    to: s12-spec-prepare
+    condition: confirmed
+  - from: s11-intent-freeze
+    to: s10-intent-generate
+    condition: rejected
+  - from: s12-spec-prepare
+    to: s13-spec-research
+    condition: always
+  - from: s13-spec-research
+    to: s14-spec-contradiction
+    condition: failure
+  - from: s13-spec-research
+    to: s15-spec-design-doc
+    condition: success
+  - from: s14-spec-contradiction
+    to: s15-spec-design-doc
+    condition: confirmed
+  - from: s14-spec-contradiction
+    to: s14-spec-contradiction
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s14-spec-contradiction
+  - from: s15-spec-design-doc
+    to: s16-spec-contract-draft
+    condition: always
+  - from: s16-spec-contract-draft
+    to: s17-spec-contract-harmonize
+    condition: always
+  - from: s17-spec-contract-harmonize
+    to: s18-spec-contract-conflict
+    condition: failure
+  - from: s17-spec-contract-harmonize
+    to: s19-spec-internal-design
+    condition: success
+  - from: s18-spec-contract-conflict
+    to: s19-spec-internal-design
+    condition: confirmed
+  - from: s18-spec-contract-conflict
+    to: s18-spec-contract-conflict
+    condition: rejected
+    max_loop: 3
+    loop_counter_stage: s18-spec-contract-conflict
+  - from: s19-spec-internal-design
+    to: s20-next-module-confirm
+    condition: always
+  - from: s20-next-module-confirm
+    to: s07-select-module
+    condition: confirmed
+
+concurrency_rules:
+  max_parallel_agents: 1
+  allowed_parallel_stages: []
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+
+git_anchors:
+  enabled: true
+  tag_prefix: "wf"
+  preserve_paths:
+    - ".agent/"

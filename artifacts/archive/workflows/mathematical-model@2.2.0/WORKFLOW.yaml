@@ -1,0 +1,350 @@
+schema_version: "3.0.0"
+workflow_id: "mathematical-model"
+version: "2.2.0"
+description: "数学建模竞赛标准工作流 v2.2.0：升级 schema v3.0.0，动态路由、多小问并行、五组循环回退、对抗审查"
+max_parallel_agents: 6
+anchor_prefix: "wf"
+
+stages:
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    mandatory: true
+    confirmation_point: false
+
+  - stage_id: p0-init
+    name: "初始化"
+    skill_id: workflow-director
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    description: "创建工作目录结构、初始化 MANIFEST 和 VERSION.md"
+
+  - stage_id: p1a-topic-analysis
+    name: "选题分析"
+    skill_id: topic-analyst
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+    description: "评估赛题可行性、识别歧义、分析数据可得性，需用户确认"
+
+  - stage_id: p1b-problem-analysis
+    name: "小问分析"
+    skill_id: problem-decomposer
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    parallel:
+      source: p1a-topic-analysis
+      max_instances: 6
+    description: "针对单个小问进行拆解，提取约束、声明假设、定义 I/O 映射"
+
+  - stage_id: p1b-data-exploration
+    name: "数据侦察"
+    skill_id: data-scout
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    parallel:
+      source: p1b-problem-analysis
+      max_instances: 6
+    description: "针对小问字段做定向数据质量诊断和 EDA"
+
+  - stage_id: p1c-dependency-analysis
+    name: "依赖分析"
+    skill_id: dependency-analyst
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    description: "分析多小问间的输入输出依赖关系，确定执行 DAG"
+
+  - stage_id: p2-scheme-design
+    name: "方案设计"
+    skill_id: model-architect
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+    parallel:
+      source: p1c-dependency-analysis
+      max_instances: 6
+    description: "设计至少三套候选建模方案并输出对比总结，需用户确认锁定方案"
+
+  - stage_id: p2-adversarial-review
+    name: "方案对抗审查"
+    skill_id: scheme-reviewer
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    description: "以评委视角攻击方案，发现致命缺陷时触发修复循环"
+
+  - stage_id: p3-math-modeling
+    name: "数学建模"
+    skill_id: math-modeler
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    parallel:
+      source: p2-adversarial-review
+      max_instances: 6
+    description: "完成符号体系构建、公式推导、假设验证、误差与敏感性分析"
+
+  - stage_id: p3-code-planning
+    name: "代码规划"
+    skill_id: code-planner
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+    description: "展示代码实现规划，需用户确认后方可生成代码"
+
+  - stage_id: p3-code-core
+    name: "核心代码实现"
+    skill_id: code-builder
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    description: "生成主脚本、验证脚本、单元测试并运行 Toy Model 验证"
+
+  - stage_id: p3-code-extension
+    name: "扩展实现"
+    skill_id: code-builder
+    mandatory: false
+    confirmation_point: false
+    retry: 1
+    description: "生成并运行敏感性分析脚本，时间紧张时可跳过"
+
+  - stage_id: p4-validation
+    name: "验证评估"
+    skill_id: quality-inspector
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    parallel:
+      source: p3-code-extension
+      max_instances: 6
+    description: "独立审查验证结果、统计反向验证假设、四维度量化评分"
+
+  - stage_id: p4-repair
+    name: "修复路由"
+    skill_id: workflow-director
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+    description: "解析 quality-inspector 评估结果，向用户呈现修复选项并动态路由到对应修复目标"
+
+  - stage_id: p4-adversarial-review
+    name: "验证对抗审查"
+    skill_id: validation-reviewer
+    mandatory: true
+    confirmation_point: false
+    retry: 0
+    description: "攻击验证评估结果，发现致命缺陷时触发修复循环"
+
+  - stage_id: p5-complete
+    name: "工作流完成"
+    skill_id: workflow-director
+    mandatory: true
+    confirmation_point: true
+    retry: 0
+    description: "汇报工作流完成状态，冻结版本，需用户最终确认"
+
+  - stage_id: emergency-fallback
+    name: "应急降级"
+    skill_id: emergency-fallback
+    mandatory: false
+    confirmation_point: false
+    retry: 0
+    description: "时间门控触发或模型完全失效时激活保底方案"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    mandatory: true
+    confirmation_point: false
+
+edges:
+  # s00 → p0
+  - from: s00-workflow-start
+    to: p0-init
+    condition: always
+
+  # P0 → P1a
+  - from: p0-init
+    to: p1a-topic-analysis
+    condition: always
+
+  # P1a confirmed → P1b; rejected → 重做选题; loop_exceeded → 终止
+  - from: p1a-topic-analysis
+    to: p1b-problem-analysis
+    condition: confirmed
+    choice: "确认继续"
+  - from: p1a-topic-analysis
+    to: p1a-topic-analysis
+    condition: rejected
+    choice: "重新分析"
+    max_loop: 2
+  - from: p1a-topic-analysis
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # P1b → P1b-data（需全部小问的分析完成）
+  - from: p1b-problem-analysis
+    to: p1b-data-exploration
+    condition: always
+    aggregation: all
+
+  # P1b-data success → P1c（需全部小问的数据侦察完成）
+  - from: p1b-data-exploration
+    to: p1c-dependency-analysis
+    condition: success
+    aggregation: all
+
+  # P1b-data failure（数据不合格）→ 回退 P1b，最多 2 轮
+  - from: p1b-data-exploration
+    to: p1b-problem-analysis
+    condition: failure
+    max_loop: 2
+    loop_counter_stage: p1b-data-exploration
+
+  # P1b-data loop_exceeded → 应急
+  - from: p1b-data-exploration
+    to: emergency-fallback
+    condition: loop_exceeded
+
+  # P1c → P2
+  - from: p1c-dependency-analysis
+    to: p2-scheme-design
+    condition: always
+
+  # P2 confirmed → P2-对抗; rejected → 重做方案; loop_exceeded → 应急
+  - from: p2-scheme-design
+    to: p2-adversarial-review
+    condition: confirmed
+    choice: "锁定方案"
+    aggregation: all
+  - from: p2-scheme-design
+    to: p2-scheme-design
+    condition: rejected
+    choice: "重新设计"
+    max_loop: 2
+  - from: p2-scheme-design
+    to: emergency-fallback
+    condition: loop_exceeded
+
+  # P2-对抗 success → P3-math（需全部小问审查通过）
+  - from: p2-adversarial-review
+    to: p3-math-modeling
+    condition: success
+    aggregation: all
+
+  # P2-对抗 failure → 回退 P2，最多 3 轮
+  - from: p2-adversarial-review
+    to: p2-scheme-design
+    condition: failure
+    max_loop: 3
+    loop_counter_stage: p2-adversarial-review
+
+  # P2-对抗 loop_exceeded → 应急
+  - from: p2-adversarial-review
+    to: emergency-fallback
+    condition: loop_exceeded
+
+  # P3-math → P3-code-planning（需全部小问建模完成）
+  - from: p3-math-modeling
+    to: p3-code-planning
+    condition: always
+    aggregation: all
+
+  # P3-code-planning confirmed → P3-core; rejected → 重做规划; loop_exceeded → 应急
+  - from: p3-code-planning
+    to: p3-code-core
+    condition: confirmed
+    choice: "确认生成"
+  - from: p3-code-planning
+    to: p3-code-planning
+    condition: rejected
+    choice: "重新规划"
+    max_loop: 2
+  - from: p3-code-planning
+    to: emergency-fallback
+    condition: loop_exceeded
+
+  # P3-core → P3-extension
+  - from: p3-code-core
+    to: p3-code-extension
+    condition: always
+
+  # P3-extension → P4（完成后或跳过）
+  - from: p3-code-extension
+    to: p4-validation
+    condition: always
+
+  # P4 success → P4-对抗（需全部小问验证通过）
+  - from: p4-validation
+    to: p4-adversarial-review
+    condition: success
+    aggregation: all
+
+  # P4 failure → P4-repair（确认点路由）
+  - from: p4-validation
+    to: p4-repair
+    condition: failure
+    max_loop: 3
+    loop_counter_stage: p4-validation
+
+  # P4 loop_exceeded → 应急
+  - from: p4-validation
+    to: emergency-fallback
+    condition: loop_exceeded
+
+  # P4-repair 动态路由（三级回退）
+  - from: p4-repair
+    to: p3-code-core
+    condition: confirmed
+    choice: "调参修复"
+  - from: p4-repair
+    to: p3-math-modeling
+    condition: confirmed
+    choice: "假设修正"
+  - from: p4-repair
+    to: p1b-problem-analysis
+    condition: confirmed
+    choice: "重新拆解"
+  - from: p4-repair
+    to: p4-validation
+    condition: rejected
+    choice: "拒绝修复"
+
+  # P4-对抗 success → P5
+  - from: p4-adversarial-review
+    to: p5-complete
+    condition: success
+
+  # P4-对抗 failure → 回退 P4，最多 3 轮
+  - from: p4-adversarial-review
+    to: p4-validation
+    condition: failure
+    max_loop: 3
+    loop_counter_stage: p4-adversarial-review
+
+  # P4-对抗 loop_exceeded → 应急
+  - from: p4-adversarial-review
+    to: emergency-fallback
+    condition: loop_exceeded
+
+  # 应急 → P5
+  - from: emergency-fallback
+    to: p5-complete
+    condition: always
+
+  # P5 confirmed → 终止; rejected → 回退 P4; loop_exceeded → 终止
+  - from: p5-complete
+    to: s99-workflow-end
+    condition: confirmed
+    choice: "确认完成"
+  - from: p5-complete
+    to: p4-validation
+    condition: rejected
+    choice: "回退修改"
+    max_loop: 1
+    loop_counter_stage: p5-complete
+  - from: p5-complete
+    to: s99-workflow-end
+    condition: loop_exceeded

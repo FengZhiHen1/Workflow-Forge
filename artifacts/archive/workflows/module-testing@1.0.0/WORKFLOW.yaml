@@ -1,0 +1,236 @@
+schema_version: "2.0.0"
+workflow_id: "module-testing"
+version: "1.0.0"
+description: >
+  模块验收测试工作流：对抗性验证完成后，基于设计文档契约和白盒实现信息，
+  编写正式验收测试套件（进入版本控制）。核心特征：条件确认（重大差异/契约矛盾）、
+  Skill 内部自修正循环、阻断级质量门控。
+
+# =============================================================================
+# Stage 结构：s01-prep → s02-write → s03-report（3 业务 Stage）
+# 确认点分布：条件确认 + 条件确认 + 无确认
+# =============================================================================
+
+stages:
+  # ==================== 虚拟起止 ====================
+
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟起始阶段，触发工作流执行，直接流转到就绪与契约读取。"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    skill_id: null
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: "虚拟终止阶段，所有退出路径汇聚于此。"
+
+  # ==================== 业务阶段 ====================
+
+  - stage_id: s01-prep
+    name: "就绪与契约读取"
+    skill_id: module-test-prep
+    mandatory: true
+    confirmation_point: true
+    confirmation_conditional: true
+    confirmation_condition: "检测到重大差异（P0-P3 设计文档与实现代码不一致）"
+    confirmation_notes:
+      - "条件确认：仅当实现代码与设计文档契约存在重大差异时触发。无差异或仅微小差异时自动通过。"
+      - "用户决策内容：按契约修正实现 vs 按实现修正契约。"
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      遗留问题审查（读取 orchestrator 产物 contract-expectations.md、
+      function-signatures.json）→ 四级文档定位（P0: 独立双文件设计文档+落地规范 →
+      P1: 旧版单文件 → P2: 总设计文档 → P3: 其他位置）→ 白盒读取实现代码 →
+      逐项比对接口签名、类型定义、异常条件、状态机与设计文档的一致性 →
+      输出差异记录与契约理解。
+    inputs: []
+    outputs:
+      - prep_result.json
+
+  - stage_id: s02-write
+    name: "场景提取与测试编写"
+    skill_id: module-test-writer
+    mandatory: true
+    confirmation_point: true
+    confirmation_conditional: true
+    confirmation_condition: "测试期望与契约存在矛盾（契约暧昧/冲突/不可判定）"
+    confirmation_notes:
+      - "条件确认：仅当编写测试发现契约矛盾时触发（如契约对同一接口的描述存在内部冲突）。一般的实现缺陷不触发确认，仅记录不修改断言。"
+      - "用户决策内容：仲裁契约矛盾——以哪个契约版本为准编写测试断言。"
+    retry_policy:
+      max_attempts: 2
+      on: [timeout, error]
+    description: >
+      读取 s01-prep 的产物（契约理解、差异记录）→ 提取四类测试场景
+      （正向验收 / 边界条件 / 异常路径 / 业务规则）→ 引用 references/
+      编写验收测试代码（test-example.md 格式参考、assertion-standards.md 断言标准、
+      mock-standards.md Mock 标准、quality-checklist.md 质量检查清单）→
+      内部自检流水线（语法检查 py_compile → 导入验证 → 趋绿检测）→
+      运行测试 → 内部修正循环（测试代码 bug 时自行修复，不升为 Stage 循环）。
+      测试运行失败若判定为测试代码自身 bug，Skill 内部自行修正后重跑；
+      若判定为实现缺陷，记录缺陷但不修改断言。
+    inputs:
+      - prep_result.json
+    outputs:
+      - test-scenarios.md
+      - run_results.json
+
+  - stage_id: s03-report
+    name: "测试报告输出"
+    skill_id: module-test-reporter
+    mandatory: true
+    confirmation_point: false
+    retry_policy:
+      max_attempts: 1
+      on: []
+    description: >
+      读取 s02-write 产物（test-scenarios.md + run_results.json）→
+      运行 scripts/validate_header_consistency.py 阻断级门控
+      （验证测试文件头一致性，不通过则阻断）→
+      引用 references/report-template.md 降级模板生成 test-report.md →
+      最终产物：验收测试代码（进入版本控制）+ test-scenarios.md + test-report.md。
+    inputs:
+      - test-scenarios.md
+      - run_results.json
+    outputs:
+      - test-report.md
+
+# ==================== 流转边 ====================
+
+edges:
+  # -- s00 起始 --
+  - from: s00-workflow-start
+    to: s01-prep
+    condition: always
+    label: 工作流启动，进入就绪与契约读取
+
+  # -- s01 就绪与契约读取（条件确认：重大差异时触发） --
+  - from: s01-prep
+    to: s02-write
+    condition: confirmed
+    label: 无重大差异（自动通过）或用户确认差异处理方案，进入测试编写
+    note: >
+      无差异或仅微小差异时 orchestrator 自动确认（不需要用户介入）；
+      存在重大差异时触发确认点，用户决定"按契约"或"按实现"后继续。
+
+  - from: s01-prep
+    to: s01-prep
+    condition: rejected
+    label: 用户对差异处理方案不满意，重新读取与比对
+    max_loop: 2
+    loop_counter_stage: s01-prep
+    note: 最多允许 2 次重新比对。用户可调整差异处理策略后重新执行 s01-prep。
+
+  - from: s01-prep
+    to: s99-workflow-end
+    condition: loop_exceeded
+    max_loop: 2
+    loop_counter_stage: s01-prep
+    label: 差异确认达到最大次数上限（2 次），终止工作流
+
+  # -- s02 场景提取与测试编写（条件确认：契约矛盾时触发） --
+  - from: s02-write
+    to: s03-report
+    condition: confirmed
+    label: 无契约矛盾（自动通过）或用户仲裁矛盾，进入报告生成
+    note: >
+      无契约矛盾时 orchestrator 自动确认；
+      存在契约矛盾时触发确认点，用户仲裁契约版本后继续。
+
+  - from: s02-write
+    to: s02-write
+    condition: rejected
+    label: 用户对契约仲裁结果不满意，重新提取场景与编写测试
+    max_loop: 2
+    loop_counter_stage: s02-write
+    note: >
+      最多允许 2 次重新编写。用户调整契约仲裁策略后重新执行 s02-write。
+      注意：测试代码自身 bug 在 Skill 内部自行修正（不升为 Stage 循环），
+      仅契约矛盾引发的用户仲裁走此 reject → 自循环路径。
+
+  - from: s02-write
+    to: s99-workflow-end
+    condition: loop_exceeded
+    max_loop: 2
+    loop_counter_stage: s02-write
+    label: 契约仲裁达到最大次数上限（2 次），终止工作流
+
+  # -- s03 测试报告输出（无确认点，自动流转至终止） --
+  - from: s03-report
+    to: s99-workflow-end
+    condition: always
+    label: 报告生成完成（含 validate_header_consistency.py 门控验证），工作流终止
+    note: >
+      validate_header_consistency.py 为阻断级门控——不通过则本阶段失败，
+      由 retry_policy 控制重试。即使最终失败，仍流转到终止。
+
+# ==================== 并发与冲突规则 ====================
+
+concurrency_rules:
+  max_parallel_agents: 1
+  allowed_parallel_stages: []
+  resource_conflict_check: true
+
+conflict_resolution:
+  user_override_requires_confirm: true
+  mandatory_stage_skip_forbidden: true
+  report_deviation_required: true
+
+# ==================== 共享资源清单 ====================
+
+shared_resources:
+  - resource: references/report-template.md
+    type: reference
+    used_by: [s03-report]
+    owner: s03-report
+    description: 测试报告降级模板，s03-report 引用生成 test-report.md
+
+  - resource: references/test-example.md
+    type: reference
+    used_by: [s02-write]
+    owner: s02-write
+    description: 测试代码格式参考范例，s02-write 引用编写验收测试
+
+  - resource: references/assertion-standards.md
+    type: reference
+    used_by: [s02-write]
+    owner: s02-write
+    description: 断言编写标准，s02-write 引用确保断言规范一致
+
+  - resource: references/mock-standards.md
+    type: reference
+    used_by: [s02-write]
+    owner: s02-write
+    description: Mock 对象编写标准，s02-write 引用确保 Mock 规范一致
+
+  - resource: references/quality-checklist.md
+    type: reference
+    used_by: [s02-write]
+    owner: s02-write
+    description: 测试质量自检清单，s02-write 引用执行内部自检流水线
+
+  - resource: scripts/validate_header_consistency.py
+    type: script
+    used_by: [s03-report]
+    owner: workflow
+    description: 测试文件头一致性验证脚本（阻断级门控），工作流级共享
+
+# ==================== Git 锚点 ====================
+
+git_anchors:
+  enabled: true
+  tag_prefix: "wf"
+  preserve_paths:
+    - ".agent/"
