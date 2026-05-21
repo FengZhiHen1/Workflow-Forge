@@ -1,0 +1,237 @@
+---
+name: "学习笔记处理工作流"
+description: "将 PDF 教材/讲义自动转化为 Obsidian 可用的结构化原子笔记体系（MOC + 原子笔记 + 质量报告），动态加载任意领域配置"
+tags: [obsidian, pdf, 笔记, 知识管理, 原子化]
+---
+
+# 学习笔记处理工作流 (study-note-processor)
+
+> 将 PDF 教材/讲义自动转化为 Obsidian 可用的结构化原子笔记体系（MOC + 原子笔记 + 质量报告），最终由用户审视质量报告决定交付
+
+---
+
+## 工作流概览
+
+- **工作流 ID**：`study-note-processor`
+- **版本**：`1.3.1`
+- **Stage 数量**：6（含 2 个虚拟节点）
+- **确认点数量**：1（s04-quality-audit）
+- **最大并发**：1
+
+### 适用场景
+
+教材研读、课程笔记结构化、知识库建设。输入一份 PDF + 指定领域 + 作用域（一章/一节），输出 MOC 文件 + N 篇原子笔记 .md + 质量报告。
+
+### 流程图
+
+```mermaid
+flowchart TD
+    S00["s00-workflow-start<br/>工作流启动"]
+    S01["s01-pdf-parse<br/>PDF 材料预处理<br/>pdf-parser"]
+    S02["s02-moc-build<br/>MOC 知识骨架构建<br/>moc-architect"]
+    S03["s03-atomic-produce<br/>原子笔记批量生产<br/>atomic-producer"]
+    S04["s04-quality-audit<br/>格式审校与交付确认<br/>quality-auditor<br/>确认点"]
+    S99["s99-workflow-end<br/>工作流终止"]
+
+    S00 -->|always| S01
+    S01 -->|success| S02
+    S01 -->|failure| S99
+    S02 -->|success| S03
+    S02 -->|failure| S99
+    S03 -->|success| S04
+    S03 -->|failure| S99
+    S04 -->|confirmed| S99
+    S04 -->|"rejected → 增量重做"| S03
+    S04 -->|loop_exceeded| S99
+```
+
+---
+
+## Stage 说明
+
+### s00-workflow-start — 工作流启动
+虚拟起始点，无条件流转到 s01。
+
+### s01-pdf-parse — PDF 材料预处理
+- **目标**：`pdf-parser`
+- **确认点**：否
+- **Retry**：2 次
+- **描述**：调用 MinerU Precision Extract API，将 PDF 教材/讲义解析为结构化 Markdown。环境缺失时自动报错并提供修复指引。输出落盘到 `<work_dir>/.tmp/study-note-processor-<timestamp>/parsed_markdown.md`。失败后沿 failure edge 进入 s99 终止。
+
+### s02-moc-build — MOC 知识骨架构建
+- **目标**：`moc-architect`
+- **确认点**：否
+- **Retry**：1 次
+- **描述**：消费领域配置 + s01 产出的 Markdown，自动分析并产出带层级 `[[双链]]` 的 MOC（Map of Content），附 Mermaid 逻辑脉络图。MOC 是后续所有原子笔记的骨架，Skill 内部执行完整质量自检。失败后沿 failure edge 进入 s99 终止。
+
+### s03-atomic-produce — 原子笔记批量生产
+- **目标**：`atomic-producer`
+- **确认点**：否
+- **Retry**：2 次
+- **描述**：处理 MOC 中全部 H2 模块，逐个生产符合领域写作规范的原子笔记 .md 文件。**首次运行全量生产**；若存在 s04 产出的 fix_list.json，则进入**增量重做模式**——仅重新处理有质量问题的笔记，其余不变。失败模块在 MOC 中标注 warning，单个模块失败不影响其他模块。Stage 级失败后沿 failure edge 进入 s99 终止。
+
+### s04-quality-audit — 格式审校与交付确认
+- **目标**：`quality-auditor`
+- **确认点**：是
+- **Retry**：1 次
+- **描述**：轻量格式审计——检查原子笔记格式合规、文件存在性、MOC 双链有效性。可自动修复的格式问题直接修复，需重生成的问题写入 fix_list.json。输出简化质量报告。用户基于报告做出决策：
+  - **confirmed**：接受交付，进入 s99 终止
+  - **rejected**：打回重做，s03 读取 fix_list.json 仅重做问题笔记（最多 5 轮）
+  - **超限**：5 轮后仍未通过，自动终止
+
+### s99-workflow-end — 工作流终止
+虚拟终止点，所有路径汇聚于此。
+
+---
+
+## 技能清单
+
+| Skill ID | 对应 Stage | 说明 |
+|----------|-----------|------|
+| pdf-parser | s01-pdf-parse | 自包含 MinerU Precision API 调用脚本，含 `.env.example` 与 API 文档。输入 PDF 路径，轮询提取，输出结构化 Markdown |
+| moc-architect | s02-moc-build | 读取领域配置 + Markdown，分析知识结构，产出带 `[[双链]]` 的 MOC 与 Mermaid 逻辑图 |
+| atomic-producer | s03-atomic-produce | 按 H2 模块顺序遍历，生产符合领域写作规范的原子笔记 .md |
+| quality-auditor | s04-quality-audit | 对照格式契约与质量清单自动审校原子笔记，自动修复格式问题，输出质量报告 |
+
+---
+
+## 共享资源
+
+| 资源 | 路径 | 说明 | 使用者 |
+|------|------|------|--------|
+| 领域配置接口规范 | `references/domain-config/README.md` | 定义任何领域必须遵循的文件结构、必备章节、命名约定 | 工作流编排器、领域配置作者 |
+| 领域配置（动态加载） | `references/domain-config/{domain}/` | 领域原子分类体系、格式契约、各类别写作规范——唯一真相源 | moc-architect, atomic-producer, quality-auditor |
+| Obsidian 通用格式规则 | `references/obsidian-format-rules.md` | 所有领域通用的 Obsidian 格式规则 | moc-architect, atomic-producer, quality-auditor |
+| 输出目录规范 | `references/output-directory-spec.md` | 定义 Obsidian 仓库中的产物目录结构 | moc-architect, atomic-producer |
+| 质量检查清单 | `skills/quality-auditor/references/quality-checklist.md` | 原子笔记审校的检查项与评分标准 | quality-auditor |
+| MOC 模板 | `skills/moc-architect/references/moc-template.md` | MOC 文件的标准模板 | moc-architect |
+| MinerU API 文档 | `skills/pdf-parser/references/MinerU_API文档.md` | MinerU Precision Extract API 使用说明 | pdf-parser |
+
+---
+
+## 领域发现与动态加载
+
+本工作流**彻底独立于具体学科领域**。新增一个领域无需修改任何 Skill 或工作流代码，只需按接口规范创建领域配置目录即可。
+
+### 领域发现机制
+
+1. **扫描**：工作流启动时扫描 `references/domain-config/` 下所有子目录
+2. **验证**：检查每个领域是否包含必需文件：
+   - `atom-classification.md`（分类总表、Mermaid 节点形状、命名后缀）
+   - `format-contract.md`（frontmatter 规范、Callout 映射、类型特定格式规则）
+   - `categories/{type}.md`（与 `atom-classification.md` 分类总表一一对应）
+3. **加载**：用户指定领域后，工作流将 `{domain}` 注入所有 Skill，Skill 运行时动态读取
+
+### 领域配置接口规范
+
+完整接口定义见 `references/domain-config/README.md`。核心要求：
+
+```
+domain-config/
+├── README.md                 # 接口规范（必须）
+└── {domain}/                 # 领域目录（如 math、programming、physics）
+    ├── atom-classification.md    # 必须：分类体系 + Callout 映射 + Mermaid 形状 + 命名后缀
+    ├── format-contract.md        # 必须：frontmatter + Callout + 类型特定格式规则
+    └── categories/
+        └── {type}.md             # 必须：每个 YAML type 对应一个写作规范
+```
+
+### 现有领域
+
+| 领域 ID | 目录 | 分类数 | 说明 |
+|---------|------|--------|------|
+| math | `math/` | 4 类 | 定义/定理/性质/方法 |
+| programming | `programming/` | 7 类 | 语法/语义/API/惯用法/工具链/原则/对比 |
+
+---
+
+## 产物目录结构
+
+工作流运行时的完整产物树：
+
+```
+study-note-processor@1.3.1/
+├── WORKFLOW.yaml
+├── WORKFLOW.md
+├── references/
+│   ├── obsidian-format-rules.md
+│   ├── output-directory-spec.md
+│   └── domain-config/
+│       ├── README.md
+│       ├── math/
+│       │   ├── atom-classification.md
+│       │   ├── format-contract.md
+│       │   └── categories/
+│       │       ├── definition.md
+│       │       ├── theorem.md
+│       │       ├── property.md
+│       │       └── method.md
+│       └── programming/
+│           ├── atom-classification.md
+│           ├── format-contract.md
+│           └── categories/
+│               ├── syntax.md
+│               ├── semantics.md
+│               ├── api.md
+│               ├── idiom.md
+│               ├── toolchain.md
+│               ├── principle.md
+│               └── comparison.md
+└── skills/
+    ├── pdf-parser/
+    │   ├── SKILL.md
+    │   ├── .env.example
+    │   ├── scripts/
+    │   │   └── mineru_parse.py
+    │   └── references/
+    │       └── MinerU_API文档.md
+    ├── moc-architect/
+    │   ├── SKILL.md
+    │   └── references/
+    │       └── moc-template.md
+    ├── atomic-producer/
+    │   └── SKILL.md
+    └── quality-auditor/
+        ├── SKILL.md
+        └── references/
+            └── quality-checklist.md
+```
+
+---
+
+## v1.3.1 变更摘要
+
+| 变更项 | v1.3.0 | v1.3.1 | 理由 |
+|--------|--------|--------|------|
+| s02 failure 边 | 无，`always` 到 s03 | **新增 `failure → s99`，`success → s03`** | MOC 构建失败后不应盲目前进到原子笔记生产 |
+| s03 failure 边 | 无，`always` 到 s04 | **新增 `failure → s99`，`success → s04`** | Stage 级失败（非单个原子点）应终止而非盲目前进 |
+| s04→s03 回退粒度 | 整体重做全部原子笔记 | **增量重做**：s04 输出 fix_list.json，s03 仅重做问题笔记 | 减少 token 浪费，避免重复生成已通过的笔记 |
+
+## v1.3.0 变更摘要
+
+| 变更项 | v1.2.0 | v1.3.0 | 理由 |
+|--------|--------|--------|------|
+| schema_version | `2.0.0` | **`3.0.0`** | 对齐工作流规范 v3.0.0 |
+| 顶层结构 | concurrency_rules + conflict_resolution + git_anchors | **max_parallel_agents + anchor_prefix** | v3.0.0 简化顶层字段 |
+| retry_policy | `{max_attempts: N, on: [...]}` | **`retry: N-1`** | v3.0.0 用整数表示重试次数 |
+| s04 rejected | 无循环上限 | **max_loop: 5 + loop_exceeded edge** | v3.0.0 要求循环边界显式定义 |
+| s04 edges | condition 无 choice | **confirmed/rejected 均标注 choice** | v3.0.0 要求 choice 与 SubAgent 选项值严格一致 |
+| 虚拟 stage | skill_id: null + retry_policy | **省略执行目标和 retry** | v3.0.0 虚拟 stage 豁免字段 |
+| SKILL.md | 旧版 frontmatter（含 workflow_id/stage_id/version 等） | **v3.0.0 格式（仅 name + description）** | 对齐 Skill 定义规范 v3.0.0，Skill 不感知工作流协议 |
+
+## v1.2.0 变更摘要
+
+| 变更项 | v1.1.1 | v1.2.0 | 理由 |
+|--------|--------|--------|------|
+| 领域支持模式 | 硬编码支持 math / programming | **动态加载任意领域** | 彻底解耦工作流与具体领域，新增领域无需改代码 |
+| 领域配置接口 | 无 | **新增 `domain-config/README.md` 接口规范** | 明确领域作者必须提供的文件结构和必备章节 |
+| Skill 通用化 | 内置 math 的分类列表和格式假设 | **所有 Skill 声明"不内置任何领域假设"** | Skill 全部动态读取领域配置 |
+| 新增领域 | — | **programming 领域配置（9 文件）** | 覆盖语法/语义/API/惯用法/工具链/原则/对比七类 |
+
+## v1.1.1 变更摘要
+
+| 变更项 | v1.1.0 | v1.1.1 | 理由 |
+|--------|--------|--------|------|
+| s02 confirmation_point | true | **false** | MOC 质量足够，用户确认成为瓶颈 |
+| s03 fan-out 并发 | max_instances=3 | **移除** | 单实例速度足够，取消并发降低复杂度 |
+| s04 审校职责 | 3 轮全面审校 | **轻量格式审计** | 内容质量在生成阶段已足够，s04 只需格式把关 |

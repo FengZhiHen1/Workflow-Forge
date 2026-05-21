@@ -1,0 +1,240 @@
+schema_version: "3.0.0"
+workflow_id: "question-solution"
+version: "1.0.0"
+description: "单小问完整求解子工作流 v1.0.0：方案设计 → 对抗审查 → 建模 → 编码 → 验证 → 对抗审查，双层防御确保质量"
+max_parallel_agents: 1
+anchor_prefix: "wf"
+
+stages:
+  # ============================================================
+  # 虚拟起止节点
+  # ============================================================
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+
+  # ============================================================
+  # s01 方案设计（确认点：锁定方案 / 重新设计 / 放弃）
+  # ============================================================
+  - stage_id: s01-scheme-design
+    name: "方案设计"
+    skill_id: model-architect
+    mandatory: true
+    confirmation_point: true
+
+  # ============================================================
+  # s02 方案对抗审查（双层防御第一层）
+  # ============================================================
+  - stage_id: s02-adversarial-review
+    name: "方案对抗审查"
+    skill_id: scheme-reviewer
+    mandatory: true
+    confirmation_point: false
+
+  # ============================================================
+  # s03 数学建模（自动重试 1 次）
+  # ============================================================
+  - stage_id: s03-math-modeling
+    name: "数学建模"
+    skill_id: math-modeler
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+
+  # ============================================================
+  # s04 核心代码实现（自动重试 1 次）
+  # ============================================================
+  - stage_id: s04-code-core
+    name: "核心代码实现"
+    skill_id: code-builder
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+
+  # ============================================================
+  # s05 扩展实现（自动重试 1 次）
+  # ============================================================
+  - stage_id: s05-code-extension
+    name: "扩展实现"
+    skill_id: code-builder
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+
+  # ============================================================
+  # s06 验证评估（确认点：继续审查 / 调参修复 / 假设修正）
+  # ============================================================
+  - stage_id: s06-validation
+    name: "验证评估"
+    skill_id: quality-inspector
+    mandatory: true
+    confirmation_point: true
+    retry: 1
+
+  # ============================================================
+  # s07 验证对抗审查（双层防御第二层）
+  # ============================================================
+  - stage_id: s07-adversarial-review
+    name: "验证对抗审查"
+    skill_id: validation-reviewer
+    mandatory: true
+    confirmation_point: false
+
+edges:
+  # ============================================================
+  # 子工作流启动
+  # ============================================================
+  - from: s00-workflow-start
+    to: s01-scheme-design
+    condition: always
+
+  # ============================================================
+  # s01 方案设计确认点
+  # ============================================================
+  - from: s01-scheme-design
+    to: s02-adversarial-review
+    condition: confirmed
+    choice: "锁定方案"
+
+  - from: s01-scheme-design
+    to: s01-scheme-design
+    condition: rejected
+    choice: "重新设计"
+    max_loop: 2
+
+  - from: s01-scheme-design
+    to: s99-workflow-end
+    condition: rejected
+    choice: "放弃"
+
+  - from: s01-scheme-design
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # s02 方案对抗审查（致命缺陷 → 回退 s01）
+  # ============================================================
+  - from: s02-adversarial-review
+    to: s03-math-modeling
+    condition: success
+    aggregation: all
+
+  - from: s02-adversarial-review
+    to: s01-scheme-design
+    condition: failure
+    choice: "致命缺陷"
+    max_loop: 3
+
+  - from: s02-adversarial-review
+    to: s99-workflow-end
+    condition: failure
+
+  - from: s02-adversarial-review
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # s03 数学建模（失败自动重试，最终失败 → s99）
+  # ============================================================
+  - from: s03-math-modeling
+    to: s04-code-core
+    condition: success
+
+  - from: s03-math-modeling
+    to: s03-math-modeling
+    condition: failure
+    choice: "重试建模"
+    max_loop: 2
+
+  - from: s03-math-modeling
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # s04 核心代码实现
+  # ============================================================
+  - from: s04-code-core
+    to: s05-code-extension
+    condition: success
+
+  - from: s04-code-core
+    to: s04-code-core
+    condition: failure
+    choice: "重试实现"
+    max_loop: 2
+
+  - from: s04-code-core
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # s05 扩展实现
+  # ============================================================
+  - from: s05-code-extension
+    to: s06-validation
+    condition: success
+
+  - from: s05-code-extension
+    to: s05-code-extension
+    condition: failure
+    choice: "重试扩展"
+    max_loop: 2
+
+  - from: s05-code-extension
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # s06 验证评估确认点（三选一路由）
+  # ============================================================
+  - from: s06-validation
+    to: s07-adversarial-review
+    condition: confirmed
+    choice: "继续审查"
+
+  - from: s06-validation
+    to: s04-code-core
+    condition: confirmed
+    choice: "调参修复"
+    max_loop: 3
+    loop_counter_stage: s06-validation
+
+  - from: s06-validation
+    to: s03-math-modeling
+    condition: confirmed
+    choice: "假设修正"
+    max_loop: 3
+    loop_counter_stage: s06-validation
+
+  - from: s06-validation
+    to: s99-workflow-end
+    condition: rejected
+    choice: "放弃"
+
+  - from: s06-validation
+    to: s99-workflow-end
+    condition: loop_exceeded
+
+  # ============================================================
+  # s07 验证对抗审查（致命缺陷 → 回退 s06）
+  # ============================================================
+  - from: s07-adversarial-review
+    to: s99-workflow-end
+    condition: success
+    aggregation: all
+
+  - from: s07-adversarial-review
+    to: s06-validation
+    condition: failure
+    choice: "致命缺陷"
+    max_loop: 3
+
+  - from: s07-adversarial-review
+    to: s99-workflow-end
+    condition: failure
+
+  - from: s07-adversarial-review
+    to: s99-workflow-end
+    condition: loop_exceeded

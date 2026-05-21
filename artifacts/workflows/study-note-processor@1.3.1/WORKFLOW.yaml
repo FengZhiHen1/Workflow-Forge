@@ -1,0 +1,93 @@
+schema_version: "3.0.0"
+workflow_id: "study-note-processor"
+version: "1.3.1"
+description: "PDF → 结构化 Obsidian 原子笔记（MOC + 原子笔记），动态加载任意领域配置，增量重做机制，轻量格式审校交付"
+max_parallel_agents: 1
+anchor_prefix: "wf"
+
+stages:
+  - stage_id: s00-workflow-start
+    name: "工作流启动"
+    mandatory: true
+    confirmation_point: false
+
+  - stage_id: s01-pdf-parse
+    name: "PDF 材料预处理"
+    skill_id: pdf-parser
+    mandatory: true
+    confirmation_point: false
+    retry: 2
+    description: "调用 MinerU API 将 PDF 解析为结构化 Markdown"
+
+  - stage_id: s02-moc-build
+    name: "MOC 知识骨架构建"
+    skill_id: moc-architect
+    mandatory: true
+    confirmation_point: false
+    retry: 1
+    description: "消费领域配置与解析后 Markdown，自动产出带层级 [[双链]] 的 MOC 及 Mermaid 逻辑脉络图"
+
+  - stage_id: s03-atomic-produce
+    name: "原子笔记批量生产"
+    skill_id: atomic-producer
+    mandatory: true
+    confirmation_point: false
+    retry: 2
+    description: "处理 MOC 中 H2 模块，生产符合领域规范的原子笔记 .md。首次全量生产，打回重做时可增量只重做问题笔记"
+
+  - stage_id: s04-quality-audit
+    name: "格式审校与交付确认"
+    skill_id: quality-auditor
+    mandatory: true
+    confirmation_point: true
+    retry: 1
+    description: "轻量格式审计：检查原子笔记格式合规、文件存在性、MOC 双链有效性。输出简化质量报告，用户决定是否交付或打回重做"
+
+  - stage_id: s99-workflow-end
+    name: "工作流终止"
+    mandatory: true
+    confirmation_point: false
+
+edges:
+  - from: s00-workflow-start
+    to: s01-pdf-parse
+    condition: always
+
+  - from: s01-pdf-parse
+    to: s02-moc-build
+    condition: success
+
+  - from: s01-pdf-parse
+    to: s99-workflow-end
+    condition: failure
+
+  - from: s02-moc-build
+    to: s03-atomic-produce
+    condition: success
+
+  - from: s02-moc-build
+    to: s99-workflow-end
+    condition: failure
+
+  - from: s03-atomic-produce
+    to: s04-quality-audit
+    condition: success
+
+  - from: s03-atomic-produce
+    to: s99-workflow-end
+    condition: failure
+
+  - from: s04-quality-audit
+    to: s99-workflow-end
+    condition: confirmed
+    choice: "confirmed"
+
+  - from: s04-quality-audit
+    to: s03-atomic-produce
+    condition: rejected
+    choice: "rejected"
+    max_loop: 5
+
+  - from: s04-quality-audit
+    to: s99-workflow-end
+    condition: loop_exceeded
