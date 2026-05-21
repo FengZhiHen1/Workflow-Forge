@@ -1,0 +1,229 @@
+"""worktree 生命周期管理。"""
+
+from pathlib import Path
+
+from core.errors import GitError, WorktreeError
+from core.git_ops import (
+    git_checkout,
+    git_fetch,
+    git_merge,
+    git_rev_parse,
+    git_status_porcelain,
+    git_tag,
+    git_tag_delete,
+    git_worktree_add,
+    git_worktree_list,
+    git_worktree_remove,
+)
+from core.project import find_root
+
+
+def create_instance_worktree(instance_id: str, base_ref: str = "HEAD") -> Path:
+    """创建实例 worktree。"""
+    root = find_root()
+    wt_path = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    wt_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rc, _, stderr = git_worktree_add(root, wt_path, base_ref)
+    if rc != 0:
+        raise WorktreeError(f"Failed to create instance worktree: {stderr}", code="WORKTREE_CREATE_FAILED")
+
+    return wt_path
+
+
+def remove_instance_worktree(instance_id: str) -> None:
+    """移除实例 worktree。"""
+    root = find_root()
+    wt_path = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    if wt_path.exists():
+        git_worktree_remove(root, wt_path, force=True)
+
+
+def create_stage_worktree(instance_id: str, stage_instance_id: str) -> Path:
+    """创建 stage 级 worktree。"""
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    stage_wt = root / ".tmp" / "worktrees" / f"stage-{instance_id}-{stage_instance_id}"
+    stage_wt.parent.mkdir(parents=True, exist_ok=True)
+
+    # 获取实例 worktree 的 HEAD commit 作为 base_ref
+    rc, stdout, _ = git_rev_parse(inst_wt, "HEAD")
+    if rc != 0:
+        raise WorktreeError("Failed to get instance worktree HEAD", code="WORKTREE_CREATE_FAILED")
+    head = stdout.strip()
+
+    branch = f"wf-stage-{instance_id}-{stage_instance_id}"
+    rc, _, stderr = git_worktree_add(root, stage_wt, head, branch=branch)
+    if rc != 0:
+        raise WorktreeError(f"Failed to create stage worktree: {stderr}", code="WORKTREE_CREATE_FAILED")
+
+    return stage_wt
+
+
+def create_parallel_worktree(instance_id: str, stage_instance_id: str, idx: int) -> Path:
+    """创建 parallel 拆分 worktree。"""
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    para_wt = root / ".tmp" / "worktrees" / f"stage-{instance_id}-{stage_instance_id}_{idx}"
+    para_wt.parent.mkdir(parents=True, exist_ok=True)
+
+    # 获取实例 worktree 的 HEAD commit 作为 base_ref
+    rc, stdout, _ = git_rev_parse(inst_wt, "HEAD")
+    if rc != 0:
+        raise WorktreeError("Failed to get instance worktree HEAD", code="WORKTREE_CREATE_FAILED")
+    head = stdout.strip()
+
+    branch = f"wf-stage-{instance_id}-{stage_instance_id}_{idx}"
+    rc, _, stderr = git_worktree_add(root, para_wt, head, branch=branch)
+    if rc != 0:
+        raise WorktreeError(f"Failed to create parallel worktree: {stderr}", code="WORKTREE_CREATE_FAILED")
+
+    return para_wt
+
+
+def merge_stage_worktree(instance_id: str, stage_instance_id: str) -> tuple[bool, list[str]]:
+    """将 stage worktree 合并回实例 worktree。
+
+    返回 (success, conflict_files)
+    """
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    stage_wt = root / ".tmp" / "worktrees" / f"stage-{instance_id}-{stage_instance_id}"
+    branch = f"wf-stage-{instance_id}-{stage_instance_id}"
+
+    # fetch
+    rc, _, stderr = git_fetch(inst_wt, stage_wt, branch)
+    if rc != 0:
+        raise GitError(f"Fetch failed: {stderr}")
+
+    # merge
+    rc, stdout, stderr = git_merge(inst_wt, "FETCH_HEAD", no_ff=True)
+    if rc == 0:
+        # 无冲突，清理 stage worktree
+        git_worktree_remove(root, stage_wt, force=True)
+        return True, []
+
+    # 有冲突
+    conflict_files = _extract_conflict_files(inst_wt)
+    return False, conflict_files
+
+
+def resolve_conflicts_and_merge(instance_id: str, stage_instance_id: str) -> bool:
+    """冲突已解决后重试合并。"""
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    stage_wt = root / ".tmp" / "worktrees" / f"stage-{instance_id}-{stage_instance_id}"
+    branch = f"wf-stage-{instance_id}-{stage_instance_id}"
+
+    rc, _, stderr = git_fetch(inst_wt, stage_wt, branch)
+    if rc != 0:
+        raise GitError(f"Fetch failed: {stderr}")
+
+    rc, _, stderr = git_merge(inst_wt, "FETCH_HEAD", no_ff=True)
+    if rc == 0:
+        git_worktree_remove(root, stage_wt, force=True)
+        return True
+    return False
+
+
+def merge_instance_to_main(instance_id: str) -> tuple[bool, list[str]]:
+    """将实例 worktree 合入主仓库。
+
+    返回 (success, conflict_files)
+    """
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+
+    # 获取实例 worktree 当前分支的 HEAD
+    rc, stdout, _ = git_rev_parse(inst_wt, "HEAD")
+    if rc != 0:
+        raise GitError("Failed to get instance HEAD")
+    head = stdout.strip()
+
+    # 合并到主仓库
+    rc, _, stderr = git_merge(root, head, no_ff=False)
+    if rc == 0:
+        return True, []
+
+    conflict_files = _extract_conflict_files(root)
+    return False, conflict_files
+
+
+def tag_anchor(instance_id: str, tag_name: str, worktree: Path | None = None) -> None:
+    """在 worktree 内打锚点 tag。"""
+    root = find_root()
+    wt = worktree or (root / ".tmp" / "worktrees" / f"instance-{instance_id}")
+    rc, _, stderr = git_tag(wt, tag_name)
+    if rc != 0:
+        raise GitError(f"Failed to tag anchor: {stderr}")
+
+
+def remove_anchor(instance_id: str, tag_name: str, worktree: Path | None = None) -> None:
+    """移除锚点 tag。"""
+    root = find_root()
+    wt = worktree or (root / ".tmp" / "worktrees" / f"instance-{instance_id}")
+    rc, _, _ = git_tag_delete(wt, tag_name)
+    # 忽略错误，可能 tag 不存在
+
+
+def checkout_to_anchor(instance_id: str, tag_name: str) -> None:
+    """检出到指定锚点。"""
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    rc, _, stderr = git_checkout(inst_wt, tag_name)
+    if rc != 0:
+        raise GitError(f"Checkout failed: {stderr}")
+
+
+def _extract_conflict_files(repo: Path) -> list[str]:
+    """从 git status --porcelain 提取冲突文件。"""
+    rc, stdout, _ = git_status_porcelain(repo)
+    if rc != 0:
+        return []
+    conflicts: list[str] = []
+    for line in stdout.strip().splitlines():
+        if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD ") or line.startswith("AU ") or line.startswith("UA "):
+            parts = line.split()
+            if len(parts) >= 2:
+                conflicts.append(parts[1])
+        elif line.startswith("?? "):
+            pass
+    return conflicts
+
+
+def cleanup_orphan_worktrees() -> list[dict]:
+    """清理异常残留的 worktree。"""
+    root = find_root()
+    wt_dir = root / ".tmp" / "worktrees"
+    if not wt_dir.exists():
+        return []
+
+    removed: list[dict] = []
+    for d in wt_dir.iterdir():
+        if not d.is_dir():
+            continue
+        # 检查是否孤儿
+        if d.name.startswith("instance-"):
+            inst_id = d.name[len("instance-"):]
+            inst_path = root / ".agent" / "instances" / inst_id / "instance.json"
+            if not inst_path.exists():
+                git_worktree_remove(root, d, force=True)
+                removed.append({"worktree": str(d), "reason": "orphan instance"})
+        elif d.name.startswith("stage-"):
+            # 简化：检查对应 instance 是否 ACTIVE 但无 RUNNING/CONFLICT stage
+            parts = d.name[len("stage-"):].split("-")
+            if len(parts) >= 2:
+                inst_id = parts[0]
+                inst_path = root / ".agent" / "instances" / inst_id / "instance.json"
+                if inst_path.exists():
+                    import json
+                    try:
+                        data = json.loads(inst_path.read_text(encoding="utf-8"))
+                        running = [s for s in data.get("stages", []) if s.get("status") in ("RUNNING", "CONFLICT")]
+                        if not running:
+                            git_worktree_remove(root, d, force=True)
+                            removed.append({"worktree": str(d), "reason": "orphan stage"})
+                    except Exception:
+                        pass
+
+    return removed

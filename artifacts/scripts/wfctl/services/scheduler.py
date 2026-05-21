@@ -1,0 +1,955 @@
+"""next 调度核心（DAG 计算 + action 生成）。"""
+
+import time
+from pathlib import Path
+
+from core.timestamp import iso_timestamp, parse_iso_timestamp
+
+from core.dag import (
+    build_adjacency,
+    collect_downstream,
+    compute_ready,
+    get_confirmed_edges,
+    get_failure_edge,
+    get_loop_exceeded_edge,
+    get_rejected_edges,
+)
+from core.errors import GitError, InputError, StateError
+from core.git_ops import git_add_all, git_commit_file, git_rev_parse
+from core.lock import FileLock
+from core.project import find_root
+from core.schema.interface import EdgeCondition, StageSpec, StageTargetType, WorkflowSpec
+from core.schema.loader import load_workflow
+from services.message_handler import scan_messages
+from services.state_manager import (
+    append_deviation,
+    consume_messages,
+    load_instance,
+    save_instance,
+)
+from services.worktree_manager import (
+    create_parallel_worktree,
+    create_stage_worktree,
+    merge_stage_worktree,
+    tag_anchor,
+)
+
+
+def run_next(instance_id: str) -> dict:
+    """调度核心：消费消息，推进状态，返回 action。
+
+    同 Skill 延续检测：自动读取 .agent/running_agents.json（项目级唯一文件），
+    按 instance_id 过滤。编排器在 spawn/continue 后维护此文件。
+    """
+    root = find_root()
+    lock_path = root / ".agent" / "instances" / instance_id / "instance.json"
+    lock = FileLock(lock_path)
+
+    if not lock.acquire(timeout=15.0):
+        raise StateError("Could not acquire instance lock", code="STATE_LOCKED")
+
+    try:
+        instance = load_instance(instance_id)
+        if instance.get("status") != "ACTIVE":
+            return {"status": "error", "reason": f"Instance is {instance.get('status')}"}
+
+        spec = _load_workflow_for_instance(instance)
+        adj = build_adjacency(spec)
+
+        # 构建 worktree 映射（用于消费消息时注入 modified_files）
+        worktree_map = _build_worktree_map(instance_id, instance)
+
+        # 1. 消费消息
+        changes = consume_messages(instance_id, instance, worktree_map)
+        for change in changes:
+            if change["new_status"] == "ERROR":
+                append_deviation(
+                    instance_id,
+                    "STAGE_ERROR",
+                    change["message"].get("report", ""),
+                    stage_id=change["stage_id"],
+                )
+
+        # 2. 自动提交 DONE stage 的 worktree 变更 + 打锚点
+        _auto_commit_done_stages(instance_id, changes, worktree_map, spec.anchor_prefix)
+
+        # 3. 并发 stage 合并：将 DONE stage 的独立 worktree 合入实例 worktree
+        merge_conflict_actions = _merge_done_stage_worktrees(instance_id, instance, changes, worktree_map)
+
+        # 4. 子工作流检查
+        _check_child_workflows(instance, root)
+
+        # 5. parallel 拆分
+        _check_parallel(adj, instance, instance_id, spec)
+
+        # 5.5. 子工作流实例创建：为 PENDING 的 WORKFLOW 类型 stage 创建子 Instance
+        new_children = _spawn_child_workflows(instance, instance_id, spec)
+
+        # 6. ERROR 分支（处理 SubAgent 主动上报的 ERROR）
+        error_actions = _handle_error_stages(instance, adj, spec)
+
+        # 6.5. 超时检测（在 ERROR 分支之后执行——本轮超时的 stage 在下轮 next 中处理，
+        # 确保主 Agent 能观测到 ERROR 状态再执行 retry）
+        _check_timeouts(instance, spec, instance_id)
+
+        # 7. CONFLICT 分支
+        conflict_actions = _handle_conflict_stages(instance, instance_id)
+
+        # 8. 虚拟 stage 预处理——在就绪计算前，将满足条件的虚拟 stage 提前标记为 DONE，
+        # 确保下游真实 stage 在同一次 next 中被调度，避免需要两次 next 调用。
+        _resolve_virtual_stages(adj, instance, instance_id, spec)
+
+        # 9. 就绪计算
+        ready = compute_ready(adj, instance)
+
+        # 10. 调度约束
+        ready = _apply_scheduling_constraints(ready, instance, spec)
+
+        # 11. worktree 分配 + spawn/continue action
+        running_agents = _load_running_agents(instance_id)
+        stage_actions = _allocate_and_spawn(ready, instance, instance_id, adj, spec, running_agents)
+
+        # 12. 确认点聚合
+        confirm_action = _collect_confirm_action(instance)
+
+        # 13. 子工作流驱动：为新创建的子实例生成 child_next action
+        child_next_actions: list[dict] = []
+        for child_info in new_children:
+            child_next_actions.append({
+                "action": "child_next",
+                "child_instance_id": child_info["child_instance_id"],
+                "parent_stage_id": child_info["parent_stage_id"],
+                "parent_instance_id": instance_id,
+            })
+
+        # 14. 组装 actions
+        actions: list[dict] = []
+        actions.extend(error_actions)
+        actions.extend(conflict_actions)
+        actions.extend(merge_conflict_actions)
+        actions.extend(stage_actions)
+        actions.extend(child_next_actions)
+        if confirm_action:
+            actions.append(confirm_action)
+
+        # 15. 全部 DONE？执行实例合并
+        if _check_all_done(instance, spec):
+            merge_result = _execute_merge_to_main(instance, spec, instance_id)
+            actions.append(merge_result)
+
+        if not actions:
+            actions.append({"action": "await", "reason": "no ready stages"})
+
+        # 保存状态
+        save_instance(instance_id, instance)
+
+        return {"status": "ok", "actions": actions}
+    finally:
+        lock.release()
+
+
+def run_sync(instance_id: str) -> dict:
+    """sync：仅消费消息、更新 stage 状态，不计算 next。"""
+    root = find_root()
+    lock_path = root / ".agent" / "instances" / instance_id / "instance.json"
+    lock = FileLock(lock_path)
+
+    if not lock.acquire(timeout=15.0):
+        raise StateError("Could not acquire instance lock", code="STATE_LOCKED")
+
+    try:
+        instance = load_instance(instance_id)
+        worktree_map = _build_worktree_map(instance_id, instance)
+        changes = consume_messages(instance_id, instance, worktree_map)
+        save_instance(instance_id, instance)
+        return {"status": "ok", "changes": changes}
+    finally:
+        lock.release()
+
+
+def _load_workflow_for_instance(instance: dict) -> "WorkflowSpec":
+    """加载工作流 spec。"""
+    from services.resolver import find_workflow_dir
+    workflow_id = instance["workflow_id"]
+    version = instance.get("version", "")
+    wf_dir = find_workflow_dir(workflow_id, version if version else None)
+    yaml_file = wf_dir / "WORKFLOW.yaml"
+    return load_workflow(yaml_file)
+
+
+def _build_worktree_map(instance_id: str, instance: dict) -> dict[str, Path]:
+    """构建 stage_id → worktree 路径映射。
+
+    优先检查 stage 级 worktree 是否存在（文件系统优先），
+    不存在时回退到实例 worktree。这比仅依赖 stage_instance_id 命名约定更健壮。
+    """
+    root = find_root()
+    wt_map: dict[str, Path] = {}
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+
+    for s in instance.get("stages", []):
+        sid = s["stage_id"]
+        s_inst_id = s.get("stage_instance_id", sid)
+        stage_wt = root / ".tmp" / "worktrees" / f"stage-{instance_id}-{s_inst_id}"
+        if stage_wt.exists():
+            wt_map[sid] = stage_wt
+        else:
+            wt_map[sid] = inst_wt
+
+    return wt_map
+
+
+def _auto_commit_done_stages(instance_id: str, changes: list[dict], worktree_map: dict[str, Path], anchor_prefix: str) -> None:
+    """
+    对刚转为 DONE 的 stage，在其 worktree 中自动提交变更 + 打锚点。
+    提交信息 = report + wf-* trailers，通过 git commit -F 临时文件提交。
+    锚点按 stage_instance_id 命名，覆盖并行实例和普通 stage。
+    """
+    done_changes = [c for c in changes if c.get("new_status") == "DONE"]
+    for change in done_changes:
+        stage_id = change["stage_id"]
+        msg = change.get("message", {})
+        worktree = worktree_map.get(stage_id)
+        if not worktree or not worktree.exists():
+            continue
+
+        report = msg.get("report", f"stage {stage_id} done")
+        stage_inst = msg.get("stage_instance_id", stage_id)
+        message_id = msg.get("message_id", "")
+
+        full_msg = (
+            f"{report}\n\n"
+            f"wf-stage: {stage_inst}\n"
+            f"wf-instance: {instance_id}\n"
+            f"wf-message: {message_id}\n"
+        )
+
+        msg_file = worktree / ".wfctl_commit_msg"
+        msg_file.write_text(full_msg, encoding="utf-8")
+
+        rc, _, stderr = git_add_all(worktree)
+        if rc != 0:
+            msg_file.unlink(missing_ok=True)
+            raise GitError(f"auto-commit add failed for stage {stage_id}: {stderr}")
+
+        rc, _, stderr = git_commit_file(worktree, msg_file)
+        msg_file.unlink(missing_ok=True)
+        if rc != 0:
+            raise GitError(f"auto-commit failed for stage {stage_id}: {stderr}")
+
+        # 打锚点：commit 成功后立即打标，确保 rollback 可定位到该 stage
+        anchor = f"{anchor_prefix}-{instance_id}-{stage_inst}"
+        try:
+            tag_anchor(instance_id, anchor, worktree=worktree)
+        except Exception:
+            pass
+
+
+def _merge_done_stage_worktrees(instance_id: str, instance: dict, changes: list[dict], worktree_map: dict[str, Path]) -> list[dict]:
+    """将 DONE stage 的独立 worktree 按 stage_id 字典序依次合入实例 worktree。
+
+    规范 §十三：并发 stage 完成后，wfctl next 将临时分支合并回实例 worktree。
+    无冲突 → stage 保持 DONE，stage worktree 被自动清理。
+    有冲突 → stage 回退为 CONFLICT，返回 conflict action 供主 Agent 调度冲突消解。
+    """
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+
+    # 筛选：刚转为 DONE、且有独立 worktree 的 stage
+    merge_candidates: list[dict] = []
+    for change in changes:
+        if change.get("new_status") != "DONE":
+            continue
+        stage_id = change["stage_id"]
+        worktree = worktree_map.get(stage_id)
+        if not worktree or not worktree.exists():
+            continue
+        if worktree.resolve() == inst_wt.resolve():
+            continue
+        merge_candidates.append(change)
+
+    if not merge_candidates:
+        return []
+
+    # 按 stage_id 字典序排序，确保合并顺序确定性
+    merge_candidates.sort(key=lambda c: c["stage_id"])
+
+    stage_map = {s["stage_id"]: s for s in instance["stages"]}
+    conflict_actions: list[dict] = []
+
+    for change in merge_candidates:
+        stage_id = change["stage_id"]
+        stage_inst_id = change.get("message", {}).get("stage_instance_id", stage_id)
+
+        try:
+            success, conflict_files = merge_stage_worktree(instance_id, stage_inst_id)
+            if not success:
+                stage = stage_map.get(stage_id)
+                if stage:
+                    stage["status"] = "CONFLICT"
+                    stage["conflict_files"] = conflict_files
+                conflict_actions.append({
+                    "action": "conflict",
+                    "stage_id": stage_id,
+                    "worktree": str(worktree_map[stage_id].relative_to(root)),
+                    "conflict_files": conflict_files,
+                    "source_stage": stage_id,
+                })
+        except GitError:
+            stage = stage_map.get(stage_id)
+            if stage:
+                stage["status"] = "CONFLICT"
+            conflict_actions.append({
+                "action": "conflict",
+                "stage_id": stage_id,
+                "worktree": str(worktree_map[stage_id].relative_to(root)),
+                "conflict_files": [],
+                "source_stage": stage_id,
+            })
+
+    return conflict_actions
+
+
+def _check_child_workflows(instance: dict, root: Path) -> None:
+    """检查子工作流完成状态。仅检查 RUNNING 的 WORKFLOW stage。"""
+    for s in instance.get("stages", []):
+        if s.get("status") != "RUNNING":
+            continue
+        child_id = s.get("child_instance_id")
+        if not child_id:
+            continue
+        child_path = root / ".agent" / "instances" / child_id / "instance.json"
+        if not child_path.exists():
+            continue
+        try:
+            import json
+            child = json.loads(child_path.read_text(encoding="utf-8"))
+            if child.get("status") == "COMPLETED":
+                s["status"] = "DONE"
+                s["exit_condition"] = "success"
+            elif child.get("status") == "FAILED":
+                s["status"] = "ERROR"
+        except Exception:
+            pass
+
+
+def _check_parallel(adj, instance: dict, instance_id: str, spec) -> None:
+    """检查 parallel 拆分需求。"""
+    root = find_root()
+    stage_map = {s["stage_id"]: s for s in instance["stages"]}
+
+    for stage in spec.stages:
+        if not stage.parallel:
+            continue
+        # 检查上游是否已完成
+        source_stage = stage_map.get(stage.parallel.source)
+        if not source_stage or source_stage.get("status") != "DONE":
+            continue
+
+        # 检查是否已拆分
+        existing = [s for s in instance["stages"] if s["stage_id"] == stage.stage_id and s.get("fan_out_target")]
+        if existing:
+            continue
+
+        # 获取上游消息的 parallel_targets
+        msg_id = source_stage.get("output_message_id")
+        if not msg_id:
+            continue
+
+        msg_path = root / ".agent" / "instances" / instance_id / "messages" / f"{msg_id}.json"
+        if not msg_path.exists():
+            continue
+
+        try:
+            import json
+            msg = json.loads(msg_path.read_text(encoding="utf-8"))
+            targets = msg.get("parallel_targets", [])
+        except Exception:
+            continue
+
+        if not targets:
+            continue
+
+        max_inst = stage.parallel.max_instances
+        if max_inst:
+            targets = targets[:max_inst]
+
+        # 创建 parallel stage 实例
+        new_stages: list[dict] = []
+        for idx, target in enumerate(targets):
+            stage_inst_id = f"{stage.stage_id}_{idx}"
+            new_stages.append({
+                "stage_id": stage.stage_id,
+                "stage_instance_id": stage_inst_id,
+                "status": "PENDING",
+                "agent_id": None,
+                "system_agent_id": None,
+                "output_message_id": None,
+                "loop_counter": 0,
+                "attempt_count": 0,
+                "confirmed": False,
+                "started_at": None,
+                "model": stage.model,
+                "child_instance_id": None,
+                "fan_out_target": target,
+            })
+
+        # 替换原有的单 stage
+        instance["stages"] = [s for s in instance["stages"] if not (s["stage_id"] == stage.stage_id and s.get("stage_instance_id") == stage.stage_id)]
+        instance["stages"].extend(new_stages)
+
+
+def _spawn_child_workflows(instance: dict, instance_id: str, spec) -> list[dict]:
+    """为 PENDING 的 WORKFLOW 类型 stage 实例创建子工作流 Instance。
+
+    子 worktree 基于父实例 worktree HEAD 创建，继承父级所有已完成 stage 的文件产物。
+    创建后 stage 状态 → RUNNING，child_instance_id 写入关联。
+    返回新创建的子实例信息列表 [{child_instance_id, parent_stage_id}]。
+    """
+    root = find_root()
+    stage_specs = {s.stage_id: s for s in spec.stages}
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    created: list[dict] = []
+
+    # 获取父实例 worktree HEAD 作为子 worktree 基准
+    rc, head_ref, _ = git_rev_parse(inst_wt, "HEAD")
+    base_ref = head_ref.strip() if rc == 0 else "HEAD"
+
+    for s in instance["stages"]:
+        if s.get("status") != "PENDING":
+            continue
+        stage_id = s["stage_id"]
+        stage_spec = stage_specs.get(stage_id)
+        if not stage_spec or stage_spec.target_type != StageTargetType.WORKFLOW:
+            continue
+
+        # 解析 workflow 引用: "question-solution@1.0.0"
+        wf_ref = stage_spec.target
+        if "@" in wf_ref:
+            child_wf_id, child_version = wf_ref.split("@", 1)
+        else:
+            child_wf_id, child_version = wf_ref, None
+
+        # 构建子实例 goal（含 fan_out_target 上下文）
+        fan_out = s.get("fan_out_target") or {}
+        goal_parts = [fan_out.get("label", stage_id)]
+        if fan_out.get("context"):
+            goal_parts.append(fan_out["context"])
+        child_goal = "：".join(goal_parts)
+
+        from services.creator import create_instance as _create_child
+        child_result = _create_child(
+            workflow_id=child_wf_id,
+            version=child_version,
+            goal=child_goal,
+            parent_instance_id=instance_id,
+            worktree_base_ref=base_ref,
+        )
+
+        s["child_instance_id"] = child_result["instance_id"]
+        s["status"] = "RUNNING"
+        s["started_at"] = iso_timestamp()
+        created.append({
+            "child_instance_id": child_result["instance_id"],
+            "parent_stage_id": stage_id,
+        })
+
+    return created
+
+
+def _check_timeouts(instance: dict, spec, instance_id: str) -> None:
+    """检测 RUNNING stage 是否超时，自动写入 ERROR 并追加 deviation。
+
+    宿主平台在 timeout_seconds 到期后终止 SubAgent 并通知主 Agent。
+    主 Agent 调用 next，wfctl 发现 RUNNING stage 无新消息且已超时 → 自动 ERROR。
+    """
+    root = find_root()
+    stage_spec_map = {s.stage_id: s for s in spec.stages}
+
+    for s in instance["stages"]:
+        if s.get("status") != "RUNNING":
+            continue
+
+        started_at = s.get("started_at")
+        if not started_at:
+            continue
+
+        stage_spec = stage_spec_map.get(s["stage_id"])
+        if not stage_spec or not stage_spec.timeout_seconds:
+            continue
+
+        try:
+            elapsed = time.time() - parse_iso_timestamp(started_at)
+        except (ValueError, OSError):
+            continue
+
+        if elapsed > stage_spec.timeout_seconds:
+            stage_id = s["stage_id"]
+            s["status"] = "ERROR"
+            s["started_at"] = None
+
+            # 写入超时消息到消息池（由后续 consume_messages 消费并写入 timeline）
+            messages_dir = root / ".agent" / "instances" / instance_id / "messages"
+            messages_dir.mkdir(parents=True, exist_ok=True)
+            import uuid
+            msg_id = f"msg-{uuid.uuid4().hex[:8]}"
+            msg = {
+                "schema_version": "3.0.0",
+                "message_id": msg_id,
+                "instance_id": instance_id,
+                "stage_id": stage_id,
+                "stage_instance_id": s.get("stage_instance_id", stage_id),
+                "status": "ERROR",
+                "report": f"Stage timed out after {stage_spec.timeout_seconds}s",
+                "checkpoint_summary": "",
+                "confirm_questions": [],
+                "parallel_targets": None,
+                "modified_files": [],
+                "timestamp": iso_timestamp(),
+            }
+            from core.atomic_write import atomic_write_json
+            atomic_write_json(messages_dir / f"{msg_id}.json", msg)
+
+            append_deviation(
+                instance_id,
+                "STAGE_TIMEOUT",
+                f"Stage {stage_id} timed out after {elapsed:.0f}s",
+                stage_id=stage_id,
+            )
+
+
+def _resolve_virtual_stages(adj, instance: dict, instance_id: str, spec) -> None:
+    """预处理虚拟 stage：在就绪计算前将满足条件的虚拟 stage 标为 DONE。
+
+    虚拟 stage（如 s00-workflow-start）无业务逻辑，上游满足即应立即标记 DONE。
+    这样下游真实 stage 可在同一次 next 中进入就绪列表，避免多余的 await 往返。
+    循环处理以支持级联虚拟 stage（s00-virtual → s01-virtual → s02-real）。
+    """
+    from core.schema.interface import StageTargetType
+
+    stage_map = {s["stage_id"]: s for s in instance["stages"]}
+    stage_specs = {s.stage_id: s for s in spec.stages}
+
+    changed = True
+    while changed:
+        changed = False
+        for stage_id, stage_spec in stage_specs.items():
+            if stage_spec.target_type != StageTargetType.VIRTUAL:
+                continue
+            state = stage_map.get(stage_id)
+            if not state or state.get("status") != "PENDING":
+                continue
+            upstream_edges = adj.incoming.get(stage_id, [])
+            if _all_satisfied_virtual(upstream_edges, stage_map):
+                state["status"] = "DONE"
+                # 打锚点
+                anchor = f"{spec.anchor_prefix}-{instance_id}-{stage_id}"
+                try:
+                    tag_anchor(instance_id, anchor)
+                except Exception:
+                    pass
+                changed = True
+
+
+def _all_satisfied_virtual(upstream_edges: list, stage_states: dict) -> bool:
+    """虚拟 stage 的就绪判断：只检查上游是否 DONE（虚拟 stage 不参与 error/reject 等复杂逻辑）。"""
+    if not upstream_edges:
+        return True
+    from core.schema.interface import EdgeCondition
+    for edge in upstream_edges:
+        upstream_stage = stage_states.get(edge.from_stage, {})
+        upstream_status = upstream_stage.get("status", "PENDING")
+        if edge.condition in (EdgeCondition.ALWAYS, EdgeCondition.SUCCESS, EdgeCondition.CONFIRMED,
+                              EdgeCondition.REJECTED, EdgeCondition.LOOP_EXCEEDED, EdgeCondition.FAILURE):
+            if upstream_status == "DONE":
+                return True
+    return False
+
+
+def _handle_error_stages(instance: dict, adj, spec) -> list[dict]:
+    """处理 ERROR 分支。"""
+    actions: list[dict] = []
+    stage_map = {s["stage_id"]: s for s in instance["stages"]}
+
+    for s in instance["stages"]:
+        if s.get("status") != "ERROR":
+            continue
+
+        stage_id = s["stage_id"]
+        stage_spec = adj.stages.get(stage_id)
+        max_attempts = stage_spec.retry if stage_spec else 0
+
+        attempt_count = s.get("attempt_count", 0)
+
+        if attempt_count < max_attempts:
+            s["status"] = "PENDING"
+            s["attempt_count"] = attempt_count + 1
+            actions.append({
+                "action": "retry",
+                "stage_id": stage_id,
+                "attempt": s["attempt_count"],
+            })
+            continue
+
+        # 重试耗尽
+        failure_edge = get_failure_edge(adj, stage_id)
+        loop_counter = s.get("loop_counter", 0)
+        if failure_edge and loop_counter < (failure_edge.max_loop or 0):
+            target_stage = stage_map.get(failure_edge.to_stage)
+            if not target_stage:
+                instance["status"] = "FAILED"
+                actions.append({
+                    "action": "terminate",
+                    "status": "FAILED",
+                    "reason": "failure edge targets non-existent stage",
+                })
+                continue
+            target_stage["status"] = "PENDING"
+            target_stage["loop_counter"] = loop_counter + 1
+            actions.append({
+                "action": "spawn",
+                "stage_id": failure_edge.to_stage,
+                "reason": "failure-edge",
+            })
+            continue
+
+        # failure edge 也耗尽
+        loop_exceeded_edge = get_loop_exceeded_edge(adj, stage_id)
+        if loop_exceeded_edge:
+            target_stage = stage_map.get(loop_exceeded_edge.to_stage)
+            if target_stage:
+                target_stage["status"] = "PENDING"
+            actions.append({
+                "action": "spawn",
+                "stage_id": loop_exceeded_edge.to_stage,
+                "reason": "loop-exceeded",
+            })
+            continue
+
+        # 无可用 handler
+        instance["status"] = "FAILED"
+        actions.append({
+            "action": "terminate",
+            "status": "FAILED",
+            "reason": f"no handler for stage {stage_id} error",
+        })
+
+    return actions
+
+
+def _handle_conflict_stages(instance: dict, instance_id: str) -> list[dict]:
+    """处理 CONFLICT 分支：尝试重试合并。"""
+    actions: list[dict] = []
+    for s in instance["stages"]:
+        if s.get("status") != "CONFLICT":
+            continue
+
+        stage_id = s["stage_id"]
+        stage_inst_id = s.get("stage_instance_id", stage_id)
+
+        from services.worktree_manager import resolve_conflicts_and_merge
+        try:
+            success = resolve_conflicts_and_merge(instance_id, stage_inst_id)
+            if success:
+                s["status"] = "DONE"
+                # 打锚点
+                spec = _load_workflow_for_instance(instance)
+                anchor = f"{spec.anchor_prefix}-{instance_id}-{stage_inst_id}"
+                tag_anchor(instance_id, anchor)
+            else:
+                actions.append({
+                    "action": "conflict",
+                    "stage_id": stage_id,
+                    "conflict_files": s.get("conflict_files", []),
+                    "source_stage": stage_id,
+                })
+        except GitError as e:
+            actions.append({
+                "action": "conflict",
+                "stage_id": stage_id,
+                "conflict_files": s.get("conflict_files", []),
+                "source_stage": stage_id,
+            })
+
+    return actions
+
+
+def _apply_scheduling_constraints(ready: list[str], instance: dict, spec) -> list[str]:
+    """应用 exclusive 和 max_parallel_agents 约束。"""
+    running = [s for s in instance["stages"] if s.get("status") == "RUNNING"]
+
+    # 有 exclusive RUNNING → 过滤掉所有就绪 stage
+    running_stage_ids = {s["stage_id"] for s in running}
+    stage_spec_map = {s.stage_id: s for s in spec.stages}
+    if any(stage_spec_map.get(sid) and stage_spec_map[sid].exclusive for sid in running_stage_ids):
+        return []
+
+    # max_parallel_agents
+    max_parallel = spec.max_parallel_agents
+    if len(running) >= max_parallel:
+        return []
+
+    # 最多再启动 max_parallel - len(running) 个
+    available_slots = max_parallel - len(running)
+    return ready[:available_slots]
+
+
+def _is_parallel_instance(stage_inst_id: str) -> bool:
+    """判断 stage_instance_id 是否为 parallel 拆分实例（含 _<digit> 后缀）。"""
+    parts = stage_inst_id.rsplit("_", 1)
+    return len(parts) == 2 and parts[1].isdigit()
+
+
+def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj, spec,
+                        running_agents: list[dict]) -> list[dict]:
+    """为就绪 stage 分配 worktree 并生成 spawn/continue action。
+
+    同 Skill 延续检测（§6.5）：对每个就绪 stage，查 running_agents 中是否有
+    同 skill_id 的条目。命中 → continue action；未命中 → spawn action。
+    parallel 拆分实例不参与映射表。
+    """
+    if not ready:
+        return []
+
+    root = find_root()
+    actions: list[dict] = []
+
+    # 构建 stage 状态查找表
+    stage_map = {s["stage_id"]: s for s in instance["stages"]}
+
+    # 判断是否需要拆分 worktree
+    multi_ready = len(ready) > 1
+
+    for stage_id in ready:
+        stage_spec = adj.stages.get(stage_id)
+        if not stage_spec:
+            continue
+        if stage_spec.target_type == StageTargetType.VIRTUAL:
+            stage_state = stage_map.get(stage_id)
+            if stage_state:
+                stage_state["status"] = "DONE"
+            continue
+
+        if stage_spec.target_type == StageTargetType.WORKFLOW:
+            continue
+
+        stage_state = stage_map.get(stage_id)
+        if not stage_state:
+            continue
+
+        stage_inst_id = stage_state.get("stage_instance_id", stage_id)
+        is_parallel = stage_inst_id != stage_id or stage_state.get("fan_out_target")
+
+        # 6.5 同 Skill 延续检测：parallel 实例不参与映射表
+        skill_id = stage_spec.target
+        matched_agent = None
+        if not is_parallel:
+            matched_agent = _lookup_running_agent(running_agents, skill_id)
+
+        # worktree 分配（spawn 和 continue 完全一致）
+        if multi_ready or is_parallel:
+            if _is_parallel_instance(stage_inst_id):
+                base_id, idx_str = stage_inst_id.rsplit("_", 1)
+                worktree = create_parallel_worktree(instance_id, base_id, int(idx_str))
+            else:
+                worktree = create_stage_worktree(instance_id, stage_inst_id)
+        else:
+            worktree = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+
+        # 更新 stage 状态
+        stage_state["status"] = "RUNNING"
+        stage_state["started_at"] = iso_timestamp()
+
+        # 构建 context
+        context = _build_context(stage_id, adj, instance)
+
+        needs_targets = any(
+            s.parallel and s.parallel.source == stage_id
+            for s in spec.stages
+        )
+
+        if matched_agent:
+            # 同 Skill 延续：标记上游 stage 的 continued_to
+            prev_stage_id = matched_agent["stage_id"]
+            prev_stage = stage_map.get(prev_stage_id)
+            if prev_stage:
+                prev_stage["continued_to"] = stage_id
+
+            sys_id = matched_agent["system_agent_id"]
+            stage_state["system_agent_id"] = sys_id
+
+            # 更新 running_agents.json 中的 stage_id
+            _save_running_agent(instance_id, skill_id, sys_id, stage_id)
+
+            actions.append({
+                "action": "continue",
+                "stage_id": stage_id,
+                "skill_id": skill_id,
+                "worktree": str(worktree.relative_to(root)),
+                "system_agent_id": sys_id,
+                "requires_parallel_targets": needs_targets,
+                "context": context,
+            })
+        else:
+            actions.append({
+                "action": "spawn",
+                "stage_id": stage_id,
+                "skill_id": skill_id,
+                "worktree": str(worktree.relative_to(root)),
+                "requires_parallel_targets": needs_targets,
+                "context": context,
+            })
+
+    return actions
+
+
+def _load_running_agents(instance_id: str) -> list[dict]:
+    """从 .agent/running_agents.json 读取项目级存活 SubAgent 列表，
+    按 instance_id 过滤，仅返回当前实例的条目。
+    """
+    root = find_root()
+    path = root / ".agent" / "running_agents.json"
+    if not path.exists():
+        return []
+    try:
+        import json
+        all_agents = json.loads(path.read_text(encoding="utf-8"))
+        return [a for a in all_agents if a.get("instance_id") == instance_id]
+    except Exception:
+        return []
+
+
+def _save_running_agent(instance_id: str, skill_id: str, system_agent_id: str, stage_id: str) -> None:
+    """追加或更新 running_agents.json 中的条目（按 system_agent_id 去重）。"""
+    root = find_root()
+    path = root / ".agent" / "running_agents.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    import json
+    agents: list[dict] = []
+    if path.exists():
+        try:
+            agents = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # 按 system_agent_id 去重：移除同 ID 的旧条目
+    agents = [a for a in agents if a.get("system_agent_id") != system_agent_id]
+    agents.append({
+        "skill_id": skill_id,
+        "system_agent_id": system_agent_id,
+        "stage_id": stage_id,
+        "instance_id": instance_id,
+    })
+    from core.atomic_write import atomic_write_json
+    atomic_write_json(path, agents)
+
+
+def _lookup_running_agent(running_agents: list[dict], skill_id: str) -> dict | None:
+    """在 running_agents 中查找同 skill_id 的存活 SubAgent。
+
+    返回命中条目或 None。多条命中时取第一条。
+    """
+    for agent in running_agents:
+        if agent.get("skill_id") == skill_id:
+            return agent
+    return None
+
+
+def _build_context(stage_id: str, adj, instance: dict) -> dict:
+    """构建传递给 SubAgent 的上下文。"""
+    # 上游摘要
+    upstream_summaries = []
+    for edge in adj.incoming.get(stage_id, []):
+        upstream_stage = next((s for s in instance["stages"] if s["stage_id"] == edge.from_stage), None)
+        if upstream_stage and upstream_stage.get("output_message_id"):
+            upstream_summaries.append({
+                "stage_id": edge.from_stage,
+                "message_id": upstream_stage["output_message_id"],
+            })
+
+    return {
+        "upstream": upstream_summaries,
+    }
+
+
+def _collect_confirm_action(instance: dict) -> dict | None:
+    """聚合 AWAITING_CONFIRM stages——含父实例自身和子工作流实例。"""
+    root = find_root()
+    pending: list[dict] = []
+
+    # 1. 父实例自身的 AWAITING_CONFIRM
+    for s in instance.get("stages", []):
+        if s.get("status") == "AWAITING_CONFIRM":
+            pending.append({
+                "stage_id": s["stage_id"],
+                "instance_id": instance["instance_id"],
+                "questions": s.get("confirm_questions", []),
+            })
+
+    # 2. 子工作流实例中的 AWAITING_CONFIRM
+    parent_instance_id = instance["instance_id"]
+    children_dir = root / ".agent" / "instances" / parent_instance_id / "children"
+    if children_dir.exists():
+        import json as _json
+        for child_dir in children_dir.iterdir():
+            child_json = child_dir / "instance.json"
+            if not child_json.exists():
+                continue
+            try:
+                child = _json.loads(child_json.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for child_s in child.get("stages", []):
+                if child_s.get("status") != "AWAITING_CONFIRM":
+                    continue
+                # 找到对应的父 stage
+                parent_stage = next(
+                    (s for s in instance.get("stages", [])
+                     if s.get("child_instance_id") == child.get("instance_id")),
+                    None,
+                )
+                pending.append({
+                    "stage_id": child_s["stage_id"],
+                    "instance_id": child["instance_id"],
+                    "parent_stage_id": parent_stage["stage_id"] if parent_stage else None,
+                    "questions": child_s.get("confirm_questions", []),
+                })
+
+    if not pending:
+        return None
+
+    return {"action": "confirm", "pending": pending}
+
+
+def _check_all_done(instance: dict, spec) -> bool:
+    """检查是否所有非虚拟 stage 都 DONE。"""
+    non_virtual = [s for s in spec.stages if s.target_type != StageTargetType.VIRTUAL]
+    if not non_virtual:
+        return False
+    stage_map = {s["stage_id"]: s for s in instance["stages"]}
+    return all(stage_map.get(s.stage_id, {}).get("status") == "DONE" for s in non_virtual)
+
+
+def _execute_merge_to_main(instance: dict, spec, instance_id: str) -> dict:
+    """执行实例 worktree 合入主仓库（wfctl 是 git 操作的唯一执行者）。
+
+    调度计算与副作用分离：此函数仅在所有 stage DONE 后调用，
+    不参与 DAG 计算或 action 生成。
+    """
+    from services.worktree_manager import merge_instance_to_main
+    try:
+        success, conflict_files = merge_instance_to_main(instance_id)
+        if success:
+            instance["status"] = "COMPLETED"
+            anchor = f"{spec.anchor_prefix}-{instance_id}-final"
+            tag_anchor(instance_id, anchor)
+            return {"action": "merge_to_main", "status": "completed"}
+        else:
+            return {
+                "action": "conflict",
+                "conflict_files": conflict_files,
+                "worktree": ".",
+            }
+    except GitError as e:
+        return {"action": "merge_to_main", "status": "error", "reason": str(e)}
