@@ -6,6 +6,7 @@ from pathlib import Path
 from core.timestamp import iso_timestamp, parse_iso_timestamp
 
 from core.dag import (
+    _all_satisfied,
     build_adjacency,
     collect_downstream,
     compute_ready,
@@ -83,7 +84,7 @@ def run_next(instance_id: str) -> dict:
         _check_parallel(adj, instance, instance_id, spec)
 
         # 5.5. 子工作流实例创建：为 PENDING 的 WORKFLOW 类型 stage 创建子 Instance
-        new_children = _spawn_child_workflows(instance, instance_id, spec)
+        new_children = _spawn_child_workflows(instance, instance_id, spec, adj)
 
         # 6. ERROR 分支（处理 SubAgent 主动上报的 ERROR）
         error_actions = _handle_error_stages(instance, adj, spec)
@@ -399,15 +400,17 @@ def _check_parallel(adj, instance: dict, instance_id: str, spec) -> None:
         instance["stages"].extend(new_stages)
 
 
-def _spawn_child_workflows(instance: dict, instance_id: str, spec) -> list[dict]:
+def _spawn_child_workflows(instance: dict, instance_id: str, spec, adj) -> list[dict]:
     """为 PENDING 的 WORKFLOW 类型 stage 实例创建子工作流 Instance。
 
+    仅当 stage 的 DAG 入边已满足时才创建子实例（与 compute_ready 逻辑一致）。
     子 worktree 基于父实例 worktree HEAD 创建，继承父级所有已完成 stage 的文件产物。
     创建后 stage 状态 → RUNNING，child_instance_id 写入关联。
     返回新创建的子实例信息列表 [{child_instance_id, parent_stage_id}]。
     """
     root = find_root()
     stage_specs = {s.stage_id: s for s in spec.stages}
+    stage_states = {s["stage_id"]: s for s in instance["stages"]}
     inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
     created: list[dict] = []
 
@@ -421,6 +424,11 @@ def _spawn_child_workflows(instance: dict, instance_id: str, spec) -> list[dict]
         stage_id = s["stage_id"]
         stage_spec = stage_specs.get(stage_id)
         if not stage_spec or stage_spec.target_type != StageTargetType.WORKFLOW:
+            continue
+
+        # 检查 DAG 入边是否满足（与 compute_ready 逻辑一致）
+        upstream_edges = adj.incoming.get(stage_id, [])
+        if not _all_satisfied(upstream_edges, stage_states):
             continue
 
         # 解析 workflow 引用: "question-solution@1.0.0"
