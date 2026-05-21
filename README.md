@@ -490,7 +490,7 @@ SubAgent 看到：   AskUserQuestion 返回了用户选择 → 继续工作
 
 ## License
 
-> 本项目尚未指定开源许可证。在添加 LICENSE 文件前，默认保留所有权利。
+本项目基于 **Apache License 2.0** 开源。详见 [LICENSE](./LICENSE)。
 
 ---
 
