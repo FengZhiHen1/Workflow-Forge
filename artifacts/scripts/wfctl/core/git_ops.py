@@ -95,3 +95,8 @@ def git_commit(repo: Path, message: str) -> tuple[int, str, str]:
 def git_commit_file(repo: Path, message_file: Path) -> tuple[int, str, str]:
     """git -C <repo> commit -F <message_file>"""
     return _git(repo, "commit", "-F", str(message_file))
+
+
+def git_merge_abort(repo: Path) -> tuple[int, str, str]:
+    """git -C <repo> merge --abort"""
+    return _git(repo, "merge", "--abort")

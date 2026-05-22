@@ -32,6 +32,9 @@ from services.worktree_manager import (
     create_parallel_worktree,
     create_stage_worktree,
     merge_stage_worktree,
+    sync_instance_with_main,
+    sync_instance_with_parent,
+    sync_stage_with_instance,
     tag_anchor,
 )
 
@@ -53,6 +56,9 @@ def run_next(instance_id: str) -> dict:
         instance = load_instance(instance_id)
         if instance.get("status") != "ACTIVE":
             return {"status": "error", "reason": f"Instance is {instance.get('status')}"}
+
+        # 0. 同步 worktree 与上游（Level 1 / Level 1.5），失败静默跳过
+        _sync_worktree_upstream(instance_id, instance)
 
         spec = _load_workflow_for_instance(instance)
         adj = build_adjacency(spec)
@@ -166,6 +172,24 @@ def run_sync(instance_id: str) -> dict:
         return {"status": "ok", "changes": changes}
     finally:
         lock.release()
+
+
+def _sync_worktree_upstream(instance_id: str, instance: dict) -> None:
+    """同步实例 worktree 与上游。失败时记录 deviation，不阻塞流程。
+
+    Level 1（根实例）: 本地 main → 实例 worktree
+    Level 1.5（子实例）: 父实例 worktree → 子实例 worktree
+    二者互斥，根据 parent_instance_id 判断。
+    """
+    parent_id = instance.get("parent_instance_id")
+
+    if parent_id:
+        success, msg = sync_instance_with_parent(instance_id, parent_id)
+    else:
+        success, msg = sync_instance_with_main(instance_id)
+
+    if not success:
+        append_deviation(instance_id, "SYNC_SKIPPED", msg)
 
 
 def _load_workflow_for_instance(instance: dict) -> "WorkflowSpec":
@@ -777,6 +801,20 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
         )
 
         if matched_agent:
+            # Level 2: 同步 stage worktree ↔ 实例 worktree（continue 前）
+            sync_ok, conflict_files = sync_stage_with_instance(instance_id, stage_inst_id)
+            if not sync_ok:
+                stage_state["status"] = "CONFLICT"
+                stage_state["conflict_files"] = conflict_files
+                actions.append({
+                    "action": "conflict",
+                    "stage_id": stage_id,
+                    "worktree": str(worktree.relative_to(root)),
+                    "conflict_files": conflict_files,
+                    "source_stage": stage_id,
+                })
+                continue
+
             # 同 Skill 延续：标记上游 stage 的 continued_to
             prev_stage_id = matched_agent["stage_id"]
             prev_stage = stage_map.get(prev_stage_id)
