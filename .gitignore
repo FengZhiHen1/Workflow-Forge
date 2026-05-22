@@ -1,4 +1,5 @@
-reference/skills/
+workshop/reference/skills/
+workshop/reference/workflow-design/
 __pycache__/
 .tmp/
 .env
