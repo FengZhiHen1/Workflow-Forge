@@ -130,9 +130,8 @@ python <skill-path>/scripts/update_workflow.py \
     │       ├── WORKFLOW.md
     │       ├── WORKFLOW.yaml
     │       ├── references/
-    │       ├── scripts/
-    │       └── skills/
-    └── skills/                      # 全局 Skill 目录
+    │       └── scripts/
+    └── skills/                      # 所有 Skill 统一存放（含 workflow 专属和全局）
         └── <skill_id>/
 ```
 

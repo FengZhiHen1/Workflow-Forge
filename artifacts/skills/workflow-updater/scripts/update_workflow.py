@@ -370,7 +370,7 @@ def update_workflow(wf_factory: dict, target_root: Path,
     if not workflow_only:
         skills_src = wf_src / "skills"
         if skills_src.exists():
-            _update_skills_dir(skills_src, wf_dst / "skills",
+            _update_skills_dir(skills_src,
                                target_root / ".claude" / "skills",
                                report, dry_run)
 
@@ -424,9 +424,9 @@ def update_infrastructure_skill(skill_factory: dict, target_root: Path,
     return report
 
 
-def _update_skills_dir(skills_src: Path, wf_skills_dst: Path,
-                       global_skills_dst: Path, report: dict, dry_run: bool) -> None:
-    """更新 skills/ 目录下所有 Skill，同时写入工作流目录和全局目录。"""
+def _update_skills_dir(skills_src: Path, global_skills_dst: Path,
+                       report: dict, dry_run: bool) -> None:
+    """更新 workflow 专属 skills/ 目录下的 Skill，写入全局 .claude/skills/。"""
     for skill_item in sorted(skills_src.iterdir()):
         if not skill_item.is_dir() or skill_item.name in EXCLUDED_NAMES:
             continue
@@ -438,10 +438,6 @@ def _update_skills_dir(skills_src: Path, wf_skills_dst: Path,
             continue
         changes = _diff_summary(diff)
         if not dry_run:
-            wf_dst = wf_skills_dst / skill_name
-            if wf_dst.exists():
-                shutil.rmtree(wf_dst)
-            copy_tree_with_report(skill_item, wf_dst)
             if target.exists():
                 shutil.rmtree(target)
             copy_tree_with_report(skill_item, target)
