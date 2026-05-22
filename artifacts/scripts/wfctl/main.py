@@ -22,6 +22,7 @@ from cli.skip import register_skip
 from cli.status import register_status
 from cli.sync import register_sync
 from cli.cleanup import register_cleanup
+from cli.restore import register_restore
 from cli.terminate import register_terminate
 
 
@@ -43,6 +44,7 @@ def main():
     register_identity(subparsers)
     register_message_write(subparsers)
     register_cleanup(subparsers)
+    register_restore(subparsers)
     register_terminate(subparsers)
 
     args = parser.parse_args()

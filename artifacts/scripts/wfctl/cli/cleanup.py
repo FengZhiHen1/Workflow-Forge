@@ -13,18 +13,20 @@ def register_cleanup(subparsers):
     p = subparsers.add_parser("cleanup", help="清理僵尸实例、孤儿 worktree 和残留 tag")
     p.add_argument("--instance", default=None, help="仅清理指定实例（可选，不指定则清理全部僵尸）")
     p.add_argument("--dry-run", action="store_true", help="仅列出，不执行清理")
+    p.add_argument("--force", action="store_true", help="强制清理，跳过安全确认")
     p.set_defaults(handler=_handle_cleanup)
 
 
 def _handle_cleanup(args) -> dict:
     root = find_root()
     removed: list[dict] = []
+    skipped: list[dict] = []
 
     # 1. 清理 git worktree 注册（目录已丢失的）
     _prune_stale_worktrees(root, removed, args.dry_run)
 
     # 2. 清理僵尸实例目录
-    _cleanup_zombie_instances(root, removed, args.dry_run, args.instance)
+    _cleanup_zombie_instances(root, removed, skipped, args.dry_run, args.instance, args.force)
 
     # 3. 清理残留 anchor tag（无对应实例的）
     _cleanup_stale_tags(root, removed, args.dry_run, args.instance)
@@ -32,6 +34,7 @@ def _handle_cleanup(args) -> dict:
     return {
         "status": "ok",
         "removed": removed,
+        "skipped": skipped,
         "dry_run": args.dry_run,
     }
 
@@ -112,8 +115,11 @@ def _extract_instance_id_from_stage_worktree(dir_name: str) -> str:
     return rest  # fallback
 
 
-def _cleanup_zombie_instances(root: Path, removed: list[dict], dry_run: bool, target_instance: str | None) -> None:
+def _cleanup_zombie_instances(root: Path, removed: list[dict], skipped: list[dict],
+                               dry_run: bool, target_instance: str | None, force: bool) -> None:
     """清理僵尸实例——instance.json 存在但无对应 worktree 或 status 已终态。"""
+    from services.worktree_manager import backup_instance as backup
+
     instances_dir = root / ".agent" / "instances"
     if not instances_dir.exists():
         return
@@ -135,13 +141,25 @@ def _cleanup_zombie_instances(root: Path, removed: list[dict], dry_run: bool, ta
 
         status = data.get("status", "")
         instance_id = data.get("instance_id", d.name)
+        is_root = not data.get("parent_instance_id")
 
         # 检查是否有对应 worktree
         wt_path = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
         has_worktree = wt_path.exists()
 
         if status in ("FAILED", "COMPLETED"):
-            # 终态实例：清理 worktree → 清理 tag → 删除实例目录
+            # 一级 FAILED 实例未合入且非 force → 跳过
+            if is_root and status == "FAILED" and not force:
+                skipped.append({"instance": instance_id, "reason": "root instance not merged, use --force to cleanup"})
+                continue
+
+            # 删除前备份
+            if not dry_run:
+                try:
+                    backup(instance_id)
+                except Exception:
+                    pass
+
             if has_worktree:
                 if dry_run:
                     removed.append({"worktree": str(wt_path), "reason": f"instance {status}", "action": "would remove"})
@@ -158,7 +176,18 @@ def _cleanup_zombie_instances(root: Path, removed: list[dict], dry_run: bool, ta
         elif status == "ACTIVE":
             running = [s for s in data.get("stages", []) if s.get("status") in ("RUNNING", "CONFLICT")]
             if not running and not has_worktree:
-                # ACTIVE 但无 worktree 且无运行中 stage → 僵尸
+                # 一级 ACTIVE 实例未合入且非 force → 跳过
+                if is_root and not force:
+                    skipped.append({"instance": instance_id, "reason": "root active zombie not merged, use --force to cleanup"})
+                    continue
+
+                # 删除前备份
+                if not dry_run:
+                    try:
+                        backup(instance_id)
+                    except Exception:
+                        pass
+
                 if dry_run:
                     removed.append({"instance": instance_id, "reason": "zombie (ACTIVE, no worktree, no running stage)", "action": "would remove"})
                 else:

@@ -22,7 +22,8 @@
 | `deviate` | 追加 deviation 日志记录 | 检测到非标行为时 |
 | `identity` | 读取当前 worktree 的身份元数据 | SubAgent 启动时自行获取 |
 | `message` | 消息操作（write 子命令） | SubAgent 上报阶段结果 |
-| `cleanup` | 清理僵尸实例、孤儿 worktree 和残留 tag | 手动清理残留状态时 |
+| `cleanup` | 清理僵尸实例、孤儿 worktree 和残留 tag，自动备份 | 手动清理残留状态时 |
+| `restore` | 从归档恢复误删实例 | 需要恢复误删实例时 |
 
 ---
 
@@ -173,7 +174,7 @@ wfctl next --instance <id>
 | `retry` | 重试失败 stage | 同 spawn，attempt 计数已由 wfctl 递增 |
 | `confirm` | 有待确认 stage | 逐个呈现 AskUserQuestion → `wfctl confirm` |
 | `conflict` | 合并冲突 | 启动 conflict-resolver SubAgent 消解 |
-| `merge_to_main` | 实例可合入主仓库 | 执行合并（wfctl 处理） |
+| `merge_to_main` | 实例已合入主仓库 | 子实例自动；一级实例需先经 `__merge__` 确认 |
 | `terminate` | 实例终态 | 报告用户，停止循环 |
 | `child_next` | 新子工作流实例待首次调度 | 对子实例调用 `wfctl next --instance <child_instance_id>` |
 | `await` | 无就绪 stage | 等待 SubAgent 完成通知 |
@@ -289,9 +290,11 @@ wfctl confirm --instance <id> --stage <stage_id> --choice "<选项值>" [--feedb
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `--instance` | 是 | 实例 ID |
-| `--stage` | 是 | 目标 stage_id，必须是 AWAITING_CONFIRM |
-| `--choice` | 是 | 选项值，须与 YAML edges 中对应 choice 严格一致 |
+| `--stage` | 是 | 目标 stage_id，必须是 AWAITING_CONFIRM。特殊值 `__merge__` 处理合入确认 |
+| `--choice` | 是 | 选项值，须与 YAML edges 中对应 choice 严格一致。`__merge__` 时：`yes` 允许合入，`no` 推迟 |
 | `--feedback` | 否 | rejected 时建议填写，注入重做 SubAgent 的 prompt |
+
+**`__merge__` 伪 stage**：一级实例全部 stage DONE 后，wfctl 自动在 `next` 中注入确认请求。编排器按标准 confirm 流程处理——调 `wfctl confirm --stage __merge__ --choice yes`。确认后下次 `next` 执行合入。
 
 返回（confirmed）：
 ```json
@@ -402,8 +405,15 @@ wfctl skip --instance <id> --stage <stage_id> [--reason "跳过原因"] [--force
 ### 2.10 terminate
 
 ```bash
-wfctl terminate --instance <id> [--reason "终止原因"]
+wfctl terminate --instance <id> [--reason "终止原因"] [--force]
 ```
+
+**安全确认**：一级实例未合入 main 时，无 `--force` 返回：
+```json
+{"status": "requires_confirmation", "instance_id": "...", "reason": "Root instance not merged to main. Use --force to terminate anyway."}
+```
+编排器用 `AskUserQuestion` 确认后加 `--force` 重试。
+
 返回：
 ```json
 {
@@ -413,7 +423,7 @@ wfctl terminate --instance <id> [--reason "终止原因"]
 }
 ```
 
-执行操作：置实例 FAILED → 移除实例 worktree → 删全部 anchor tag → 清理孤儿 worktree → 写 deviation。
+执行操作：创建备份分支 `wf-backup-{id}` → 归档实例目录到 `.agent/archive/` → 置实例 FAILED → 删 tag → 移除 worktree → 清理孤儿 worktree → 写 deviation。
 
 不可终止的情况：
 - 已是终态 → `{"status": "error", "reason": "instance already in terminal state: COMPLETED"}`
@@ -558,8 +568,10 @@ wfctl message write \
 清理僵尸实例目录、孤儿 worktree 和残留 anchor tag。
 
 ```bash
-wfctl cleanup [--instance <id>] [--dry-run]
+wfctl cleanup [--instance <id>] [--dry-run] [--force]
 ```
+
+`--force`：强制清理一级未合入实例，跳过安全检查。
 
 返回：
 ```json
@@ -568,6 +580,9 @@ wfctl cleanup [--instance <id>] [--dry-run]
   "removed": [
     {"worktree": ".tmp/worktrees/instance-20260518-001", "reason": "orphan worktree", "action": "removed"},
     {"tag": "wf-20260518-001-s00-workflow-start", "reason": "stale anchor tag", "action": "deleted"}
+  ],
+  "skipped": [
+    {"instance": "20260518-003", "reason": "root instance not merged, use --force to cleanup"}
   ],
   "dry_run": false
 }
@@ -578,4 +593,25 @@ wfctl cleanup [--instance <id>] [--dry-run]
 2. 僵尸实例目录（ACTIVE 但无 worktree 且无运行中 stage，或终态残留）
 3. 残留 anchor tag（无对应实例目录的）
 
+删除前自动创建备份分支 + 归档实例目录到 `.agent/archive/`。一级未合入实例无 `--force` 时加入 `skipped` 而非删除。
+
 `--dry-run` 仅列出不执行。`--instance <id>` 仅清理指定实例。
+
+### 2.16 restore
+
+从归档恢复误删的实例。
+
+```bash
+wfctl restore --instance <id>
+```
+
+返回：
+```json
+{"status": "ok", "instance_id": "20260518-003"}
+```
+
+执行操作：从 `.agent/archive/{id}/` 移回实例目录 → 从 `wf-backup-{id}` 分支重建 worktree → 重建 anchor tag。
+
+不可恢复的情况：
+- 归档不存在 → `{"status": "error", "code": "INSTANCE_NOT_FOUND"}`
+- 目标实例已存在 → `{"status": "error", "code": "INSTANCE_EXISTS"}`

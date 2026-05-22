@@ -139,10 +139,20 @@ def run_next(instance_id: str) -> dict:
         if confirm_action:
             actions.append(confirm_action)
 
-        # 15. 全部 DONE？执行实例合并
+        # 15. 全部 DONE？执行实例合并（一级实例需先确认）
         if _check_all_done(instance, spec):
-            merge_result = _execute_merge_to_main(instance, spec, instance_id)
-            actions.append(merge_result)
+            if not instance.get("parent_instance_id") and not instance.get("merge_confirmed"):
+                instance.setdefault("stages", []).append({
+                    "stage_id": "__merge__",
+                    "stage_instance_id": "__merge__",
+                    "status": "AWAITING_CONFIRM",
+                    "confirm_questions": [
+                        f"实例 {instance_id}（{instance.get('goal', '')}）全部 stage 已完成，是否合入 main？",
+                    ],
+                })
+            else:
+                merge_result = _execute_merge_to_main(instance, spec, instance_id)
+                actions.append(merge_result)
 
         if not actions:
             actions.append({"action": "await", "reason": "no ready stages"})

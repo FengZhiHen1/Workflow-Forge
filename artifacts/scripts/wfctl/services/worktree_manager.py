@@ -4,6 +4,7 @@ from pathlib import Path
 
 from core.errors import GitError, WorktreeError
 from core.git_ops import (
+    git_branch,
     git_checkout,
     git_fetch,
     git_merge,
@@ -190,6 +191,100 @@ def _extract_conflict_files(repo: Path) -> list[str]:
         elif line.startswith("?? "):
             pass
     return conflicts
+
+
+def backup_instance(instance_id: str) -> bool:
+    """在删除前创建备份分支 + 归档实例目录。
+
+    1. 在实例 worktree 的 HEAD 上创建 wf-backup-{instance_id} 分支，防止 commit 被 gc
+    2. 将 .agent/instances/{id}/ 移动到 .agent/archive/{id}/
+    """
+    import shutil
+
+    root = find_root()
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    inst_dir = root / ".agent" / "instances" / instance_id
+    archive_dir = root / ".agent" / "archive" / instance_id
+
+    # 1. 创建备份分支
+    branch_name = f"wf-backup-{instance_id}"
+    if inst_wt.exists():
+        rc, _, _ = git_rev_parse(inst_wt, f"refs/heads/{branch_name}")
+        if rc != 0:
+            git_branch(inst_wt, branch_name)
+    else:
+        # worktree 不存在时，尝试从 final tag 在主仓库创建备份分支
+        rc, head_ref, _ = git_rev_parse(root, f"refs/tags/wf-{instance_id}-final")
+        if rc == 0:
+            git_branch(root, branch_name, head_ref.strip())
+
+    # 2. 归档实例目录
+    if inst_dir.exists():
+        archive_dir.parent.mkdir(parents=True, exist_ok=True)
+        if archive_dir.exists():
+            shutil.rmtree(archive_dir, ignore_errors=True)
+        shutil.move(str(inst_dir), str(archive_dir))
+        return True
+
+    return False
+
+
+def restore_instance(instance_id: str) -> dict:
+    """从归档恢复实例。
+
+    1. 将 .agent/archive/{id}/ 移回 .agent/instances/{id}/
+    2. 从 wf-backup-{id} 分支重建 worktree
+    3. 重建 anchor tag
+    """
+    import json
+    import shutil
+
+    root = find_root()
+    archive_dir = root / ".agent" / "archive" / instance_id
+    inst_dir = root / ".agent" / "instances" / instance_id
+    inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
+    inst_json = archive_dir / "instance.json"
+
+    if not archive_dir.exists():
+        raise WorktreeError(f"No archive found for instance {instance_id}", code="RESTORE_FAILED")
+    if not inst_json.exists():
+        raise WorktreeError(f"instance.json missing in archive for {instance_id}", code="RESTORE_FAILED")
+
+    try:
+        data = json.loads(inst_json.read_text(encoding="utf-8"))
+    except Exception:
+        raise WorktreeError(f"Corrupted instance.json in archive for {instance_id}", code="RESTORE_FAILED")
+
+    # 1. 移回实例目录
+    if inst_dir.exists():
+        shutil.rmtree(inst_dir, ignore_errors=True)
+    shutil.move(str(archive_dir), str(inst_dir))
+
+    # 2. 重建 worktree
+    branch_name = f"wf-backup-{instance_id}"
+    if not inst_wt.exists():
+        git_worktree_add(root, inst_wt, branch_name)
+
+    # 3. 重建 anchor tag
+    from core.schema.loader import load_workflow
+    from services.resolver import find_workflow_dir
+    wf_dir = find_workflow_dir(data.get("workflow_id", ""), data.get("version", ""))
+    spec = load_workflow(wf_dir / "WORKFLOW.yaml")
+
+    for s in data.get("stages", []):
+        if s.get("status") in ("DONE", "RUNNING", "AWAITING_CONFIRM"):
+            stage_inst_id = s.get("stage_instance_id", s["stage_id"])
+            tag_name = f"{spec.anchor_prefix}-{instance_id}-{stage_inst_id}"
+            try:
+                git_tag_delete(root, tag_name)
+            except Exception:
+                pass
+            try:
+                git_tag(root, tag_name)
+            except Exception:
+                pass
+
+    return {"status": "ok", "instance_id": instance_id}
 
 
 def _is_worktree_clean(wt: Path) -> bool:

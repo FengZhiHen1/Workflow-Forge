@@ -17,6 +17,11 @@ def register_confirm(subparsers):
 
 def _handle_confirm(args) -> dict:
     instance = load_instance(args.instance)
+
+    # __merge__ 伪 stage：确认一级实例合入 main
+    if args.stage == "__merge__":
+        return _handle_merge_confirm(args, instance)
+
     candidates = [s for s in instance["stages"] if s["stage_id"] == args.stage]
     if not candidates:
         raise InputError(f"Stage not found: {args.stage}", code="STAGE_NOT_FOUND")
@@ -153,6 +158,24 @@ def _handle_confirm(args) -> dict:
     instance["status"] = "FAILED"
     save_instance(args.instance, instance)
     return {"status": "instance_failed", "stage_id": stage_id, "reason": f"unknown choice: {choice}"}
+
+
+def _handle_merge_confirm(args, instance: dict) -> dict:
+    """处理 __merge__ 伪 stage 的确认：yes → 允许合入，no → 下次再问。"""
+    choice = args.choice.lower()
+    instance_id = instance["instance_id"]
+
+    # 移除 __merge__ 伪 stage
+    instance["stages"] = [s for s in instance["stages"] if s["stage_id"] != "__merge__"]
+
+    if choice in ("yes", "y", "confirm", "accept", "ok"):
+        instance["merge_confirmed"] = True
+        save_instance(args.instance, instance)
+        return {"status": "ok", "stage_id": "__merge__", "merge_confirmed": True}
+
+    # no 或其他：不设置 merge_confirmed，下次 next 继续提示
+    save_instance(args.instance, instance)
+    return {"status": "ok", "stage_id": "__merge__", "merge_confirmed": False}
 
 
 def _match_edges(edges, choice: str):
