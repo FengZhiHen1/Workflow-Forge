@@ -1,0 +1,144 @@
+# Action 处理详解
+
+> 本文档是 `SKILL.md`「Action 速查」的补充，包含每种 action 的完整 JSON 格式和详细执行步骤。
+> 各 action 的字段定义权威来源为 `references/wfctl-commands.md` §2.3。
+
+---
+
+## spawn —— 启动新 SubAgent
+
+```json
+{
+  "action": "spawn",
+  "stage_id": "s03",
+  "skill_id": "topic-analyst",
+  "worktree": ".tmp/worktrees/instance-20260517-001/",
+  "model": "standard",
+  "requires_parallel_targets": false,
+  "context": {
+    "goal": "为 M01-M05 模块编写落地规范",
+    "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成选题分析..."}],
+    "parallel_target": null
+  }
+}
+```
+
+执行步骤：
+
+1. **解析 skill 路径**：按以下优先级查找 `<skill_id>` 对应的 SKILL.md，取首个存在者：
+   - `.claude/skills/<skill_id>/SKILL.md`
+   - `artifacts/workflows/<workflow_id>/skills/<skill_id>/SKILL.md`（工作流专属 Skill）
+   - `artifacts/skills/<skill_id>/SKILL.md`（全局 Skill）
+   将找到的绝对路径填入模板的 `<skill_path>` 占位符。
+2. 按 `references/subagent-prompt-template.md` 模板构造 prompt。prompt 仅注入工作流协议信息（身份、上报契约、上下文），不包含 Skill 正文——SubAgent 会在启动步骤中自行读取 `<skill_path>` 指定的 SKILL.md 文件
+3. 解析模型：读取 `references/model-mapping.yaml`，将 action 的 `model` 档位按当前平台映射为具体模型名，传入 `Agent(model=...)`。若 action 无 `model` 字段则省略，Agent 继承父级模型
+4. 启动 SubAgent：`Agent(worktree=<worktree>, model=<resolved_model>, prompt=<构造的prompt>, run_in_background=true)`
+5. **写入映射表**：追加条目到 `.agent/running_agents.json`：
+   ```json
+   {"skill_id": "<skill_id>", "system_agent_id": "<平台返回的ID>", "stage_id": "<stage_id>", "instance_id": "<instance_id>"}
+   ```
+   （与已有条目按 `system_agent_id` 去重，同 ID 覆盖旧条目）
+6. **不等待**——继续处理下一个 action
+
+---
+
+## continue —— 延续已有 SubAgent
+
+```json
+{
+  "action": "continue",
+  "stage_id": "s02",
+  "skill_id": "design-tech-stack",
+  "worktree": ".tmp/worktrees/instance-20260517-001/",
+  "system_agent_id": "agent-001",
+  "requires_parallel_targets": false,
+  "context": {
+    "goal": "为 M01-M05 模块编写落地规范",
+    "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成需求收集..."}]
+  }
+}
+```
+
+执行步骤：
+
+1. 按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
+2. **不**调用 `Agent()` 创建新实例——向已有 SubAgent（`system_agent_id`）发送继续消息
+3. **发送激活消息**：第一条消息恢复上下文后 SubAgent 可能不触发新的工具调用回合（`SendMessage` 返回 "resumed from transcript" 但 agent 仍 idle）。紧接发送第二条简短消息（如"收到请开始执行上述任务"）触发实际的工具调用回合
+4. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
+5. **不等待**——继续处理下一个 action
+
+---
+
+## child_next —— 驱动子工作流
+
+```json
+{
+  "action": "child_next",
+  "child_instance_id": "20260519-002",
+  "parent_stage_id": "p2-question-solution",
+  "parent_instance_id": "20260519-001"
+}
+```
+
+子工作流实例已被 wfctl 创建但从未被调度——其内部 stage 全部处于 PENDING。编排器需立即推动其首次调度。
+
+执行步骤：
+1. 调用 `wfctl next --instance <child_instance_id>`
+2. 解析返回的 actions，按正常流程处理（spawn / confirm / etc.）
+3. 子实例的 `next` 可能返回 `child_next`——但子工作流通常不含嵌套子实例，如有则递归处理
+
+**时机**：父实例 `next` 返回 `child_next` 时，说明有新子实例刚创建。对每个 `child_next` 并行调 `wfctl next`。
+
+---
+
+## conflict —— 合并冲突
+
+```json
+{
+  "action": "conflict",
+  "stage_id": "s03",
+  "worktree": ".tmp/worktrees/stage-<id>-s03/",
+  "conflict_files": ["src/a.py", "src/b.py"],
+  "source_stage": "s03"
+}
+```
+
+执行步骤：
+1. 启动 `conflict-resolver` 全局 Skill 作为 SubAgent
+2. prompt 注入：冲突文件列表、冲突所在 worktree 路径、产出冲突的 stage 信息
+3. conflict-resolver 自动消解简单冲突；语义冲突通过 `AWAITING_CONFIRM` 追问用户
+4. 消解后调用 `wfctl next`——wfctl 重试合并，无冲突则 stage → DONE
+
+---
+
+## merge_to_main —— 合入主仓库
+
+```json
+{"action": "merge_to_main", "status": "completed"}
+```
+
+**一级实例（`parent_instance_id` 为空）**：全部 stage DONE 后，wfctl 不会直接合入——先注入虚拟确认 stage `__merge__`，通过 `confirm` action 由编排器向用户确认。确认后下次 `next` 才执行合入。
+
+**子实例**：全部 stage DONE 后直接合入父实例 worktree，不设确认点。
+
+有冲突时 wfctl 返回 `conflict` action，按冲突处理流程消解。
+
+---
+
+## terminate —— 实例终态
+
+```json
+{"action": "terminate", "status": "FAILED", "reason": "s03 重试耗尽，无可用 failure handler"}
+```
+
+向用户报告终态原因。`COMPLETED` → 成功总结。`FAILED` → 失败原因和建议。wfctl 已在 `next` 中自动完成 worktree 清理。
+
+---
+
+## await —— 等待
+
+```json
+{"action": "await", "reason": "no ready stages"}
+```
+
+无就绪 stage 可调度。等待 SubAgent 完成通知（宿主平台会通知你），收到通知后再次调用 `wfctl next`。

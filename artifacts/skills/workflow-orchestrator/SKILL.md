@@ -24,6 +24,7 @@ description: >
 - 不直接读/写 Message 文件（wfctl 独占）
 - 不计算 stage 就绪顺序（wfctl 的 DAG 引擎负责）
 - 不评估 SubAgent 产出质量——你是调度员，不是审查员
+- 但你必须判断确认时机——前置对齐（问"怎么做"）≠ 终审验收（问"做得对不对"）。混淆二者会导致 stage 在 SubAgent 未完成工作时被错误关闭
 - 不跳过流程——"快一点"从来不是跳过流程的理由
 
 **每次行动前自问**：这个决策是我在算，还是 wfctl 在算？应该由 wfctl 算的 → 停手，调 wfctl。
@@ -46,9 +47,11 @@ python .claude/scripts/wfctl/main.py <command> [options]
 
 | 路径 | 说明 |
 |------|------|
-| `references/wfctl-commands.md` | **wfctl 命令完整参考**——所有命令的签名、参数、返回 JSON 结构。首次调用任何命令前必读 |
-| `references/subagent-prompt-template.md` | **SubAgent prompt 构造模板**——spawn/retry 时按模板填入占位符。不包含 Skill 正文（模板注入 `<skill_path>`，SubAgent 自行读取 SKILL.md） |
-| `references/model-mapping.yaml` | **模型档位映射表**——按平台将 light/standard/heavy 解析为具体模型名 |
+| `references/wfctl-commands.md` | wfctl 全部命令的签名、参数、返回 JSON 结构。**首次调度前必读** |
+| `references/subagent-prompt-template.md` | SubAgent prompt 构造模板，含全部占位符来源表和特殊场景处理 |
+| `references/model-mapping.yaml` | 模型档位映射表——按平台将 light/standard/heavy 解析为具体模型名 |
+| `references/action-handlers.md` | spawn/continue/child_next/conflict/merge_to_main/terminate/await 的完整 JSON 示例和执行步骤 |
+| `references/edge-cases.md` | 回退/暂停/跳过/终止/恢复等低频场景的完整操作流程 |
 | `.claude/contracts/common.md` | 通用契约（SubAgent 自行读取，编排器不读不转述） |
 
 ---
@@ -126,7 +129,7 @@ wfctl next --instance <instance_id>
 → {status: "ok", actions: [...]}
 ```
 
-遍历 `actions[]`，按 action 类型执行（见下方 Action 参考）。批量 `spawn`/`continue` 尽可能并行启动。
+遍历 `actions[]`，按 action 类型执行（见下方 Action 速查）。批量 `spawn`/`continue` 尽可能并行启动。
 
 **循环终止条件**：
 - `actions` 包含 `terminate` → 实例终态，报告用户，退出循环
@@ -138,69 +141,39 @@ wfctl next --instance <instance_id>
 
 ---
 
-## Action 参考
+## Action 速查
 
-> 各 action 的完整字段定义和 wfctl 命令的精确返回结构见 `references/wfctl-commands.md`。以下是行为协议。
+`wfctl next` 返回 `actions[]`，编排器遍历执行。各 action 的 JSON 字段定义见 `references/wfctl-commands.md` §2.3。
+
+| action | 行为 | 详情 |
+|--------|------|------|
+| `spawn` | 解析 skill 路径 → 构造 prompt → `Agent(run_in_background=true)` → 写映射表 | 下方 §spawn |
+| `continue` | 构造 prompt → `SendMessage` 两条 → 不等待 | 下方 §continue |
+| `confirm` | 判断时机 → `AskUserQuestion` → `wfctl confirm` → 立即 `next` | 下方 §confirm（完整） |
+| `child_next` | 对子实例调 `wfctl next` | `references/action-handlers.md` §child_next |
+| `conflict` | 启动 conflict-resolver SubAgent 消解 | `references/action-handlers.md` §conflict |
+| `merge_to_main` | 一级实例先经 `__merge__` 确认；子实例直接合入 | `references/action-handlers.md` §merge_to_main |
+| `terminate` | 报告终态，退出循环 | `references/action-handlers.md` §terminate |
+| `await` | 等待 SubAgent 完成通知 | `references/action-handlers.md` §await |
 
 ### spawn —— 启动新 SubAgent
 
-```json
-{
-  "action": "spawn",
-  "stage_id": "s03",
-  "skill_id": "topic-analyst",
-  "worktree": ".tmp/worktrees/instance-20260517-001/",
-  "model": "standard",
-  "requires_parallel_targets": false,
-  "context": {
-    "goal": "为 M01-M05 模块编写落地规范",
-    "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成选题分析..."}],
-    "parallel_target": null
-  }
-}
-```
+1. 解析 skill 路径（`.claude/skills/<id>/` → 工作流专属 → `artifacts/skills/<id>/`）
+2. 按 `references/subagent-prompt-template.md` 构造 prompt
+3. 按 `references/model-mapping.yaml` 解析 model 档位 → `Agent(model=...)`
+4. `Agent(worktree=<worktree>, model=<resolved>, prompt=<prompt>, run_in_background=true)`
+5. 写 `.agent/running_agents.json`：`{skill_id, system_agent_id, stage_id, instance_id}`（按 `system_agent_id` 去重）
+6. 不等待——继续下一个 action
 
-执行步骤：
-
-1. **解析 skill 路径**：按以下优先级查找 `<skill_id>` 对应的 SKILL.md，取首个存在者：
-   - `.claude/skills/<skill_id>/SKILL.md`
-   - `artifacts/workflows/<workflow_id>/skills/<skill_id>/SKILL.md`（工作流专属 Skill）
-   - `artifacts/skills/<skill_id>/SKILL.md`（全局 Skill）
-   将找到的绝对路径填入模板的 `<skill_path>` 占位符。
-2. 按 `references/subagent-prompt-template.md` 模板构造 prompt。prompt 仅注入工作流协议信息（身份、上报契约、上下文），不包含 Skill 正文——SubAgent 会在启动步骤中自行读取 `<skill_path>` 指定的 SKILL.md 文件
-3. 解析模型：读取 `references/model-mapping.yaml`，将 action 的 `model` 档位按当前平台映射为具体模型名，传入 `Agent(model=...)`。若 action 无 `model` 字段则省略，Agent 继承父级模型
-4. 启动 SubAgent：`Agent(worktree=<worktree>, model=<resolved_model>, prompt=<构造的prompt>, run_in_background=true)`
-5. **写入映射表**：追加条目到 `.agent/running_agents.json`：
-   ```json
-   {"skill_id": "<skill_id>", "system_agent_id": "<平台返回的ID>", "stage_id": "<stage_id>", "instance_id": "<instance_id>"}
-   ```
-   （与已有条目按 `system_agent_id` 去重，同 ID 覆盖旧条目）
-6. **不等待**——继续处理下一个 action
+JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 ### continue —— 延续已有 SubAgent
 
-```json
-{
-  "action": "continue",
-  "stage_id": "s02",
-  "skill_id": "design-tech-stack",
-  "worktree": ".tmp/worktrees/instance-20260517-001/",
-  "system_agent_id": "agent-001",
-  "requires_parallel_targets": false,
-  "context": {
-    "goal": "为 M01-M05 模块编写落地规范",
-    "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成需求收集..."}]
-  }
-}
-```
-
-执行步骤：
-
 1. 按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
-2. **不**调用 `Agent()` 创建新实例——向已有 SubAgent（`system_agent_id`）发送继续消息
-3. **发送激活消息**：第一条消息恢复上下文后 SubAgent 可能不触发新的工具调用回合（`SendMessage` 返回 "resumed from transcript" 但 agent 仍 idle）。紧接发送第二条简短消息（如"收到请开始执行上述任务"）触发实际的工具调用回合
-4. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
-5. **不等待**——继续处理下一个 action
+2. 向 `system_agent_id` 发两条消息：第一条注入 continue prompt，第二条 "收到请开始执行上述任务" 触发工具调用
+3. 不等待——继续下一个 action
+
+`next` 已自动更新映射表中的 `stage_id`。JSON 示例和完整步骤见 `references/action-handlers.md` §continue。
 
 ### 映射表维护
 
@@ -231,7 +204,8 @@ wfctl next --instance <instance_id>
 - `parent_stage_id`：仅子实例 confirm 出现，标识对应父工作流的哪个 stage
 
 执行步骤：
-1. 从 `pending` 中依次选取 stage，通过 `AskUserQuestion` 逐一向用户呈现
+0. **确认时机判断**：读取每条 pending 的 questions 内容，判断是前置对齐还是终审验收（详见「确认时机判断」章节）
+1. 从 `pending` 中依次选取 stage，通过 `AskUserQuestion` 逐一向用户呈现。若判断为前置对齐，在 description 中按「确认时机判断」的呈现方式追加警告
 2. 每个问题呈现时，解析 SubAgent 提供的 `confirm_questions` 中的 question/options/header/multiSelect
 3. 用户选择后，**使用 `pending` 条目中的 `instance_id`**（不是父实例 ID）调用：
    ```
@@ -242,79 +216,13 @@ wfctl next --instance <instance_id>
 
 **`__merge__` 伪 stage**：一级实例全部 stage DONE 后，wfctl 自动产生。`stage_id` 为 `__merge__`，问题为"是否合入 main？"。处理方式与普通 confirm 一致——调 `wfctl confirm --stage __merge__ --choice yes`（或 `no` 推迟）。
 
-### child_next —— 驱动子工作流
-
-```json
-{
-  "action": "child_next",
-  "child_instance_id": "20260519-002",
-  "parent_stage_id": "p2-question-solution",
-  "parent_instance_id": "20260519-001"
-}
-```
-
-子工作流实例已被 wfctl 创建但从未被调度——其内部 stage 全部处于 PENDING。编排器需立即推动其首次调度。
-
-执行步骤：
-1. 调用 `wfctl next --instance <child_instance_id>`
-2. 解析返回的 actions，按正常流程处理（spawn / confirm / etc.）
-3. 子实例的 `next` 可能返回 `child_next`——但子工作流通常不含嵌套子实例，如有则递归处理
-
-**时机**：父实例 `next` 返回 `child_next` 时，说明有新子实例刚创建。对每个 `child_next` 并行调 `wfctl next`。
-
-### conflict —— 合并冲突
-
-```json
-{
-  "action": "conflict",
-  "stage_id": "s03",
-  "worktree": ".tmp/worktrees/stage-<id>-s03/",
-  "conflict_files": ["src/a.py", "src/b.py"],
-  "source_stage": "s03"
-}
-```
-
-执行步骤：
-1. 启动 `conflict-resolver` 全局 Skill 作为 SubAgent
-2. prompt 注入：冲突文件列表、冲突所在 worktree 路径、产出冲突的 stage 信息
-3. conflict-resolver 自动消解简单冲突；语义冲突通过 `AWAITING_CONFIRM` 追问用户
-4. 消解后调用 `wfctl next`——wfctl 重试合并，无冲突则 stage → DONE
-
-### merge_to_main —— 合入主仓库
-
-```json
-{"action": "merge_to_main", "status": "completed"}
-```
-
-**一级实例（`parent_instance_id` 为空）**：全部 stage DONE 后，wfctl 不会直接合入——先注入虚拟确认 stage `__merge__`，通过 `confirm` action 由你向用户确认。确认后下次 `next` 才执行合入。
-
-**子实例**：全部 stage DONE 后直接合入父实例 worktree，不设确认点。
-
-有冲突时 wfctl 返回 `conflict` action，按冲突处理流程消解。
-
-### terminate —— 实例终态
-
-```json
-{"action": "terminate", "status": "FAILED", "reason": "s03 重试耗尽，无可用 failure handler"}
-```
-
-向用户报告终态原因。`COMPLETED` → 成功总结。`FAILED` → 失败原因和建议。wfctl 已在 `next` 中自动完成 worktree 清理。
-
-### await —— 等待
-
-```json
-{"action": "await", "reason": "no ready stages"}
-```
-
-无就绪 stage 可调度。等待 SubAgent 完成通知（宿主平台会通知你），收到通知后再次调用 `wfctl next`。
-
 ---
 
 ## 确认流程详解
 
 wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITING_CONFIRM` 的 stage 列表。你按以下协议处理：
 
-1. 从 `pending` 中选取**一个** stage 呈现给用户
+1. 从 `pending` 中选取**一个** stage，先判断确认时机（前置对齐/终审验收，见上方「确认时机判断」），再呈现给用户
 2. 用户回复后，调用 `wfctl confirm --instance <id> --stage <stage_id> --choice "<值>"`
 3. 立即调用 `wfctl next`——剩余 pending 自然出现在下一轮
 4. 重复，直到 `next` 不再返回 `confirm` action
@@ -327,98 +235,70 @@ wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITIN
 
 ---
 
+## 确认时机判断（防误判）
+
+`AWAITING_CONFIRM` 有两种语义，混淆会导致 stage 在 SubAgent 未完成实际工作时被错误标记 DONE。
+
+### 两种确认
+
+| 类型 | SubAgent 在问 | 工作状态 | 正确动作 |
+|------|-------------|---------|---------|
+| **前置对齐** | "怎么做"——范围、格式、粒度、约束、方案选择 | 尚未开始或仅完成准备 | 引导用户选「拒绝」+ 反馈 → stage → PENDING → 重 spawn，SubAgent 拿到反馈后完成实际工作 |
+| **终审验收** | "做得对不对"——正确性、完整性、满意度 | 已完成交付物 | 正常呈现 → 用户选「通过」→ stage DONE |
+
+### 判断方法
+
+阅读 `questions` 中每个问题的内容，按特征分类：
+
+**前置对齐的典型问题**（问执行方式）：
+- 询问范围/边界："拆解范围是按功能还是按层次？"、"需要覆盖哪些模块？"
+- 询问输出格式："输出格式用表格还是列表？"、"文档结构用哪种模板？"
+- 询问方法/粒度："拆解粒度到一级目录还是二级？"、"按什么维度分类？"
+- 询问约束/偏好："是否有长度限制？"、"是否需要包含示例代码？"
+
+**终审验收的典型问题**（问结果评价）：
+- 询问满意度："最终产物是否满意？"、"是否需要调整？"
+- 询问正确性："模块划分方案是否合理？"、"技术选型是否正确？"
+- 询问完整性："是否还有遗漏？"、"覆盖是否全面？"
+
+**关键判别原则**：问"怎么做"→对齐；问"做得对不对"→终审。读问题时不看 SubAgent 的自我表述（"我已经完成了…"），只看问题本身的语义指向。
+
+### 不确定时的兜底
+
+若问题语义模糊、无法确定：
+1. 调用 `wfctl status --instance <id>` 查看该 stage 是否有产出文件路径在 checkpoint 中
+2. 兜底原则：**宁可误判为对齐（多跑一轮），不可误判为终审（错误关闭 stage）**
+
+### 呈现方式
+
+**若判断为前置对齐**，在 `AskUserQuestion` 的 description 中追加：
+
+> ⚠️ 此为前置对齐确认——SubAgent 正在询问「如何执行」，尚未产出最终交付物。
+> 建议：选择「拒绝」并将你的决定写入反馈，SubAgent 重新启动后会拿到反馈、继续完成实际工作。
+> 若选择「通过」，该阶段将被标记为完成，SubAgent 不会继续执行，下游阶段将拿到空产出。
+
+**若判断为终审验收**，正常呈现，无需额外标注。
+
+---
+
 ## 特殊场景
 
-### 查看状态
+低频操作，完整流程见 `references/edge-cases.md`。
 
-```
-# 项目全局
-wfctl status
-→ {active_instances: [...], recent_completed: [...], recent_failed: [...]}
-
-# 单实例详情（含子工作流透传）
-wfctl status --instance <id>
-→ {stages_summary, stages: [...], active_worktrees, conflict_worktrees}
-```
-
-用户问"现在什么进度"时使用。
-
-### 回退
-
-用户要求回退时：
-1. 确认目标 stage（`wfctl status --instance <id>` 查看已完成 stages）
-2. `AskUserQuestion` 确认回退操作（会重置下游所有 stage）
-3. `wfctl rollback --instance <id> --stage <stage_id>`
-4. 调用 `wfctl next` 继续调度
-
-### 暂停与恢复
-
-**暂停**（冻结实例，重置运行中 stage）：
-```
-wfctl pause --instance <id> [--reason "暂停原因"]
-```
-wfctl 将 RUNNING stage 重置为 PENDING，实例状态 → PAUSED。`next` 对该实例自动拒绝。
-
-**恢复**（继续调度）：
-```
-wfctl resume --instance <id>
-```
-wfctl 将实例状态 → ACTIVE。随后调用 `wfctl next` 继续调度。
-
-恢复后原先被重置为 PENDING 的 stage 会重新 spawn。
-
-### 跳过 stage
-
-用户希望跳过某个 PENDING stage（已完成或不需要执行）时：
-```
-wfctl skip --instance <id> --stage <stage_id> [--reason "跳过原因"]
-```
-wfctl 标记 stage DONE、打锚点、写 deviation。随后调用 `wfctl next`——下游 stage 自然解除阻塞。
-
-跳过仅适用于 PENDING 状态。RUNNING / AWAITING_CONFIRM / ERROR 各有专用命令（terminate / confirm / retry）。
-
-### 终止实例
-
-用户要求取消时：
-```
-wfctl terminate --instance <id> [--reason "终止原因"]
-```
-
-一级实例未合入 main 时，wfctl 返回 `requires_confirmation` 而非执行。此时向用户呈现确认：
-```
-AskUserQuestion: "实例 X 尚未合入 main，强制终止将丢失未合并产物。是否继续？"
-```
-用户确认后加 `--force` 重试：
-```
-wfctl terminate --instance <id> --force
-```
-
-wfctl 自动：创建备份分支 `wf-backup-{id}`、归档实例目录到 `.agent/archive/`、置 FAILED、清理 tag 和 worktree、写 deviation。
-
-### 恢复误删实例
-
-```
-wfctl restore --instance <id>
-```
-
-从 `.agent/archive/{id}/` 恢复实例目录，从 `wf-backup-{id}` 分支重建 worktree。
-
-### 中断恢复
-
-编排器被重新唤醒时：
-1. `wfctl status` 查看全局状态
-2. 若存在僵尸实例（无 worktree 或有残留 tag）→ `wfctl cleanup` 清理。清理前 wfctl 自动创建备份分支和归档实例目录
-3. 有 ACTIVE 实例 → `wfctl sync --instance <id>` 对齐消息池 → `wfctl next` 继续调度
-4. 无活跃实例 → 等待用户指令，**禁止自行创建新实例**
+| 场景 | 命令 | 关键点 |
+|------|------|--------|
+| 查看状态 | `wfctl status [--instance <id>]` | 项目全局或单实例详情 |
+| 回退 | `wfctl rollback --instance <id> --stage <id>` | 先 `AskUserQuestion` 确认，重置下游所有 stage |
+| 暂停 | `wfctl pause --instance <id>` | RUNNING → PENDING，实例 → PAUSED |
+| 恢复 | `wfctl resume --instance <id>` | PAUSED → ACTIVE，随后调 `next` |
+| 跳过 | `wfctl skip --instance <id> --stage <id>` | 仅 PENDING；非 PENDING 需 `--force` |
+| 终止 | `wfctl terminate --instance <id> [--force]` | 一级实例未合入需确认后 `--force` |
+| 恢复误删 | `wfctl restore --instance <id>` | 从 `.agent/archive/` 恢复 |
+| 中断恢复 | `status` → `cleanup` → `sync` → `next` | 编排器重新唤醒时执行 |
 
 ### worktree 自动同步
 
-wfctl 在每次 `next` 时自动同步 worktree 与上游：
-- **一级实例**：`next` 开头自动合并本地 main HEAD → 实例 worktree
-- **子实例**：`next` 开头自动合并父实例 worktree HEAD → 子实例 worktree
-- **stage continue**：复用 SubAgent 前，自动合并实例 HEAD → stage worktree
-
-同步失败静默跳过，通过 `SYNC_SKIPPED` deviation 留痕。编排器无需额外操作——这是一个内置的底层机制。
+wfctl 在每次 `next` 时自动同步。编排器无需额外操作。
 
 ---
 
@@ -434,7 +314,9 @@ wfctl 在每次 `next` 时自动同步 worktree 与上游：
 
 - `references/wfctl-commands.md` —— wfctl 全部命令的签名、参数、返回 JSON 结构。**首次调度前必读**。
 - `references/subagent-prompt-template.md` —— SubAgent prompt 构造模板，含全部占位符来源表和特殊场景处理。
-- `references/model-mapping.yaml` —— 按平台将抽象档位（light/standard/heavy）解析为具体模型名。新增平台时只改此文件。
+- `references/model-mapping.yaml` —— 按平台将抽象档位（light/standard/heavy）解析为具体模型名。
+- `references/action-handlers.md` —— 非 confirm action 的完整 JSON 示例和执行步骤。
+- `references/edge-cases.md` —— 回退、暂停、跳过、终止、中断恢复等低频场景的完整操作流程。
 
 ---
 
