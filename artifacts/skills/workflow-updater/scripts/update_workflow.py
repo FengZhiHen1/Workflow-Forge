@@ -63,6 +63,23 @@ def extract_child_workflow_refs(yaml_path: Path) -> list[str]:
     return refs
 
 
+def extract_skill_refs(yaml_path: Path) -> list[str]:
+    """从 WORKFLOW.yaml 的 stages 中提取 skill_id 引用列表（去重）。"""
+    if not yaml_path.exists():
+        return []
+    refs: list[str] = []
+    for line in yaml_path.read_text(encoding="utf-8").split("\n"):
+        if "#" in line:
+            line = line.split("#")[0]
+        m = re.match(r"^\s+skill_id:\s+(.+?)\s*$", line)
+        if not m:
+            continue
+        ref = m.group(1).strip()
+        if ref and not ref.startswith("<"):
+            refs.append(ref)
+    return list(set(refs))
+
+
 def _parse_ref(ref: str) -> tuple[str, str | None]:
     """解析引用字符串为 (workflow_id, version_or_none)。"""
     if "@" in ref:
@@ -357,6 +374,10 @@ def update_workflow(wf_factory: dict, target_root: Path,
                                target_root / ".claude" / "skills",
                                report, dry_run)
 
+    # 2.5 全局 Skill（从 YAML skill_id 引用中解析，不在 workflow skills/ 目录下的）
+    if not workflow_only:
+        _update_global_skills_for_workflow(wf_factory, target_root, report, dry_run)
+
     # 3. 共享资源
     if not skills_only:
         for shared_dir_name in ["references", "scripts"]:
@@ -425,6 +446,53 @@ def _update_skills_dir(skills_src: Path, wf_skills_dst: Path,
                 shutil.rmtree(target)
             copy_tree_with_report(skill_item, target)
         report["actions"].append(f"[UPDATE] Skill '{skill_name}' ({changes})")
+
+
+def _update_global_skills_for_workflow(wf_factory: dict, target_root: Path,
+                                        report: dict, dry_run: bool) -> None:
+    """更新工作流 YAML 中 skill_id 引用的全局 Skill。
+
+    从 WORKFLOW.yaml 解析 skill_id 引用，过滤掉已在 workflow 本地 skills/ 目录中的，
+    只处理 artifacts/skills/ 下的全局 Skill。
+    """
+    yaml_path = wf_factory["path"] / "WORKFLOW.yaml"
+    skill_refs = extract_skill_refs(yaml_path)
+    if not skill_refs:
+        return
+
+    # workflow 本地 skills/ 中已有的 skill 名称
+    local_skill_names: set[str] = set()
+    local_skills_dir = wf_factory["path"] / "skills"
+    if local_skills_dir.exists():
+        local_skill_names = {s.name for s in local_skills_dir.iterdir()
+                            if s.is_dir() and s.name not in EXCLUDED_NAMES}
+
+    # 推导 artifacts/skills/ 路径（wf_factory["path"] = .../artifacts/workflows/<dir>/）
+    artifacts_dir = wf_factory["path"].parent.parent  # artifacts/
+    global_skills_src = artifacts_dir / "skills"
+
+    # 过滤出需作为全局 Skill 处理的引用
+    global_skill_refs = [ref for ref in skill_refs if ref not in local_skill_names]
+
+    for skill_name in global_skill_refs:
+        skill_src = global_skills_src / skill_name
+        if not skill_src.exists() or not (skill_src / "SKILL.md").exists():
+            report["actions"].append(
+                f"[WARN] 全局 Skill '{skill_name}' 在 artifacts/skills/ 中未找到，跳过")
+            continue
+
+        target = target_root / ".claude" / "skills" / skill_name
+        diff = diff_directory(skill_src, target)
+        if diff["identical"]:
+            report["actions"].append(f"[SKIP] 全局 Skill '{skill_name}' 无变化")
+            continue
+
+        changes = _diff_summary(diff)
+        if not dry_run:
+            if target.exists():
+                shutil.rmtree(target)
+            copy_tree_with_report(skill_src, target)
+        report["actions"].append(f"[UPDATE] 全局 Skill '{skill_name}' ({changes})")
 
 
 def _diff_summary(diff: dict) -> str:
@@ -513,6 +581,8 @@ def check_workflow_updates_recursive(
     factory: list[dict],
     target_root: Path,
     no_recursive: bool = False,
+    factory_skills: list[dict] | None = None,
+    installed_skills: list[dict] | None = None,
 ) -> list[dict]:
     """对比已安装与生产车间，返回可更新的工作流列表（含子工作流）。"""
     updates = check_workflow_updates(installed, factory)
@@ -553,6 +623,53 @@ def check_workflow_updates_recursive(
                         "_parent": inst["workflow_id"],
                     })
 
+            # 检查子工作流的全局 Skill 依赖
+            if factory_skills is not None and installed_skills is not None:
+                yaml_path = child["path"] / "WORKFLOW.yaml"
+                skill_refs = extract_skill_refs(yaml_path)
+                child_local_names: set[str] = set()
+                child_skills_dir = child["path"] / "skills"
+                if child_skills_dir.exists():
+                    child_local_names = {
+                        s.name for s in child_skills_dir.iterdir()
+                        if s.is_dir() and s.name not in EXCLUDED_NAMES}
+                for skill_name in skill_refs:
+                    if skill_name in child_local_names:
+                        continue
+                    factory_skill = next(
+                        (s for s in factory_skills if s["skill_id"] == skill_name), None)
+                    if not factory_skill:
+                        updates.append({
+                            "type": "workflow",
+                            "id": child["workflow_id"],
+                            "changes":
+                                f"全局 Skill '{skill_name}' 在 artifacts/skills/ 中未找到",
+                            "_is_child": True,
+                            "_parent": inst["workflow_id"],
+                        })
+                        continue
+                    installed_skill = find_installed_skill(installed_skills, skill_name)
+                    if not installed_skill:
+                        updates.append({
+                            "type": "workflow",
+                            "id": child["workflow_id"],
+                            "changes": f"需拉取全局 Skill '{skill_name}'",
+                            "_is_child": True,
+                            "_parent": inst["workflow_id"],
+                        })
+                    else:
+                        sk_diff = diff_directory(factory_skill["path"],
+                                                  installed_skill["path"])
+                        if not sk_diff["identical"]:
+                            updates.append({
+                                "type": "workflow",
+                                "id": child["workflow_id"],
+                                "changes":
+                                    f"全局 Skill '{skill_name}' ({_diff_summary(sk_diff)})",
+                                "_is_child": True,
+                                "_parent": inst["workflow_id"],
+                            })
+
     return updates
 
 
@@ -587,8 +704,62 @@ def main() -> None:
         wf_updates = check_workflow_updates_recursive(
             installed_wfs, factory_wfs, target_root,
             no_recursive=args.no_recursive,
+            factory_skills=factory_skills,
+            installed_skills=installed_skills,
         )
         sk_updates = check_skill_updates(installed_skills, factory_skills)
+
+        # 检查每个已安装工作流的全局 Skill 依赖
+        _seen_global_skill_alerts: set[tuple[str, str]] = set()
+        for inst in installed_wfs:
+            factory_match = next((f for f in factory_wfs
+                                  if f["workflow_id"] == inst["workflow_id"]), None)
+            if not factory_match:
+                continue
+            yaml_path = factory_match["path"] / "WORKFLOW.yaml"
+            skill_refs = extract_skill_refs(yaml_path)
+            if not skill_refs:
+                continue
+            # 过滤掉已在 workflow 本地 skills/ 目录中的
+            local_names: set[str] = set()
+            local_skills_dir = factory_match["path"] / "skills"
+            if local_skills_dir.exists():
+                local_names = {s.name for s in local_skills_dir.iterdir()
+                               if s.is_dir() and s.name not in EXCLUDED_NAMES}
+            for skill_name in skill_refs:
+                if skill_name in local_names:
+                    continue
+                key = (inst["workflow_id"], skill_name)
+                if key in _seen_global_skill_alerts:
+                    continue
+                _seen_global_skill_alerts.add(key)
+                factory_skill = next(
+                    (s for s in factory_skills if s["skill_id"] == skill_name), None)
+                if not factory_skill:
+                    wf_updates.append({
+                        "type": "workflow",
+                        "id": inst["workflow_id"],
+                        "changes":
+                            f"全局 Skill '{skill_name}' 在 artifacts/skills/ 中未找到",
+                    })
+                    continue
+                installed_skill = find_installed_skill(installed_skills, skill_name)
+                if not installed_skill:
+                    wf_updates.append({
+                        "type": "workflow",
+                        "id": inst["workflow_id"],
+                        "changes": f"需拉取全局 Skill '{skill_name}'",
+                    })
+                else:
+                    diff = diff_directory(factory_skill["path"],
+                                          installed_skill["path"])
+                    if not diff["identical"]:
+                        wf_updates.append({
+                            "type": "workflow",
+                            "id": inst["workflow_id"],
+                            "changes":
+                                f"全局 Skill '{skill_name}' ({_diff_summary(diff)})",
+                        })
 
         if not wf_updates and not sk_updates:
             print("[OK] 所有已安装工作流和 Skill 均为最新")
