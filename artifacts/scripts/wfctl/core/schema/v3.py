@@ -118,6 +118,7 @@ class V3Adapter:
             max_loop = None
 
         loop_counter_stage = str(raw["loop_counter_stage"]) if "loop_counter_stage" in raw else None
+        cascade_reset_until = str(raw["cascade_reset_until"]) if "cascade_reset_until" in raw else None
 
         return EdgeSpec(
             from_stage=from_stage,
@@ -125,6 +126,7 @@ class V3Adapter:
             condition=condition,
             max_loop=max_loop,
             loop_counter_stage=loop_counter_stage,
+            cascade_reset_until=cascade_reset_until,
             choice=str(raw["choice"]) if "choice" in raw else None,
             aggregation=str(raw.get("aggregation", "all")),
         )

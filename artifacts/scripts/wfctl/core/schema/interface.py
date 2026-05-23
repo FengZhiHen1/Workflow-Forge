@@ -63,6 +63,7 @@ class EdgeSpec:
     condition: EdgeCondition
     max_loop: Optional[int] = None
     loop_counter_stage: Optional[str] = None
+    cascade_reset_until: Optional[str] = None
     choice: Optional[str] = None
     aggregation: str = "all"           # "all" | "any"
 

@@ -108,6 +108,8 @@ def collect_downstream(
         for edge in adj.outgoing.get(current, []):
             if edge.condition in exclude_conditions:
                 continue
+            if edge.cascade_reset_until is not None:
+                continue
             if edge.to_stage not in visited:
                 queue.append(edge.to_stage)
 
