@@ -90,7 +90,12 @@ def scan_messages(instance_id: str, consumed_ids: set[str], messages_dir: str | 
             if mid and mid not in consumed_ids:
                 messages.append(data)
         except Exception:
-            continue
+            import sys
+            import traceback
+            print(
+                f"[wfctl] WARNING: failed to read message {msg_file.name}: {traceback.format_exc()}",
+                file=sys.stderr,
+            )
 
     # 按时间戳排序
     messages.sort(key=lambda m: m.get("timestamp", ""))

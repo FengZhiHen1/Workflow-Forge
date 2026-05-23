@@ -42,8 +42,9 @@ def _handle_terminate(args) -> dict:
             }
 
     # 0. 创建备份（保底恢复）
+    backup_ok = False
     try:
-        backup_instance(instance_id)
+        backup_ok = backup_instance(instance_id)
     except Exception:
         pass
 
@@ -80,6 +81,14 @@ def _handle_terminate(args) -> dict:
 
     # 5. 记录 deviation
     append_deviation(instance_id, "USER_TERMINATE", args.reason)
+
+    # 6. 清理残留实例目录（backup 后用 shutil.move 移走，但 save_instance
+    #    和 append_deviation 会通过 mkdir(parents=True) 重新创建）
+    if backup_ok:
+        import shutil
+        inst_dir = root / ".agent" / "instances" / instance_id
+        if inst_dir.exists():
+            shutil.rmtree(str(inst_dir), ignore_errors=True)
 
     return {
         "status": "ok",

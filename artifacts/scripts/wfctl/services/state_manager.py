@@ -60,8 +60,15 @@ def consume_messages(instance_id: str, instance: dict, worktree_map: dict[str, P
             if msg.get("modified_files") and wt:
                 validate_modified_files(wt, msg["modified_files"], stage_id)
         except Exception as e:
+            import traceback
             stage["status"] = "ERROR"
-            _append_timeline(instance_id, stage_id, "running→error", {"reason": str(e), "message_id": msg["message_id"]})
+            _append_timeline(instance_id, stage_id, "running→error", {
+                "reason": str(e),
+                "message_id": msg["message_id"],
+                "intended_status": msg.get("status"),
+                "modified_files": msg.get("modified_files", []),
+                "traceback": traceback.format_exc(),
+            })
             consumed_ids.add(msg["message_id"])
             changes.append({
                 "stage_id": stage_id,
