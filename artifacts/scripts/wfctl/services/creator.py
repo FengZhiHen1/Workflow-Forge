@@ -20,6 +20,24 @@ from services.worktree_manager import (
 )
 
 
+def _generate_instance_id(root: Path) -> str:
+    """生成 instance_id（YYYYMMDD-NNN），同时扫描活跃实例和归档实例，避免冲突。"""
+    prefix = time.strftime("%Y%m%d") + "-"
+    existing_nums: set[int] = set()
+
+    for dir_name in ("instances", "archive"):
+        d = root / ".agent" / dir_name
+        if d.exists():
+            for entry in d.iterdir():
+                if entry.is_dir() and entry.name.startswith(prefix):
+                    parts = entry.name.split("-")
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        existing_nums.add(int(parts[1]))
+
+    next_num = max(existing_nums, default=0) + 1
+    return f"{prefix}{next_num:03d}"
+
+
 def _compute_nesting_depth(instance_id: str, root: Path) -> int:
     """沿 parent_instance_id 链向上计算嵌套深度（含自身）。"""
     depth = 1
@@ -111,15 +129,8 @@ def create_instance(
 
     spec = load_workflow(yaml_file)
 
-    # 生成 instance_id
-    instance_id = time.strftime("%Y%m%d") + "-001"
-    instances_dir = root / ".agent" / "instances"
-    if instances_dir.exists():
-        existing = [d.name for d in instances_dir.iterdir() if d.is_dir()]
-        prefix = time.strftime("%Y%m%d") + "-"
-        nums = [int(n.split("-")[1]) for n in existing if n.startswith(prefix) and n.split("-")[1].isdigit()]
-        next_num = max(nums, default=0) + 1
-        instance_id = f"{prefix}{next_num:03d}"
+    # 生成 instance_id（同时扫描活跃实例和归档实例，避免冲突）
+    instance_id = _generate_instance_id(root)
 
     # 创建前清理残留的 git worktree 注册（目录已丢失但注册还在）
     from core.git_ops import git_worktree_prune
@@ -128,7 +139,7 @@ def create_instance(
     # 创建实例 worktree
     worktree = None
     anchor_name = f"{spec.anchor_prefix}-{instance_id}-s00-workflow-start"
-    inst_dir = instances_dir / instance_id
+    inst_dir = root / ".agent" / "instances" / instance_id
 
     try:
         base_ref = worktree_base_ref or "HEAD"
@@ -274,19 +285,8 @@ def _create_from_clone(
     wf_dir = find_workflow_dir(actual_wf_id, actual_version)
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")
 
-    # 生成新 instance_id
-    instance_id = time.strftime("%Y%m%d") + "-001"
-    instances_dir = root / ".agent" / "instances"
-    if instances_dir.exists():
-        existing = [d.name for d in instances_dir.iterdir() if d.is_dir()]
-        prefix = time.strftime("%Y%m%d") + "-"
-        nums = [
-            int(n.split("-")[1])
-            for n in existing
-            if n.startswith(prefix) and n.split("-")[1].isdigit()
-        ]
-        next_num = max(nums, default=0) + 1
-        instance_id = f"{prefix}{next_num:03d}"
+    # 生成新 instance_id（同时扫描活跃实例和归档实例，避免冲突）
+    instance_id = _generate_instance_id(root)
 
     goal = goal or old_inst.get("goal", "")
 
@@ -305,7 +305,7 @@ def _create_from_clone(
         worktree_source = "main-head"
 
     anchor_name = f"{spec.anchor_prefix}-{instance_id}-s00-workflow-start"
-    inst_dir = instances_dir / instance_id
+    inst_dir = root / ".agent" / "instances" / instance_id
     worktree = None
 
     try:
