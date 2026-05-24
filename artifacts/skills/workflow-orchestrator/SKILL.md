@@ -51,6 +51,7 @@ python .claude/scripts/wfctl/main.py <command> [options]
 | `references/subagent-prompt-template.md` | SubAgent prompt 构造模板，含全部占位符来源表和特殊场景处理 |
 | `references/model-mapping.yaml` | 模型档位映射表——按平台将 light/standard/heavy 解析为具体模型名 |
 | `references/action-handlers.md` | spawn/continue/child_next/conflict/merge_to_main/terminate/await 的完整 JSON 示例和执行步骤 |
+| `references/running-agents-mapping.md` | SubAgent 映射表 schema、生命周期、命中规则、编排器操作速查 |
 | `references/edge-cases.md` | 回退/暂停/跳过/终止/恢复等低频场景的完整操作流程 |
 | `.claude/contracts/common.md` | 通用契约（SubAgent 自行读取，编排器不读不转述） |
 
@@ -316,6 +317,7 @@ wfctl 在每次 `next` 时自动同步。编排器无需额外操作。
 - `references/subagent-prompt-template.md` —— SubAgent prompt 构造模板，含全部占位符来源表和特殊场景处理。
 - `references/model-mapping.yaml` —— 按平台将抽象档位（light/standard/heavy）解析为具体模型名。
 - `references/action-handlers.md` —— 非 confirm action 的完整 JSON 示例和执行步骤。
+- `references/running-agents-mapping.md` —— SubAgent 映射表 schema、生命周期、命中规则、编排器操作速查。
 - `references/edge-cases.md` —— 回退、暂停、跳过、终止、中断恢复等低频场景的完整操作流程。
 
 ---
