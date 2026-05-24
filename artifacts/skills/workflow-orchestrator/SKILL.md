@@ -207,11 +207,25 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 执行步骤：
 0. **确认时机判断**：读取每条 pending 的 questions 内容，判断是前置对齐还是终审验收（详见「确认时机判断」章节）
-1. 从 `pending` 中依次选取 stage，通过 `AskUserQuestion` 逐一向用户呈现。若判断为前置对齐，在 description 中按「确认时机判断」的呈现方式追加警告
-2. 每个问题呈现时，解析 SubAgent 提供的 `confirm_questions` 中的 question/options/header/multiSelect
+1. **解析 questions 为 AskUserQuestion**：SubAgent 的 `confirm_questions` 按 `contracts/output.md` §七 的格式约定产出，每条 option 为 `"<choice>：<显示文本>"`。你按以下规则解析：
+
+   a. 对每条 option，找**第一个中文全角冒号 `：`** 的位置
+   b. `：` 之前 = `label`（即 edge 的 `choice` 值），`：` 之后 = `description`（用户可见描述）
+   c. 若某条 option 不含 `：`，整条作为 `label`（兼容旧格式）
+
+   将解析结果构造为 `AskUserQuestion`：
+   - `multiSelect: false`
+   - `header`: "确认 `{stage} 阶段`"
+   - `options`: `[{label: "<choice>", description: "<显示文本>"}, ...]`
+
+   用户选择后，答案直接为 `label` 值——无需再做文本解析，直接用作 `--choice`。
+
+   示例：`"full_design：全新设计，从意图澄清开始"` → `label: "full_design"`, `description: "全新设计，从意图澄清开始"` → 用户选此项 → `--choice "full_design"`
+
+2. 若判断为前置对齐，在 description 中按「确认时机判断」的呈现方式追加警告
 3. 用户选择后，**使用 `pending` 条目中的 `instance_id`**（不是父实例 ID）调用：
    ```
-   wfctl confirm --instance <pending条目.instance_id> --stage <stage_id> --choice "<选项值>" [--feedback "..."]
+   wfctl confirm --instance <pending条目.instance_id> --stage <stage_id> --choice "<label>" [--feedback "..."]
    ```
 4. 父实例自身的确认 → 确认后调 `wfctl next --instance <父实例>`。子实例确认 → 确认后**对父实例**调 `wfctl next`，父 `next` 会感知到子实例状态变化并聚合下一轮 confirm
 5. **关键**：`confirm` action 是当前时刻的快照。你选取 stage 逐个呈现，而不是一次性全部展示。确认的 `--instance` 始终取 pending 条目中的 `instance_id`
@@ -229,7 +243,7 @@ wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITIN
 3. 立即调用 `wfctl next`——剩余 pending 自然出现在下一轮
 4. 重复，直到 `next` 不再返回 `confirm` action
 
-**`--choice` 的值**来自 SubAgent 在 `confirm_questions` 中预设的选项值。你只做传话——不修改选项，不自行生成选项。
+**`--choice` 的值**：取用户选择的 `label` 值（见步骤 1 的解析规则），直接传给 `wfctl confirm`。不修改、不自生成。
 
 **拒绝处理**：用户选择 `rejected` 选项时：
 - 有 `rejected` edge → stage → PENDING（重做），SubAgent 重新 spawn 时注入 `--feedback`

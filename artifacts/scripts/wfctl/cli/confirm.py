@@ -162,10 +162,19 @@ def _handle_confirm(args) -> dict:
         return {"status": "ok", "stage_id": stage_id, "new_status": "DONE",
                 "rejected": True, "target": rejected_edge.to_stage}
 
-    # 无匹配 edge → instance FAILED
+    # 无匹配 edge → instance FAILED，列出合法选项辅助排查
+    all_choices: list[str] = []
+    for e in confirmed_edges + rejected_edges:
+        if e.choice and e.choice not in all_choices:
+            all_choices.append(e.choice)
+    hint = f" 合法选项：{all_choices}" if all_choices else "（该 stage 未定义任何带 choice 的边）"
     instance["status"] = "FAILED"
     save_instance(args.instance, instance)
-    return {"status": "instance_failed", "stage_id": stage_id, "reason": f"unknown choice: {choice}"}
+    return {
+        "status": "instance_failed",
+        "stage_id": stage_id,
+        "reason": f"未知的选项：'{choice}'。{hint}",
+    }
 
 
 def _handle_merge_confirm(args, instance: dict) -> dict:
