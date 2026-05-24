@@ -94,6 +94,7 @@ description: >
 | **子工作流** | `workflow: <id>@<ver>` | 子任务本身是多 Stage 流程，有独立确认点，可独立重试 |
 | **parallel 扇出** | `parallel: {source: ...}` | 同一 Skill 逻辑在 N 个独立目标上执行。⚠️ 若 source stage 同时设了确认点，有特殊约束，见下方「parallel 扇出 + 确认点」 |
 | **多 Stage 串行** | 多个 `skill_id` Stage | 不同 Skill 按顺序接力 |
+| **SUCCESS choice 路由** | `choice` 字段用于 `success` 边 | SubAgent 自主判定路径，无需确认点。见下方「条件路由」节 |
 
 **核心判断标准**：如果 Stage 内部还要分好几步、还要用户确认——那就该用子工作流而不是单个 Skill。
 
@@ -135,6 +136,52 @@ description: >
 **原因**：终局确认直接关闭 stage（AWAITING_CONFIRM → DONE），SubAgent 不会再获得控制权。此时若消息中未包含 `parallel_targets`，下游并行拆分无法执行。中继确认让 stage 回到 PENDING → SubAgent 通过 `continue` 继续 → 处理用户选择 → 产出 `parallel_targets` → 上报 DONE(success) → `success` 边解锁下游并行 stage。
 
 **运行时防护**：`wfctl confirm` 会在终局确认阶段检测此违规——若 stage 的 `requires_parallel_targets` 已持久化为 `true` 而消息中无 `parallel_targets`，将拒绝关闭并返回 `PARALLEL_TARGETS_REQUIRED` 错误。但不应依赖运行时拦截——设计阶段就应避免。
+
+### 条件路由：success + choice vs confirmed + choice
+
+当 stage 的下游有多条互斥路径需要根据运行时判定来路由时，有两种互不依赖的机制：
+
+| | `success` + `choice` | `confirmed` + `choice` |
+|---|---|---|
+| **谁决定** | SubAgent 自主判断 | 用户确认选择 |
+| **需要 confirmation_point** | 否 | 是 |
+| **SubAgent 行为** | 分析 → 选定 choice → `DONE --choice "xxx"` | 分析 → `AWAITING_CONFIRM` → 用户确认 → continue → `DONE` |
+| **典型场景** | 检测结果明确，SubAgent 能独立判定路径（如：扫描到代码→走逆向工程；无代码→走全新设计） | 用户做主观决策（如：方案选择、范围确认、是否需要留档） |
+| **安全网** | `valid_routing_choices` 校验 choice 合法性，非法则置 ERROR | `valid_choices` 编排器层面兜底 + confirm 拦截 |
+
+**核心原则：不要为了获得条件路由而设立确认点。** 如果 SubAgent 自己就能判断该走哪条路，用 `success + choice`，不设 `confirmation_point`。设了确认点反而多一轮无意义交互。
+
+**YAML 示例——SubAgent 自主路由（无需确认点）**：
+
+```yaml
+- stage_id: s02-analyze
+  name: "分析与路由判定"
+  skill_id: path-analyzer
+  confirmation_point: false               # ← 无需确认
+
+edges:
+  - from: s02-analyze
+    to: s03-full-design
+    condition: success
+    choice: "full_design"                  # ← SubAgent 的 --choice 匹配此处
+  - from: s02-analyze
+    to: s04-reverse-engineer
+    condition: success
+    choice: "code_only"
+  - from: s02-analyze
+    to: s99-workflow-end
+    condition: failure
+```
+
+**决策流程**：
+
+```
+SubAgent 能自主决定走哪条路？
+  ├─ 是 → success + choice，不设 confirmation_point
+  └─ 否，需要用户判断 → confirmed + choice + confirmation_point: true
+```
+
+**注意**：若全部 SUCCESS 边都没有 `choice`，则 `valid_routing_choices` 为空列表——SubAgent 无需传 `--choice`，DONE 后所有 SUCCESS 边视为同时满足（OR 语义激活下游）。
 
 ## 轨道系统
 
