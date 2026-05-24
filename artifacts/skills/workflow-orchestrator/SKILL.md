@@ -164,6 +164,8 @@ wfctl next --instance <instance_id>
 2. 按 `references/subagent-prompt-template.md` 构造 prompt
 3. 按 `references/model-mapping.yaml` 解析 model 档位 → `Agent(model=...)`
 4. `Agent(worktree=<worktree>, model=<resolved>, prompt=<prompt>, run_in_background=true)`
+   - **禁止**传入 `isolation: "worktree"`——worktree 由 wfctl 管理（`create_instance_worktree` / `create_stage_worktree`），Agent 工具不应再创建第二层隔离
+   - `worktree` 参数仅用于设置 SubAgent 的工作目录，不是隔离模式
 5. 写 `.agent/running_agents.json`：`{skill_id, system_agent_id, stage_id, instance_id}`（按 `system_agent_id` 去重）
 6. 不等待——继续下一个 action
 

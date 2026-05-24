@@ -34,6 +34,7 @@
 2. 按 `references/subagent-prompt-template.md` 模板构造 prompt。prompt 仅注入工作流协议信息（身份、上报契约、上下文），不包含 Skill 正文——SubAgent 会在启动步骤中自行读取 `<skill_path>` 指定的 SKILL.md 文件
 3. 解析模型：读取 `references/model-mapping.yaml`，将 action 的 `model` 档位按当前平台映射为具体模型名，传入 `Agent(model=...)`。若 action 无 `model` 字段则省略，Agent 继承父级模型
 4. 启动 SubAgent：`Agent(worktree=<worktree>, model=<resolved_model>, prompt=<构造的prompt>, run_in_background=true)`
+   - **禁止** `isolation: "worktree"`：worktree 已由 wfctl 管理，Agent 工具不应创建第二层隔离
 5. **写入映射表**：追加条目到 `.agent/running_agents.json`：
    ```json
    {"skill_id": "<skill_id>", "system_agent_id": "<平台返回的ID>", "stage_id": "<stage_id>", "instance_id": "<instance_id>"}
