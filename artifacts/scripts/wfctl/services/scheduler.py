@@ -594,17 +594,28 @@ def _resolve_virtual_stages(adj, instance: dict, instance_id: str, spec) -> None
 
 
 def _all_satisfied_virtual(upstream_edges: list, stage_states: dict) -> bool:
-    """虚拟 stage 的就绪判断：只检查上游是否 DONE（虚拟 stage 不参与 error/reject 等复杂逻辑）。"""
+    """虚拟 stage 的就绪判断：按 exit_condition 匹配边条件。
+
+    与 _all_satisfied 对齐：每条边仅在 upstream stage DONE 且 exit_condition
+    匹配时生效。FAILURE / REJECTED / LOOP_EXCEEDED 仅由专用 handler 触发，
+    不计入就绪。
+    """
     if not upstream_edges:
         return True
     from core.schema.interface import EdgeCondition
     for edge in upstream_edges:
         upstream_stage = stage_states.get(edge.from_stage, {})
         upstream_status = upstream_stage.get("status", "PENDING")
-        if edge.condition in (EdgeCondition.ALWAYS, EdgeCondition.SUCCESS, EdgeCondition.CONFIRMED,
-                              EdgeCondition.REJECTED, EdgeCondition.LOOP_EXCEEDED, EdgeCondition.FAILURE):
-            if upstream_status == "DONE":
-                return True
+        if upstream_status != "DONE":
+            continue
+        exit_cond = upstream_stage.get("exit_condition", "")
+
+        if edge.condition == EdgeCondition.ALWAYS:
+            return True
+        if edge.condition == EdgeCondition.SUCCESS and exit_cond in ("success", ""):
+            return True
+        if edge.condition == EdgeCondition.CONFIRMED and exit_cond in ("confirmed", ""):
+            return True
     return False
 
 

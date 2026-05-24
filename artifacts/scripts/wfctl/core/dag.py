@@ -147,6 +147,8 @@ def collect_ancestors(
         for edge in adj.incoming.get(current, []):
             if edge.condition in exclude_conditions:
                 continue
+            if edge.cascade_reset_until is not None:
+                continue
             if edge.from_stage not in visited:
                 queue.append(edge.from_stage)
 
