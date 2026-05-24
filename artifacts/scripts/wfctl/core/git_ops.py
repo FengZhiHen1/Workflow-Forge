@@ -62,6 +62,14 @@ def git_tag_delete(repo: Path, tag_name: str) -> tuple[int, str, str]:
     return _git(repo, "tag", "-d", tag_name)
 
 
+def git_tag_exists(repo: Path, tag_name: str) -> bool:
+    """检查 tag 是否存在。"""
+    rc, stdout, _ = _git(repo, "tag", "-l", tag_name)
+    if rc != 0:
+        return False
+    return stdout.strip() == tag_name
+
+
 def git_status_porcelain(repo: Path) -> tuple[int, str, str]:
     """git -C <repo> status --porcelain"""
     return _git(repo, "status", "--porcelain")

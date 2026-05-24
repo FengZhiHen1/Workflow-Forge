@@ -16,7 +16,7 @@ from core.dag import (
     get_rejected_edges,
 )
 from core.errors import GitError, InputError, StateError
-from core.git_ops import git_add_all, git_commit_file, git_rev_parse
+from core.git_ops import git_add_all, git_commit_file, git_rev_parse, git_status_porcelain
 from core.lock import FileLock
 from core.project import find_root
 from core.schema.interface import EdgeCondition, StageSpec, StageTargetType, WorkflowSpec
@@ -79,6 +79,9 @@ def run_next(instance_id: str) -> dict:
 
         # 2. 自动提交 DONE stage 的 worktree 变更 + 打锚点
         _auto_commit_done_stages(instance_id, changes, worktree_map, spec.anchor_prefix)
+
+        # 2.5. 补锚：为 confirm 驱动 DONE 的 stage（不在 changes 中）确保锚点存在
+        _ensure_anchors_for_done_stages(instance_id, instance, worktree_map, spec.anchor_prefix)
 
         # 3. 并发 stage 合并：将 DONE stage 的独立 worktree 合入实例 worktree
         merge_conflict_actions = _merge_done_stage_worktrees(instance_id, instance, changes, worktree_map)
@@ -276,6 +279,62 @@ def _auto_commit_done_stages(instance_id: str, changes: list[dict], worktree_map
         anchor = f"{anchor_prefix}-{instance_id}-{stage_inst}"
         try:
             tag_anchor(instance_id, anchor, worktree=worktree)
+        except Exception:
+            pass
+
+
+def _ensure_anchors_for_done_stages(instance_id: str, instance: dict, worktree_map: dict[str, Path], anchor_prefix: str) -> None:
+    """为所有 DONE 但缺锚点的 stage 补打锚点。
+
+    覆盖 confirm 驱动 DONE 的场景——confirm 直接写入 DONE 状态而不经过
+    _auto_commit_done_stages 的 changes 路径，导致锚点缺失。
+    本函数扫描所有 DONE stage，对缺少 git tag 的逐一补提交 + 补锚。
+    """
+    from core.git_ops import git_add_all, git_commit_file, git_tag_exists
+
+    root = find_root()
+    for s in instance.get("stages", []):
+        if s.get("status") != "DONE":
+            continue
+        stage_id = s["stage_id"]
+        stage_inst = s.get("stage_instance_id", stage_id)
+        anchor_name = f"{anchor_prefix}-{instance_id}-{stage_inst}"
+
+        worktree = worktree_map.get(stage_id)
+        if not worktree or not worktree.exists():
+            continue
+
+        if git_tag_exists(worktree, anchor_name):
+            continue
+
+        # 检查 worktree 是否有未提交变更，无变更则只补锚点
+        rc, stdout, _ = git_status_porcelain(worktree)
+        if rc != 0:
+            continue
+        if stdout.strip():
+            report = f"stage {stage_id} done (confirmed)"
+            full_msg = (
+                f"{report}\n\n"
+                f"wf-stage: {stage_inst}\n"
+                f"wf-instance: {instance_id}\n"
+            )
+            msg_file = worktree / ".wfctl_commit_msg"
+            msg_file.write_text(full_msg, encoding="utf-8")
+
+            rc_add, _, stderr = git_add_all(worktree)
+            if rc_add != 0:
+                msg_file.unlink(missing_ok=True)
+                continue
+
+            rc_commit, _, _ = git_commit_file(worktree, msg_file)
+            msg_file.unlink(missing_ok=True)
+            if rc_commit != 0:
+                continue
+
+        # 打锚点
+        from services.worktree_manager import tag_anchor
+        try:
+            tag_anchor(instance_id, anchor_name, worktree=worktree)
         except Exception:
             pass
 
