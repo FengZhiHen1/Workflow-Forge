@@ -10,6 +10,8 @@
 SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`，SubAgent 在启动步骤中自行读取 SKILL.md 文件。
 编排器的 prompt **不包含** Skill 正文，**只注入工作流协议层信息**：身份、上报契约、上下文、特殊要求。
 
+**SubAgent 的工作边界是单个 stage**。编排器利用全局 DAG 视野，在 prompt 中注入当前 stage 名称（`<stage_name>`）和下游 stage 清单（`<successor_stages_block>`），让 SubAgent 明确"谁在我后面、负责什么"，从而自然遵守边界——而非依赖泛化禁令。完成后必须立即上报 DONE/AWAITING_CONFIRM 并停止，**禁止**自主推进。
+
 ---
 
 ## 二、模板
@@ -17,6 +19,14 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 ```
 你正在工作流实例 `<instance_id>` 的 stage `<stage_id>` 中执行。
 工作流目标：`<goal>`
+
+## 工作边界
+
+你正在执行 stage「<stage_name>」（<stage_id>）。
+
+<successor_stages_block>
+
+阅读 SKILL.md 时请注意：SKILL.md 可能描述了跨越多个 stage 的完整流程——你只需执行其中属于「<stage_name>」的部分，其余部分属于下游 stage。如果不确定边界，上报 AWAITING_CONFIRM 确认。
 
 ## 启动步骤（按顺序执行）
 
@@ -79,7 +89,31 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 | `<skill_path>` | 编排器按 skill 路径查找规则解析（见 SKILL.md §Step 3），取首个存在的 SKILL.md 绝对路径 |
 | `<goal>` | action 的 `context.goal` |
 | `<worktree>` | action 的 `worktree` 字段 |
+| `<stage_name>` | action 的 `context.stage_name`（wfctl 从 WORKFLOW.yaml 中读取，如"需求分析"） |
+| `<successor_stages_block>` | action 的 `context.successor_stages_block`（wfctl 根据 DAG 动态生成）。详见下方「successor_stages_block 生成规则」 |
 | `<upstream_summaries>` | action 的 `context.upstream_summaries` 数组，每条含 `stage_id` 和 `checkpoint` |
+
+### successor_stages_block 生成规则
+
+编排器从 `adj.outgoing[stage_id]` 收集所有 SUCCESS/always 边指向的后继 stage（排除 failure/rejected/loop_exceeded），按以下规则生成：
+
+**若存在后继**（每个后继一行）：
+```
+本 stage 下游还有以下 stage，它们将由编排器独立调度，**不属于你的职责范围**：
+  - <successor_stage_id>「<successor_name>」
+  - ...
+你只需完成「<stage_name>」的工作，产出 checkpoint，然后上报 DONE / AWAITING_CONFIRM 并停止。后续 stage 由编排器根据你的 checkpoint 和路由选择独立调度。
+```
+
+**若后继与当前 stage 使用同一 skill_id**，追加提醒：
+```
+  - <successor_stage_id>「<successor_name>」⚠️ 与你使用同一 Skill——你只需执行 Skill 中属于「<stage_name>」的部分
+```
+
+**若无后继**：
+```
+你是工作流的最后一个 stage，需产出最终交付物。完成后上报 DONE。
+```
 
 ---
 
@@ -138,9 +172,11 @@ continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id
 
 **第一条消息**（continue prompt）：
 ```
-你正在继续处理 stage `<stage_id>`。工作目录已切换到 `<worktree>`，请执行 `cd <worktree>` 后重新读取文件以获取最新状态。
+你正在继续处理 stage `<stage_id>`（`<stage_name>`）。工作目录已切换到 `<worktree>`，请执行 `cd <worktree>` 后重新读取文件以获取最新状态。
 
 本 stage 的任务目标：`<stage_task>`
+
+<successor_stages_block>
 
 <若上游有确认选择：>
 上一阶段用户确认结果：`<user_choice>`
@@ -158,8 +194,10 @@ continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id
 | 占位符 | 来源 |
 |--------|------|
 | `<stage_id>` | action 的 `stage_id` |
+| `<stage_name>` | WORKFLOW.yaml 中该 stage 的 `name` 字段 |
 | `<worktree>` | action 的 `worktree` |
 | `<stage_task>` | WORKFLOW.yaml 中该 stage 的 `name` 字段（不暴露 stage_id） |
+| `<successor_stages_block>` | 同上（successor_stages_block 生成规则），基于新 stage 的 DAG 后继计算 |
 | `<user_choice>` | 用户在上游 `confirm` 中的 `--choice` 值 |
 | `<feedback>` | 用户在上游 `confirm` 中的 `--feedback` 值（如有） |
 
