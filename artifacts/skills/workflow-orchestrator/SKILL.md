@@ -156,6 +156,7 @@ wfctl next --instance <instance_id>
 | `merge_to_main` | 一级实例先经 `__merge__` 确认；子实例直接合入 | `references/action-handlers.md` §merge_to_main |
 | `terminate` | 报告终态，退出循环 | `references/action-handlers.md` §terminate |
 | `await` | 等待 SubAgent 完成通知 | `references/action-handlers.md` §await |
+| `reinforce` | 向 SubAgent 发送强化消息要求补交产出 | `references/action-handlers.md` §reinforce |
 
 ### spawn —— 启动新 SubAgent
 

@@ -142,3 +142,29 @@
 ```
 
 无就绪 stage 可调度。等待 SubAgent 完成通知（宿主平台会通知你），收到通知后再次调用 `wfctl next`。
+
+---
+
+## reinforce —— 强化重试
+
+```json
+{
+  "action": "reinforce",
+  "type": "parallel_targets_missing",
+  "stage_id": "s08-dispatch-modules",
+  "source_stage_id": "s07-project-sync-and-dispatch",
+  "system_agent_id": "agent-xxx",
+  "retry_count": 1,
+  "max_retry": 2,
+  "message": "你在 stage s07 的上报中未包含 parallel_targets。请根据 contracts/output.md 规范补充..."
+}
+```
+
+**含义**：wfctl 检测到上游 stage 缺失必要产出，但上游 SubAgent 仍存活，调度器自动发起强化重试要求补交。
+
+**执行步骤**：
+
+1. 通过 `SendMessage` 将 `message` 发送给 `system_agent_id` 对应的 SubAgent
+2. SubAgent 收到后应补充产出（`message write --parallel-targets ...`）
+3. 立即再次调用 `wfctl next`——如果 SubAgent 已补充，新消息被消费后自动完成并行拆分；如果未补充，重试计数 +1
+4. 最多重试 2 次，超次后调度器将该 stage 置为 `ERROR`，走现有错误处理链（通常为 `terminate`）

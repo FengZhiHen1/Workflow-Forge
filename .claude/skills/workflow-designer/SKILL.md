@@ -92,7 +92,7 @@ description: >
 | 模式 | YAML 字段 | 何时使用 |
 |------|----------|---------|
 | **子工作流** | `workflow: <id>@<ver>` | 子任务本身是多 Stage 流程，有独立确认点，可独立重试 |
-| **parallel 扇出** | `parallel: {source: ...}` | 同一 Skill 逻辑在 N 个独立目标上执行 |
+| **parallel 扇出** | `parallel: {source: ...}` | 同一 Skill 逻辑在 N 个独立目标上执行。⚠️ 若 source stage 同时设了确认点，有特殊约束，见下方「parallel 扇出 + 确认点」 |
 | **多 Stage 串行** | 多个 `skill_id` Stage | 不同 Skill 按顺序接力 |
 
 **核心判断标准**：如果 Stage 内部还要分好几步、还要用户确认——那就该用子工作流而不是单个 Skill。
@@ -104,6 +104,37 @@ description: >
 - 优化已有工作流：父工作流改了，必须检查子工作流是否有同步优化空间
 - 设计新工作流：判定需要子工作流后，designer 输出子工作流骨架 WORKFLOW.yaml
 - 增量更新：修改父工作流 `workflow` 引用版本时，同步检查子工作流
+
+### parallel 扇出 + 确认点 设计约束
+
+当 stage 同时满足以下两个条件时，存在一条**强制性设计约束**：
+
+1. 本 stage 设有 `confirmation_point: true`
+2. 存在下游 stage 通过 `parallel: {source: <本 stage>}` 引用本 stage 的输出
+
+**约束：该 stage 的确认点不可使用终局确认（`to` 指向下游 stage）。必须使用中继确认（`to` 指向自身，自循环），确保 SubAgent 在用户确认后能继续执行并产出 `parallel_targets`。**
+
+```
+# 错误：终局确认 — SubAgent 在确认后直接关闭，无法产出 parallel_targets
+- from: s07-dispatch
+  to: s08-fanout
+  condition: confirmed
+  choice: "确认调度"
+
+# 正确：中继确认 + success 边 — SubAgent 确认后继续，产出 targets 再 DONE
+- from: s07-dispatch
+  to: s08-fanout
+  condition: success                         # ← DONE(success) 才解锁下游
+- from: s07-dispatch
+  to: s07-dispatch
+  condition: confirmed
+  choice: "确认调度"
+  max_loop: 3                                # ← 自循环，SubAgent 继续执行
+```
+
+**原因**：终局确认直接关闭 stage（AWAITING_CONFIRM → DONE），SubAgent 不会再获得控制权。此时若消息中未包含 `parallel_targets`，下游并行拆分无法执行。中继确认让 stage 回到 PENDING → SubAgent 通过 `continue` 继续 → 处理用户选择 → 产出 `parallel_targets` → 上报 DONE(success) → `success` 边解锁下游并行 stage。
+
+**运行时防护**：`wfctl confirm` 会在终局确认阶段检测此违规——若 stage 的 `requires_parallel_targets` 已持久化为 `true` 而消息中无 `parallel_targets`，将拒绝关闭并返回 `PARALLEL_TARGETS_REQUIRED` 错误。但不应依赖运行时拦截——设计阶段就应避免。
 
 ## 轨道系统
 
@@ -152,6 +183,7 @@ workflow-designer 根据输入特征自动推荐三条轨道之一。用户可�
 | Skill 的 AskUserQuestion 措辞不清 | **Skill 层** | 修改 SKILL.md 的问题描述 | 禁止让 Skill 描述"下一步选项"或工作流行为 |
 | Skill 交互与工作流 edges 不匹配（选项对不上、确认点节奏不对） | **工作流层** | 修改 WORKFLOW.yaml 的 edges / condition / confirm_questions | 禁止修改 SKILL.md 去"匹配"工作流结构 |
 | Skill 产出未被工作流正确消费（如 parallel_targets、文件路径） | **工作流层** | 修改 WORKFLOW.yaml 的配置，而非让 Skill "声明"工作流如何使用它 | 禁止让 Skill 描述自己的工作产物如何被工作流消费 |
+| `parallel.source` 的上游 stage 使用了终局确认，导致 parallel_targets 缺失 | **工作流层** | 改为中继确认（自循环）+ `success` 边；参考「parallel 扇出 + 确认点」节 | 禁止降级为单实例静默执行 |
 | 审计标准本身模糊或误判 | **无需修复** | 标记为"非问题"或"审计标准误报" | — |
 
 **判断原则**：

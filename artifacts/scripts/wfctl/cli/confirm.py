@@ -1,7 +1,10 @@
 """confirm 命令。"""
 
+import json
+
 from core.dag import build_adjacency, get_confirmed_edges, get_loop_exceeded_edge, get_rejected_edges
 from core.errors import InputError
+from core.project import find_root
 from core.schema.loader import load_workflow
 from services.state_manager import _append_timeline, load_instance, save_instance
 
@@ -91,6 +94,10 @@ def _handle_confirm(args) -> dict:
                     "matched": choice, "loop": stage["loop_counter"]}
 
         # 终局确认：edge 指向下游 → stage 结束
+        # 前置拦截：requires_parallel_targets 的 stage 必须在消息中携带 parallel_targets
+        if stage.get("requires_parallel_targets"):
+            _validate_parallel_targets_in_message(args.instance, stage_id, stage)
+
         stage["status"] = "DONE"
         stage["exit_condition"] = "confirmed"
         _append_timeline(args.instance, stage_id, "awaiting_confirm→done",
@@ -276,3 +283,40 @@ def _cascade_reset_on_backward_edge(instance: dict, spec, from_stage_id: str,
                          {"reason": "backward_edge_cascade",
                           "from_stage": from_stage_id,
                           "to_stage": to_stage_id})
+
+
+def _validate_parallel_targets_in_message(instance_id: str, stage_id: str, stage: dict) -> None:
+    """验证 stage 的消息中包含 parallel_targets。缺失时抛出 InputError。"""
+    msg_id = stage.get("output_message_id")
+    if not msg_id:
+        raise InputError(
+            f"Stage {stage_id} 需要产出 parallel_targets 但无 output_message_id。"
+            f"请使用中继确认（自循环）让 SubAgent 在确认后继续执行并上报 parallel_targets。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )
+
+    root = find_root()
+    msg_path = root / ".agent" / "instances" / instance_id / "messages" / f"{msg_id}.json"
+    if not msg_path.exists():
+        raise InputError(
+            f"Stage {stage_id} 需要产出 parallel_targets 但消息文件 {msg_id}.json 不存在。"
+            f"请使用中继确认（自循环）让 SubAgent 重新上报。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )
+
+    try:
+        msg = json.loads(msg_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise InputError(
+            f"Stage {stage_id} 的消息文件 {msg_id}.json 解析失败。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )
+
+    if not msg.get("parallel_targets"):
+        raise InputError(
+            f"Stage {stage_id} 需要产出 parallel_targets 但当前消息中未包含。"
+            f"请使用中继确认（自循环，choice 配 '重新选择' 等）"
+            f"让 SubAgent 在确认后补交 parallel_targets，"
+            f"或在 AWAITING_CONFIRM 消息中预先附带 parallel_targets 后再确认。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )

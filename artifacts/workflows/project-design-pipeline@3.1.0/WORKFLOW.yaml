@@ -200,10 +200,18 @@ edges:
     condition: failure
 
   # -- s07 项目同步与模块调度（确认点）--
+  #
+  # "确认调度"走中继确认（自循环）：用户确认后 SubAgent 继续执行，
+  # 根据用户选择产出 parallel_targets，然后上报 DONE（success）→ s08。
+  # 这样可以确保 parallel_targets 在 DONE 之前被正确产出。
   - from: s07-project-sync-and-dispatch
     to: s08-dispatch-modules
+    condition: success
+  - from: s07-project-sync-and-dispatch
+    to: s07-project-sync-and-dispatch
     condition: confirmed
     choice: "确认调度"
+    max_loop: 3
   - from: s07-project-sync-and-dispatch
     to: s07-project-sync-and-dispatch
     condition: confirmed

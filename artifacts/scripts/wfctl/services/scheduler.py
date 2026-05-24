@@ -89,8 +89,9 @@ def run_next(instance_id: str) -> dict:
         # 4. 子工作流检查
         _check_child_workflows(instance, root)
 
-        # 5. parallel 拆分
-        _check_parallel(adj, instance, instance_id, spec)
+        # 5. parallel 拆分（需要 running_agents 检测上游 SubAgent 存活状态）
+        running_agents = _load_running_agents(instance_id)
+        parallel_actions = _check_parallel(adj, instance, instance_id, spec, running_agents)
 
         # 5.5. 子工作流实例创建：为 PENDING 的 WORKFLOW 类型 stage 创建子 Instance
         new_children = _spawn_child_workflows(instance, instance_id, spec, adj)
@@ -116,7 +117,6 @@ def run_next(instance_id: str) -> dict:
         ready = _apply_scheduling_constraints(ready, instance, spec)
 
         # 11. worktree 分配 + spawn/continue action
-        running_agents = _load_running_agents(instance_id)
         stage_actions = _allocate_and_spawn(ready, instance, instance_id, adj, spec, running_agents)
 
         # 12. 确认点聚合
@@ -132,8 +132,9 @@ def run_next(instance_id: str) -> dict:
                 "parent_instance_id": instance_id,
             })
 
-        # 14. 组装 actions
+        # 14. 组装 actions（reinforce 优先，主 Agent 应首先处理）
         actions: list[dict] = []
+        actions.extend(parallel_actions)
         actions.extend(error_actions)
         actions.extend(conflict_actions)
         actions.extend(merge_conflict_actions)
@@ -427,48 +428,90 @@ def _check_child_workflows(instance: dict, root: Path) -> None:
             pass
 
 
-def _check_parallel(adj, instance: dict, instance_id: str, spec) -> None:
-    """检查 parallel 拆分需求。"""
+def _check_parallel(adj, instance: dict, instance_id: str, spec,
+                    running_agents: list[dict] | None = None) -> list[dict]:
+    """检查 parallel 拆分需求，返回 reinforce actions 列表。
+
+    当上游 stage 未产出 parallel_targets 时：
+    1. 上游 SubAgent 仍存活 → 发送 reinforce action，要求补交（最多 2 次）
+    2. 上游 SubAgent 已终止或重试耗尽 → 置 ERROR，交由现有错误处理链终止流程
+    """
     root = find_root()
     stage_map = {s["stage_id"]: s for s in instance["stages"]}
+    actions: list[dict] = []
+
+    if running_agents is None:
+        running_agents = _load_running_agents(instance_id)
 
     for stage in spec.stages:
         if not stage.parallel:
             continue
-        # 检查上游是否已完成
-        source_stage = stage_map.get(stage.parallel.source)
+        source_stage_id = stage.parallel.source
+        source_stage = stage_map.get(source_stage_id)
         if not source_stage or source_stage.get("status") != "DONE":
             continue
 
-        # 检查是否已拆分
+        # 检查是否已拆分（fan_out_target 标识并行实例）
         existing = [s for s in instance["stages"] if s["stage_id"] == stage.stage_id and s.get("fan_out_target")]
         if existing:
+            continue
+
+        # 检查是否已置为 ERROR（避免重复处理已终止的并行 stage）
+        already_error = any(
+            s["stage_id"] == stage.stage_id and s.get("status") == "ERROR"
+            for s in instance["stages"]
+        )
+        if already_error:
             continue
 
         # 获取上游消息的 parallel_targets
         msg_id = source_stage.get("output_message_id")
         if not msg_id:
+            actions.extend(_handle_missing_targets(
+                instance, stage, instance_id, source_stage_id, running_agents,
+                "上游 stage 已完成但未产出 output_message_id",
+            ))
             continue
 
         msg_path = root / ".agent" / "instances" / instance_id / "messages" / f"{msg_id}.json"
         if not msg_path.exists():
+            actions.extend(_handle_missing_targets(
+                instance, stage, instance_id, source_stage_id, running_agents,
+                f"上游 stage 的消息文件 {msg_id}.json 不存在",
+            ))
             continue
 
         try:
             import json
             msg = json.loads(msg_path.read_text(encoding="utf-8"))
-            targets = msg.get("parallel_targets", [])
         except Exception:
+            actions.extend(_handle_missing_targets(
+                instance, stage, instance_id, source_stage_id, running_agents,
+                f"上游 stage 的消息文件 {msg_id}.json 解析失败",
+            ))
             continue
 
+        if "parallel_targets" not in msg:
+            reason = (
+                f"上游 stage {source_stage_id} 未产出 parallel_targets"
+                f"（SubAgent 上报时未传 --parallel-targets）"
+            )
+            actions.extend(_handle_missing_targets(
+                instance, stage, instance_id, source_stage_id, running_agents, reason,
+            ))
+            continue
+
+        targets = msg.get("parallel_targets", [])
         if not targets:
             continue
+
+        # 有 targets → 清除重试计数，执行拆分
+        _clear_parallel_retry(instance, stage.stage_id)
 
         max_inst = stage.parallel.max_instances
         if max_inst:
             targets = targets[:max_inst]
 
-        # 创建 parallel stage 实例
         new_stages: list[dict] = []
         for idx, target in enumerate(targets):
             stage_inst_id = f"{stage.stage_id}_{idx}"
@@ -488,9 +531,142 @@ def _check_parallel(adj, instance: dict, instance_id: str, spec) -> None:
                 "fan_out_target": target,
             })
 
-        # 替换原有的单 stage
         instance["stages"] = [s for s in instance["stages"] if not (s["stage_id"] == stage.stage_id and s.get("stage_instance_id") == stage.stage_id)]
         instance["stages"].extend(new_stages)
+
+    return actions
+
+
+def _handle_missing_targets(instance: dict, stage, instance_id: str, source_stage_id: str,
+                            running_agents: list[dict], reason: str) -> list[dict]:
+    """处理缺失 parallel_targets：先 reinforce，失败则置 ERROR。"""
+    max_retry = 2
+    retry_count = _get_parallel_retry(instance, stage.stage_id)
+
+    source_agent = None
+    for a in running_agents:
+        if a.get("instance_id") == instance_id and a.get("stage_id") == source_stage_id:
+            source_agent = a
+            break
+
+    if source_agent and retry_count < max_retry:
+        _incr_parallel_retry(instance, stage.stage_id)
+        new_count = retry_count + 1
+        append_deviation(
+            instance_id,
+            "PARALLEL_TARGETS_REINFORCE",
+            f"stage {stage.stage_id}: 上游 {source_stage_id} 未产出 parallel_targets，"
+            f"第 {new_count}/{max_retry} 次强化重试",
+            stage_id=stage.stage_id,
+        )
+        return [{
+            "action": "reinforce",
+            "type": "parallel_targets_missing",
+            "stage_id": stage.stage_id,
+            "source_stage_id": source_stage_id,
+            "system_agent_id": source_agent["system_agent_id"],
+            "retry_count": new_count,
+            "max_retry": max_retry,
+            "message": (
+                f"你在 stage {source_stage_id} 的上报中未包含 parallel_targets。"
+                f"请根据 contracts/output.md 中「parallel_targets 规范」补充产出，"
+                f"通过 --parallel-targets 参数重新上报（格式：id:标签:上下文）。"
+                f"这是第 {new_count}/{max_retry} 次提醒，超次将终止工作流。"
+            ),
+        }]
+
+    # SubAgent 已终止或重试耗尽 → 置 ERROR，移除 PENDING 条目防止被调度
+    error_msg = (
+        f"{reason}，stage {stage.stage_id} 的并行拆分无法执行"
+        if retry_count == 0
+        else f"{reason}，已强化重试 {retry_count} 次仍无 parallel_targets，"
+             f"stage {stage.stage_id} 终止"
+    )
+    _error_parallel_stage(instance, stage, error_msg, instance_id, source_stage_id)
+    return []
+
+
+def _get_parallel_retry(instance: dict, stage_id: str) -> int:
+    """读取 parallel 重试计数（仅 PENDING 且未拆分的单一条目）。"""
+    for s in instance["stages"]:
+        if s["stage_id"] == stage_id and s.get("status") == "PENDING" and not s.get("fan_out_target"):
+            return s.get("parallel_retry_count", 0)
+    return 0
+
+
+def _incr_parallel_retry(instance: dict, stage_id: str) -> None:
+    """递增 parallel 重试计数。"""
+    for s in instance["stages"]:
+        if s["stage_id"] == stage_id and s.get("status") == "PENDING" and not s.get("fan_out_target"):
+            s["parallel_retry_count"] = s.get("parallel_retry_count", 0) + 1
+            return
+
+
+def _clear_parallel_retry(instance: dict, stage_id: str) -> None:
+    """清除 parallel 重试计数（成功拆分时调用）。"""
+    for s in instance["stages"]:
+        if s["stage_id"] == stage_id and s.get("status") == "PENDING":
+            s.pop("parallel_retry_count", None)
+
+
+def _error_parallel_stage(instance: dict, stage, reason: str,
+                          instance_id: str, source_stage_id: str) -> None:
+    """将并行 stage 置为 ERROR 并写入合成错误消息，交由现有错误处理链终止流程。
+
+    不引入新状态值——复用 ERROR 让 _handle_error_stages 按 stage.retry 决定
+    是否重试（通常 retry=0 时直接走 failure_edge 或 terminate）。
+    """
+    root = find_root()
+
+    # 移除原有的单 stage PENDING 条目（防止被 _spawn_child_workflows 调度）
+    instance["stages"] = [s for s in instance["stages"] if not (
+        s["stage_id"] == stage.stage_id and s.get("status") == "PENDING"
+        and not s.get("fan_out_target")
+    )]
+
+    # 写入合成错误消息
+    messages_dir = root / ".agent" / "instances" / instance_id / "messages"
+    messages_dir.mkdir(parents=True, exist_ok=True)
+    import uuid
+    msg_id = f"msg-{uuid.uuid4().hex[:8]}"
+    msg = {
+        "schema_version": "3.0.0",
+        "message_id": msg_id,
+        "instance_id": instance_id,
+        "stage_id": stage.stage_id,
+        "stage_instance_id": stage.stage_id,
+        "status": "ERROR",
+        "report": reason,
+        "checkpoint_summary": "",
+        "confirm_questions": [],
+        "parallel_targets": None,
+        "modified_files": [],
+        "timestamp": iso_timestamp(),
+    }
+    from core.atomic_write import atomic_write_json
+    atomic_write_json(messages_dir / f"{msg_id}.json", msg)
+
+    # 添加 ERROR 条目
+    instance["stages"].append({
+        "stage_id": stage.stage_id,
+        "stage_instance_id": stage.stage_id,
+        "status": "ERROR",
+        "agent_id": None,
+        "system_agent_id": None,
+        "output_message_id": msg_id,
+        "loop_counter": 0,
+        "attempt_count": 0,
+        "confirmed": False,
+        "started_at": None,
+        "model": stage.model,
+        "child_instance_id": None,
+    })
+    append_deviation(
+        instance_id,
+        "PARALLEL_TARGETS_MISSING",
+        f"stage {stage.stage_id}: 上游 {source_stage_id} 未产出 parallel_targets，已置 ERROR",
+        stage_id=stage.stage_id,
+    )
 
 
 def _spawn_child_workflows(instance: dict, instance_id: str, spec, adj) -> list[dict]:
@@ -879,6 +1055,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
             s.parallel and s.parallel.source == stage_id
             for s in spec.stages
         )
+        stage_state["requires_parallel_targets"] = needs_targets
 
         if matched_agent:
             # Level 2: 同步 stage worktree ↔ 实例 worktree（continue 前）
