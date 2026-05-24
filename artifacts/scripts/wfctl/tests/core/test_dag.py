@@ -250,3 +250,263 @@ def test_only_special_edges_not_ready():
     }
     ready = compute_ready(adj, instance)
     assert ready == [], f"special-only stages should not be ready, got {ready}"
+
+
+# ─── 对抗性边角测试 ───────────────────────────────────────────────────
+
+
+def test_diamond_dependency():
+    """A→B, A→C, B→D, C→D: DAG 使用 OR 语义，任一路径畅通即可解锁 D。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-diamond",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="A", name="a", target_type=StageTargetType.SKILL, target="skill-a", mandatory=True),
+            StageSpec(stage_id="B", name="b", target_type=StageTargetType.SKILL, target="skill-b", mandatory=True),
+            StageSpec(stage_id="C", name="c", target_type=StageTargetType.SKILL, target="skill-c", mandatory=True),
+            StageSpec(stage_id="D", name="d", target_type=StageTargetType.SKILL, target="skill-d", mandatory=True),
+            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="A", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="A", to_stage="B", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="A", to_stage="C", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="B", to_stage="D", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="C", to_stage="D", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="D", to_stage="s99", condition=EdgeCondition.SUCCESS),
+        ],
+    )
+    adj = build_adjacency(spec)
+
+    # A DONE, B DONE, C PENDING → D 就绪（OR 语义：B→D 路径已畅通）
+    instance = {
+        "stages": [
+            {"stage_id": "s00", "status": "DONE"},
+            {"stage_id": "A", "status": "DONE"},
+            {"stage_id": "B", "status": "DONE"},
+            {"stage_id": "C", "status": "PENDING"},
+            {"stage_id": "D", "status": "PENDING"},
+            {"stage_id": "s99", "status": "PENDING"},
+        ]
+    }
+    ready = compute_ready(adj, instance)
+    assert set(ready) == {"C", "D"}, f"OR semantics: C and D should both be ready, got {ready}"
+
+    # A DONE, B PENDING, C DONE → D 就绪（OR 语义：C→D 路径已畅通）
+    instance["stages"][2]["status"] = "PENDING"    # B → PENDING
+    instance["stages"][3]["status"] = "DONE"       # C → DONE
+    ready = compute_ready(adj, instance)
+    assert set(ready) == {"B", "D"}, f"OR semantics: B and D should both be ready, got {ready}"
+
+
+def test_unreachable_stage_is_ready():
+    """无入边的 stage 就绪——上游依赖真空满足。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-unreachable",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="orphan", name="orphan", target_type=StageTargetType.SKILL, target="skill-o", mandatory=True),
+            StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a", mandatory=True),
+            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="s01", to_stage="s99", condition=EdgeCondition.SUCCESS),
+            # orphan 无任何入边 → 真空满足，视为就绪
+        ],
+    )
+    adj = build_adjacency(spec)
+
+    instance = {
+        "stages": [
+            {"stage_id": "s00", "status": "DONE"},
+            {"stage_id": "orphan", "status": "PENDING"},
+            {"stage_id": "s01", "status": "PENDING"},
+            {"stage_id": "s99", "status": "PENDING"},
+        ]
+    }
+    ready = compute_ready(adj, instance)
+    assert "orphan" in ready, f"stage with no incoming edges should be ready, got {ready}"
+
+
+def test_confirmed_edge_empty_exit_condition_compat():
+    """confirmed 边在 upstream DONE + exit_condition='' 时视为满足（兼容旧实例）。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-confirmed",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a", mandatory=True),
+            StageSpec(stage_id="s02", name="b", target_type=StageTargetType.SKILL, target="skill-b", mandatory=True),
+            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="通过"),
+            EdgeSpec(from_stage="s02", to_stage="s99", condition=EdgeCondition.SUCCESS),
+        ],
+    )
+    adj = build_adjacency(spec)
+
+    # ""(空) exit_condition 兼容旧实例 → s02 就绪
+    instance = {
+        "stages": [
+            {"stage_id": "s00", "status": "DONE"},
+            {"stage_id": "s01", "status": "DONE", "exit_condition": ""},
+            {"stage_id": "s02", "status": "PENDING"},
+            {"stage_id": "s99", "status": "PENDING"},
+        ]
+    }
+    ready = compute_ready(adj, instance)
+    assert ready == ["s02"], f"empty exit_condition is backward-compatible, got {ready}"
+
+    # exit_condition=confirmed → s02 就绪
+    instance["stages"][1]["exit_condition"] = "confirmed"
+    ready = compute_ready(adj, instance)
+    assert ready == ["s02"], f"explicit confirmed should also work, got {ready}"
+
+
+def test_success_edge_with_choices_needs_routing_choice():
+    """SUCCESS 边的 choice 必须匹配 upstream routing_choice 才能路由。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-success-choices",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a", mandatory=True),
+            StageSpec(stage_id="s02", name="b", target_type=StageTargetType.SKILL, target="skill-b", mandatory=True),
+            StageSpec(stage_id="s03", name="c", target_type=StageTargetType.SKILL, target="skill-c", mandatory=True),
+            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS, choice="path-a"),
+            EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.SUCCESS, choice="path-b"),
+            EdgeSpec(from_stage="s02", to_stage="s99", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="s03", to_stage="s99", condition=EdgeCondition.SUCCESS),
+        ],
+    )
+    adj = build_adjacency(spec)
+
+    # routing_choice 不匹配 → 无 stage 就绪
+    instance = {
+        "stages": [
+            {"stage_id": "s00", "status": "DONE"},
+            {"stage_id": "s01", "status": "DONE", "exit_condition": "success", "routing_choice": "wrong"},
+            {"stage_id": "s02", "status": "PENDING"},
+            {"stage_id": "s03", "status": "PENDING"},
+            {"stage_id": "s99", "status": "PENDING"},
+        ]
+    }
+    ready = compute_ready(adj, instance)
+    assert ready == [], f"unmatched routing_choice should not unlock any stage, got {ready}"
+
+    # routing_choice="path-a" → s02 就绪
+    instance["stages"][1]["routing_choice"] = "path-a"
+    ready = compute_ready(adj, instance)
+    assert ready == ["s02"], f"routing_choice=path-a should unlock s02, got {ready}"
+
+
+def test_downstream_collection_respects_all_branches():
+    """collect_downstream 应收敛所有可达非虚拟 stage（含 failure 等分支）。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-branches",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a", mandatory=True),
+            StageSpec(stage_id="s02", name="b", target_type=StageTargetType.SKILL, target="skill-b", mandatory=True),
+            StageSpec(stage_id="s03", name="c", target_type=StageTargetType.SKILL, target="skill-c", mandatory=True),
+            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.FAILURE),
+            EdgeSpec(from_stage="s02", to_stage="s99", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="s03", to_stage="s99", condition=EdgeCondition.SUCCESS),
+        ],
+    )
+    adj = build_adjacency(spec)
+    downstream = collect_downstream(adj, "s01", set())
+    assert downstream == {"s02", "s03", "s99"}
+
+    downstream_no_failure = collect_downstream(adj, "s01", {EdgeCondition.FAILURE})
+    assert downstream_no_failure == {"s02", "s99"}
+
+
+def test_single_stage_workflow():
+    """最简工作流：Start → A → End。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-single",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="A", name="a", target_type=StageTargetType.SKILL, target="skill-a", mandatory=True),
+            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="A", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="A", to_stage="s99", condition=EdgeCondition.SUCCESS),
+        ],
+    )
+    adj = build_adjacency(spec)
+
+    instance = {
+        "stages": [
+            {"stage_id": "s00", "status": "DONE"},
+            {"stage_id": "A", "status": "PENDING"},
+            {"stage_id": "s99", "status": "PENDING"},
+        ]
+    }
+    ready = compute_ready(adj, instance)
+    assert ready == ["A"], f"expected only A, got {ready}"
+
+
+def test_rejected_edge_not_in_ready_computation():
+    """rejected 边不应在 compute_ready 中触发就绪。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-rejected",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a", mandatory=True),
+            StageSpec(stage_id="s02", name="b", target_type=StageTargetType.SKILL, target="skill-b", mandatory=True),
+            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="通过"),
+            EdgeSpec(from_stage="s01", to_stage="s99", condition=EdgeCondition.REJECTED, choice="放弃"),
+            EdgeSpec(from_stage="s02", to_stage="s99", condition=EdgeCondition.SUCCESS),
+        ],
+    )
+    adj = build_adjacency(spec)
+
+    # s01 DONE exit_condition=rejected → s99 不应通过 rejected 边触发就绪
+    instance = {
+        "stages": [
+            {"stage_id": "s00", "status": "DONE"},
+            {"stage_id": "s01", "status": "DONE", "exit_condition": "rejected"},
+            {"stage_id": "s02", "status": "PENDING"},
+            {"stage_id": "s99", "status": "PENDING"},
+        ]
+    }
+    ready = compute_ready(adj, instance)
+    assert ready == [], f"rejected edge should not trigger ready, got {ready}"

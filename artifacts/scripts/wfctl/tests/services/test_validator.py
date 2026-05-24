@@ -43,5 +43,5 @@ def test_validate_ok(tmp_path):
     repo.mkdir()
     (repo / "src").mkdir()
     (repo / "src" / "main.py").write_text("x", encoding="utf-8")
-    # 不应抛异常
-    validate_modified_files(repo, ["src/main.py"], "s01")
+    # 正常路径不应抛异常，返回 None 表示校验通过
+    assert validate_modified_files(repo, ["src/main.py"], "s01") is None

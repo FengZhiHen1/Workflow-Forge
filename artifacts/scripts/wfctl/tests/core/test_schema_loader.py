@@ -4,6 +4,7 @@ import pytest
 
 from core.errors import SchemaError
 from core.schema.loader import _get_adapter, load_workflow
+from core.schema.v3 import V3Adapter
 
 
 SAMPLE_YAML = """
@@ -68,7 +69,7 @@ def test_unsupported_schema_version(tmp_path):
 
 def test_get_adapter_v3():
     adapter = _get_adapter("3.0.0")
-    assert adapter is not None
+    assert isinstance(adapter, V3Adapter)
 
 
 def test_get_adapter_unknown():
