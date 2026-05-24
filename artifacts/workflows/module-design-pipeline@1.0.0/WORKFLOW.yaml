@@ -13,22 +13,14 @@ stages:
   - stage_id: s99-workflow-end
     name: "工作流终止"
 
-  # ==================== 阶段一：存量检测与增量路径判定（s01-s02）====================
+  # ==================== 阶段一：存量检测与增量路径判定（s01）====================
 
   - stage_id: s01-detect-existing-artifacts
-    name: "存量制品检测"
+    name: "存量检测与增量路径判定"
     skill_id: existing-artifact-detector
     mandatory: true
     confirmation_point: false
     retry: 1
-    model: light
-
-  - stage_id: s02-determine-incremental-path
-    name: "增量路径判定"
-    skill_id: existing-artifact-detector
-    mandatory: true
-    confirmation_point: true
-    retry: 0
     model: light
 
   # ==================== 增量路径：逆向工程（s02-re，触发条件 code_only）====================
@@ -136,16 +128,8 @@ edges:
     to: s01-detect-existing-artifacts
     condition: always
 
-  # -- s01 存量检测（非确认点）--
-  - from: s01-detect-existing-artifacts
-    to: s02-determine-incremental-path
-    condition: always
-  - from: s01-detect-existing-artifacts
-    to: s12-module-sync-report
-    condition: failure
-
-  # -- s02 增量路径判定（确认点）--
-  # ⚠️ 核心路由节点：根据存量检测结果，用户确认推荐的增量路径
+  # -- s01 存量检测与增量路径判定（非确认点，SubAgent 自主路由）--
+  # ⚠️ 核心路由节点：扫描存量制品 → 判定增量场景 → DONE --choice
   # 六种场景分别路由到不同的下游 stage：
   #   full_design                    → s03（完整意图+规格）
   #   design_docs_only_intent_draft  → s03（续写意图，跳过已完成部分）
@@ -153,34 +137,33 @@ edges:
   #   design_docs_only_all_complete  → s12（仅上报同步状态）
   #   code_only                      → s02-re（从代码逆向推导）
   #   both_exist                     → s02-diff（差异对比增量更新）
-  - from: s02-determine-incremental-path
+  - from: s01-detect-existing-artifacts
     to: s03-intent-clarify
-    condition: confirmed
+    condition: success
     choice: "full_design"
-  - from: s02-determine-incremental-path
+  - from: s01-detect-existing-artifacts
     to: s03-intent-clarify
-    condition: confirmed
+    condition: success
     choice: "design_docs_only_intent_draft"
-  - from: s02-determine-incremental-path
+  - from: s01-detect-existing-artifacts
     to: s07-spec-prepare
-    condition: confirmed
+    condition: success
     choice: "design_docs_only_intent_frozen"
-  - from: s02-determine-incremental-path
+  - from: s01-detect-existing-artifacts
     to: s12-module-sync-report
-    condition: confirmed
+    condition: success
     choice: "design_docs_only_all_complete"
-  - from: s02-determine-incremental-path
+  - from: s01-detect-existing-artifacts
     to: s02-reverse-engineer-intent
-    condition: confirmed
+    condition: success
     choice: "code_only"
-  - from: s02-determine-incremental-path
+  - from: s01-detect-existing-artifacts
     to: s02-diff-and-update
-    condition: confirmed
+    condition: success
     choice: "both_exist"
-  - from: s02-determine-incremental-path
+  - from: s01-detect-existing-artifacts
     to: s12-module-sync-report
-    condition: rejected
-    choice: "放弃模块"
+    condition: failure
 
   # ==================== 全流程路径：full_design / intent_draft ====================
 
@@ -223,7 +206,7 @@ edges:
   # -- s05 生成意图文档（非确认点）--
   - from: s05-intent-generate
     to: s06-intent-freeze
-    condition: always
+    condition: success
   - from: s05-intent-generate
     to: s12-module-sync-report
     condition: failure
@@ -251,7 +234,7 @@ edges:
   # -- s07 材料准备（非确认点）--
   - from: s07-spec-prepare
     to: s08-spec-research
-    condition: always
+    condition: success
   - from: s07-spec-prepare
     to: s12-module-sync-report
     condition: failure
@@ -365,6 +348,3 @@ edges:
   - from: s12-module-sync-report
     to: s99-workflow-end
     condition: always
-  - from: s12-module-sync-report
-    to: s99-workflow-end
-    condition: failure

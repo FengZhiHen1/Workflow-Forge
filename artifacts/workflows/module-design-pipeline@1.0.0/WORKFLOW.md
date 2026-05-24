@@ -14,8 +14,8 @@ tags: [module-design, intent, spec, contract, incrementality, reverse-engineerin
 
 - **工作流 ID**：`module-design-pipeline`
 - **版本**：`1.0.0`
-- **Stage 数量**：16（含 2 个虚拟 stage）
-- **确认点数量**：8
+- **Stage 数量**：15（含 2 个虚拟 stage）
+- **确认点数量**：7
 - **最大并发**：1（模块内阶段串行执行）
 - **父工作流**：`project-design-pipeline@3.0.0`（s07 调度）
 
@@ -39,8 +39,7 @@ flowchart TD
     s00["s00-workflow-start<br/>工作流启动"]
     s99["s99-workflow-end<br/>工作流终止"]
 
-    s01["s01-detect-existing-artifacts<br/>存量制品检测"]
-    s02["s02-determine-incremental-path<br/>增量路径判定"]
+    s01["s01-detect-existing-artifacts<br/>存量检测与增量路径判定"]
     s02re["s02-reverse-engineer-intent<br/>逆向推导意图与规格"]
     s02diff["s02-diff-and-update<br/>差异对比与增量更新"]
     s03["s03-intent-clarify<br/>意图澄清"]
@@ -55,16 +54,14 @@ flowchart TD
     s12["s12-module-sync-report<br/>模块级同步矛盾上报"]
 
     s00 --> s01
-    s01 --> s02
-    s01 -.->|"failure"| s12
 
-    s02 -->|"full_design"| s03
-    s02 -->|"design_docs_only_intent_draft"| s03
-    s02 -->|"design_docs_only_intent_frozen"| s07
-    s02 -->|"design_docs_only_all_complete"| s12
-    s02 -->|"code_only"| s02re
-    s02 -->|"both_exist"| s02diff
-    s02 -->|"rejected 放弃模块"| s12
+    s01 -->|"full_design"| s03
+    s01 -->|"design_docs_only_intent_draft"| s03
+    s01 -->|"design_docs_only_intent_frozen"| s07
+    s01 -->|"design_docs_only_all_complete"| s12
+    s01 -->|"code_only"| s02re
+    s01 -->|"both_exist"| s02diff
+    s01 -.->|"failure"| s12
 
     s03 -->|"confirmed 通过"| s04
     s03 -->|"confirmed 继续澄清"| s03
@@ -127,35 +124,19 @@ flowchart TD
 
 ---
 
-### s01-detect-existing-artifacts -- 存量制品检测
+### s01-detect-existing-artifacts -- 存量检测与增量路径判定
 
 - **Skill**：`existing-artifact-detector`（NEW）
-- **确认点**：否
-- **重试**：1 次（耗尽后沿 `failure` edge → s12 上报已有结果）
-- **描述**：扫描当前模块目录，检测已有制品：
-  - 意图文档（`docs/功能设计/[分组]/[模块]/[模块]-意图文档.md`）
-  - 设计文档（`docs/功能设计/[分组]/[模块]/[模块]-设计文档.md`）
-  - 落地规范（`docs/功能设计/[分组]/[模块]/[模块]-落地规范.md`）
-  - 契约文件（`contracts/` 下对应模块的接口定义）
-  - 源代码（`src/` 下对应模块的实现代码）
-  - 同步问题记录（`docs/功能设计/[分组]/[模块]/_sync-issues.md`）
-- **输出**：存量制品清单（注入 s02 上下文）
-
----
-
-### s02-determine-incremental-path -- 增量路径判定
-
-- **Skill**：`existing-artifact-detector`（NEW）
-- **确认点**：是
-- **描述**：根据 s01 的检测结果，判定并推荐增量路径。用户确认后路由到对应下游：
+- **确认点**：否（SubAgent 自主判定路径，`success + choice` 路由）
+- **重试**：1 次（耗尽管 `failure` edge → s12 上报已有结果）
+- **描述**：扫描当前模块目录检测已有制品（意图文档、设计文档、落地规范、契约文件、源代码、同步问题记录），自主判定增量设计场景，按判定结果路由到对应下游：
   - `full_design`：无任何设计文档和代码
   - `design_docs_only_intent_draft`：意图文档存在但未冻结
   - `design_docs_only_intent_frozen`：意图已冻结，缺规格文档
   - `design_docs_only_all_complete`：设计文档齐全，仅需上报
   - `code_only`：无设计文档但代码已存在
   - `both_exist`：设计文档和代码均存在
-  - **放弃模块**（rejected）：放弃本模块设计 → s12 上报后终止
-- **输出**：选定的增量路径 + 上下文摘要
+- **输出**：存量制品清单 + 选定的增量路径 + 上下文摘要
 
 ---
 
@@ -294,7 +275,7 @@ flowchart TD
 
 | Skill ID | 名称 | 使用 Stage | 状态 |
 |----------|------|-----------|------|
-| `existing-artifact-detector` | 存量制品检测器 | s01, s02 | **NEW** |
+| `existing-artifact-detector` | 存量制品检测与路径判定器 | s01 | **NEW** |
 | `code-reverse-engineering-writer` | 代码逆向推导编写器 | s02-re | **NEW** |
 | `design-code-diff-updater` | 设计代码差异更新器 | s02-diff | **NEW** |
 | `module-intent-writer` | 模块意图编写器 | s03, s04, s05, s06 | 现有（从 v2.1.1 继承） |
@@ -307,8 +288,8 @@ flowchart TD
 
 ## 增量场景路由表
 
-| 场景 | s01 检测结果 | s02 路由 | 实际执行路径 |
-|------|-------------|---------|------------|
+| 场景 | 检测结果 | 路由 | 实际执行路径 |
+|------|---------|------|------------|
 | `full_design` | 无文档、无代码 | s03 | s03->s04->s05->s06->s07->s08->s09->s10->s11->s12->s99 |
 | `design_docs_only_intent_draft` | 有意图草稿、未冻结 | s03 | 同 full_design（续写意图） |
 | `design_docs_only_intent_frozen` | 意图已冻结、缺规格 | s07 | s07->s08->s09->s10->s11->s12->s99 |
@@ -338,12 +319,12 @@ flowchart TD
 
 ### 放弃模块
 
-各确认点提供"放弃模块"选项，路由到 s12 报告当前状态后终止。s02（增量路径判定）的 `rejected` 出口同样为"放弃模块"→ s12。父工作流 s07 将"放弃"视为一种正常退出（非 ERROR），已完成的阶段产出保留。
+各确认点提供"放弃模块"选项，路由到 s12 报告当前状态后终止。父工作流 s07 将"放弃"视为一种正常退出（非 ERROR），已完成的阶段产出保留。
 
 ### 非确认点失败
 
-s01（存量检测）、s05（生成意图）、s07（材料准备）、s08（技术预研）、s10（契约协调）为非确认点，执行失败后沿 `failure` edge 路由到 s12 上报失败原因后终止。父工作流 s07 检测到子工作流失效后可让用户决定是否重试或跳过。
+s05（生成意图）、s07（材料准备）、s08（技术预研）、s10（契约协调）为非确认点，执行失败后沿 `failure` edge 路由到 s12 上报失败原因后终止。父工作流 s07 检测到子工作流失效后可让用户决定是否重试或跳过。
 
 ### 阶段级重试
 
-s01、s05、s07、s08、s10 配置了 `retry: 1`，执行失败后自动重试 1 次。重试耗尽后沿 `failure` edge 降级至 s12。重试仍在同一 worktree 中进行，SubAgent 可看到上次执行的遗留文件。
+s01（作为确认点但配有 retry）、s05、s07、s08、s10 配置了 `retry: 1`，执行失败后自动重试 1 次。重试耗尽后沿 `failure` edge 降级至 s12。重试仍在同一 worktree 中进行，SubAgent 可看到上次执行的遗留文件。
