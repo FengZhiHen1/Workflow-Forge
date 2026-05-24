@@ -104,3 +104,41 @@ python .claude/scripts/wfctl/main.py message write \
 | 产出 target 数量与自然单元数不一致 | 下游实例过多或过少 | 对齐自然分解数 |
 | target 的 `id` 无业务含义（如 `t1`、`t2`） | 下游 SubAgent 无法识别自己的任务 | 使用业务标识（如 `Task1`、`Q3`） |
 | `context` 为空或过简 | 下游 SubAgent 缺少执行上下文 | 包含数据源、约束、目标等关键信息 |
+
+---
+
+## 七、confirm_questions 规范
+
+> 仅当 `status=AWAITING_CONFIRM` 时适用。confirm_questions 中的每个选项值直接决定 `wfctl confirm --choice` 的参数，因此必须与 WORKFLOW.yaml 中对应 stage 的 `confirmed` 边的 `choice` 字段精确一致。
+
+### 7.1 格式约定
+
+每条选项使用 **`<choice>：<显示文本>`** 格式，中文冒号分隔：
+
+```
+"<edge.choice 值>：<面向用户的自然语言描述>"
+```
+
+- `：`（中文全角冒号）**之前**的部分 = edge 的 `choice` 值，编排器取此前缀作为 `--choice` 参数传给 `wfctl confirm`，**不做事后语义猜测**
+- `：`**之后**的部分 = 面向用户的显示文本，可以是自然语言、含括号注释等
+
+### 7.2 示例
+
+```json
+[
+  "full_design：全新设计，从意图澄清开始走完整流程",
+  "code_only：存量代码逆向，从反向工程开始",
+  "放弃实例：终止本工作流实例"
+]
+```
+
+编排器处理第一个选项时，提取 `：` 前的 `full_design` 作为 `--choice` 值。用户看到的是 `：` 后的完整文本。
+
+### 7.3 约束
+
+| 规则 | 说明 |
+|------|------|
+| 每个选项**必须**以 `choice：` 开头 | `：` 前的值必须精确匹配 WORKFLOW.yaml 中某条 `confirmed` 边的 `choice` |
+| 选项数量 ≤ 4 | wfctl 限制 |
+| `choice` 值不含 `：` | 避免解析歧义 |
+| 若 `confirmed` 边无 `choice` 字段 | 使用边定义的默认行为，选项文本仍建议以 `确认：` 或 `通过：` 等前缀开头 |

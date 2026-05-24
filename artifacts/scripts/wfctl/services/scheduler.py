@@ -77,6 +77,29 @@ def run_next(instance_id: str) -> dict:
                     stage_id=change["stage_id"],
                 )
 
+        # 1.5. AWAITING_CONFIRM 合法性校验：拒绝在无 confirmed 边的 stage 上报确认
+        stage_map = {s["stage_id"]: s for s in instance["stages"]}
+        for change in changes:
+            if change["new_status"] != "AWAITING_CONFIRM":
+                continue
+            sid = change["stage_id"]
+            if not get_confirmed_edges(adj, sid):
+                stage = stage_map.get(sid)
+                if stage:
+                    stage["status"] = "ERROR"
+                    _write_synthetic_error_message(
+                        instance_id, sid, stage,
+                        f"Stage {sid} 上报了 AWAITING_CONFIRM 但未定义任何 confirmed 边。"
+                        f"该 stage 不应设置确认点——请检查 Skill 是否在错误的阶段请求了确认。",
+                    )
+                    append_deviation(
+                        instance_id,
+                        "INVALID_AWAITING_CONFIRM",
+                        f"Stage {sid} 无 confirmed 边但上报了 AWAITING_CONFIRM，已转为 ERROR",
+                        stage_id=sid,
+                    )
+                    change["new_status"] = "ERROR"
+
         # 2. 自动提交 DONE stage 的 worktree 变更 + 打锚点
         _auto_commit_done_stages(instance_id, changes, worktree_map, spec.anchor_prefix)
 
@@ -616,35 +639,16 @@ def _error_parallel_stage(instance: dict, stage, reason: str,
     不引入新状态值——复用 ERROR 让 _handle_error_stages 按 stage.retry 决定
     是否重试（通常 retry=0 时直接走 failure_edge 或 terminate）。
     """
-    root = find_root()
-
     # 移除原有的单 stage PENDING 条目（防止被 _spawn_child_workflows 调度）
     instance["stages"] = [s for s in instance["stages"] if not (
         s["stage_id"] == stage.stage_id and s.get("status") == "PENDING"
         and not s.get("fan_out_target")
     )]
 
-    # 写入合成错误消息
-    messages_dir = root / ".agent" / "instances" / instance_id / "messages"
-    messages_dir.mkdir(parents=True, exist_ok=True)
-    import uuid
-    msg_id = f"msg-{uuid.uuid4().hex[:8]}"
-    msg = {
-        "schema_version": "3.0.0",
-        "message_id": msg_id,
-        "instance_id": instance_id,
-        "stage_id": stage.stage_id,
-        "stage_instance_id": stage.stage_id,
-        "status": "ERROR",
-        "report": reason,
-        "checkpoint_summary": "",
-        "confirm_questions": [],
-        "parallel_targets": None,
-        "modified_files": [],
-        "timestamp": iso_timestamp(),
-    }
-    from core.atomic_write import atomic_write_json
-    atomic_write_json(messages_dir / f"{msg_id}.json", msg)
+    err_msg_id = _write_synthetic_error_message(
+        instance_id, stage.stage_id,
+        {"stage_instance_id": stage.stage_id}, reason,
+    )
 
     # 添加 ERROR 条目
     instance["stages"].append({
@@ -653,7 +657,7 @@ def _error_parallel_stage(instance: dict, stage, reason: str,
         "status": "ERROR",
         "agent_id": None,
         "system_agent_id": None,
-        "output_message_id": msg_id,
+        "output_message_id": err_msg_id,
         "loop_counter": 0,
         "attempt_count": 0,
         "confirmed": False,
@@ -667,6 +671,35 @@ def _error_parallel_stage(instance: dict, stage, reason: str,
         f"stage {stage.stage_id}: 上游 {source_stage_id} 未产出 parallel_targets，已置 ERROR",
         stage_id=stage.stage_id,
     )
+
+
+def _write_synthetic_error_message(instance_id: str, stage_id: str,
+                                     stage: dict, reason: str) -> str:
+    """写入一条合成 ERROR 消息到消息池，返回 message_id。"""
+    import uuid
+    from core.atomic_write import atomic_write_json
+
+    root = find_root()
+    messages_dir = root / ".agent" / "instances" / instance_id / "messages"
+    messages_dir.mkdir(parents=True, exist_ok=True)
+    msg_id = f"msg-{uuid.uuid4().hex[:8]}"
+    msg = {
+        "schema_version": "3.0.0",
+        "message_id": msg_id,
+        "instance_id": instance_id,
+        "stage_id": stage_id,
+        "stage_instance_id": stage.get("stage_instance_id", stage_id),
+        "status": "ERROR",
+        "report": reason,
+        "checkpoint_summary": "",
+        "confirm_questions": [],
+        "parallel_targets": None,
+        "modified_files": [],
+        "timestamp": iso_timestamp(),
+    }
+    atomic_write_json(messages_dir / f"{msg_id}.json", msg)
+    stage["output_message_id"] = msg_id
+    return msg_id
 
 
 def _spawn_child_workflows(instance: dict, instance_id: str, spec, adj) -> list[dict]:

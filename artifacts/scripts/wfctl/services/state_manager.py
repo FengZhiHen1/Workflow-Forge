@@ -81,6 +81,12 @@ def consume_messages(instance_id: str, instance: dict, worktree_map: dict[str, P
         old_status = stage.get("status", "PENDING")
         new_status = msg.get("status", old_status)
 
+        # 状态无变化 → 只消费消息，不覆盖已有字段（防止后续消息覆盖
+        # confirm/skip 写入的 exit_condition、confirm_questions 等）
+        if old_status == new_status:
+            consumed_ids.add(msg["message_id"])
+            continue
+
         if new_status == "DONE":
             stage["status"] = "DONE"
             stage["exit_condition"] = "success"
@@ -99,13 +105,12 @@ def consume_messages(instance_id: str, instance: dict, worktree_map: dict[str, P
             _append_timeline(instance_id, stage_id, "scheduled", {"message_id": msg["message_id"]})
 
         consumed_ids.add(msg["message_id"])
-        if old_status != stage["status"]:
-            changes.append({
-                "stage_id": stage_id,
-                "old_status": old_status,
-                "new_status": stage["status"],
-                "message": msg,
-            })
+        changes.append({
+            "stage_id": stage_id,
+            "old_status": old_status,
+            "new_status": stage["status"],
+            "message": msg,
+        })
 
     instance["consumed_message_ids"] = list(consumed_ids)
     return changes

@@ -78,6 +78,15 @@ def _handle_skip(args) -> dict:
             {"reason": args.reason, "stage_instance_id": s_inst_id},
         )
 
+    # 隔离未消费消息：将本 stage 所有未消费消息标记为已消费，防止下轮 next 重放
+    consumed_ids = set(instance.get("consumed_message_ids", []))
+    from services.message_handler import scan_messages
+    pending_msgs = scan_messages(args.instance, consumed_ids)
+    blocked_ids = {m["message_id"] for m in pending_msgs if m.get("stage_id") == stage_id}
+    if blocked_ids:
+        consumed_ids.update(blocked_ids)
+        instance["consumed_message_ids"] = list(consumed_ids)
+
     append_deviation(
         args.instance,
         "STAGE_SKIPPED_FORCE" if args.force else "STAGE_SKIPPED",

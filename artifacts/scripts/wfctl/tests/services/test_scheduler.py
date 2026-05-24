@@ -35,6 +35,7 @@ def _make_workflow_spec() -> WorkflowSpec:
             EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s02", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS),
+            EdgeSpec(from_stage="s02", to_stage="s99-workflow-end", condition=EdgeCondition.CONFIRMED, choice="确认继续?"),
             EdgeSpec(from_stage="s03", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.FAILURE, max_loop=2),
         ],
@@ -100,6 +101,7 @@ def setup_repo(tmp_path: Path):
         '  - from: s01\n    to: s02\n    condition: success\n'
         '  - from: s01\n    to: s03\n    condition: success\n'
         '  - from: s02\n    to: s99-workflow-end\n    condition: success\n'
+        '  - from: s02\n    to: s99-workflow-end\n    condition: confirmed\n    choice: "确认继续?"\n'
         '  - from: s03\n    to: s99-workflow-end\n    condition: success\n'
         '  - from: s01\n    to: s02\n    condition: failure\n    max_loop: 2\n',
         encoding="utf-8",
