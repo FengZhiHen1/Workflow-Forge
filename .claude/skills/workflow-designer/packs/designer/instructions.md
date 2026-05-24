@@ -1,16 +1,16 @@
-# Designer
+# Designer Pack — 工作流设计能力
 
-你是 Workflow Designer 的 **工作流设计子代理**。你的唯一任务：消费 Phase 1 产出的决策文档和 Stage 草案，生成符合 Workflow v3.0.0 规范的 WORKFLOW.yaml + WORKFLOW.md。
+> 当需要基于分析结果和用户决策，生成符合 Workflow v3.0.0 规范的 WORKFLOW.yaml + WORKFLOW.md 时，加载此包。
 
 ## 定位
 
-你是**执行者**，不是决策者。Phase 1 的主 Agent 已和用户讨论完毕，决策文档中每个维度的结论都是用户批复的。你只需**忠实地把决策转化为工作流文件**，不做自主决策。
+你是**执行者**，不是决策者。决策文档中每个维度的结论都是用户批复的。你只需**忠实地把决策转化为工作流文件**，不做自主决策。
 
 信息不足以完成某个设计判断时（如边缘路径未定义、skill_id 未指定），不要猜测，在输出中标注 `⚠️ UNCERTAIN: <具体问题>`。
 
-## 启动时必读
+## 执行前必读规范
 
-**在开始生成前，你必须自行读取以下权威规范文件：**
+生成前必须自行读取以下权威规范文件：
 
 | 规范文件 | 用途 |
 |---------|------|
@@ -19,7 +19,7 @@
 | `workshop/specs/细节设计/wfctl接口与行为规范.md` | action 结构、confirm/rollback 行为、exclusive 调度——确保工作流与 wfctl 兼容 |
 | `workshop/specs/工作流思想.md` | 三角色架构、最大化并发、两级 worktree、Message 协议 |
 
-**以下内容已从本 prompt 中移除，你必须从上述规范文件中获取：**
+**以下内容已从本指令中移除，必须从上述规范文件中获取：**
 - 完整的字段定义和约束 → 见 `WORKFLOW.yaml字段规范.md`
 - condition 枚举的完整说明 → 见 `WORKFLOW.yaml字段规范.md` §三
 - 中继确认与终局确认的详细机制 → 见 `WORKFLOW.yaml字段规范.md` §四
@@ -28,16 +28,17 @@
 
 ## 输入
 
-1. 决策文档（`.md`）—— 5 维度诊断与决策、共享资源清单、Stage 结构草案、用户审批记录
+1. 决策文档（`.md`）—— 多维度诊断与决策、共享资源清单、Stage 结构草案、用户审批记录
 2. 工作流草稿 —— Stage 结构草案表
+3. 分析报告（`analysis-report.yaml`）—— 如有 analyzer 产出
 
 ## 输出
 
-保存到主 Agent 指定的工作目录（`$WD`，即 `.tmp/workflow-designer-<YYYYMMDD-HHMMSS>/`）：
+保存到 `$WD/`（即 `.tmp/workflow-designer-<YYYYMMDD-HHMMSS>/`）：
 1. `WORKFLOW.yaml` —— 符合 v3.0.0 规范
 2. `WORKFLOW.md` —— 人类可读工作流文档
 3. `skill_manifest.json` —— Skill 产物映射清单（中间产物，不进入最终交付目录）
-4. `dependency-graph.yaml` —— **深度设计模式必填**，Skill 依赖 DAG 定义（见下方）
+4. `dependency-graph.yaml` —— **复杂设计时必填**，Skill 依赖 DAG 定义（见下方）
 
 ## WORKFLOW.yaml 规范（v3.0.0）
 
@@ -150,9 +151,9 @@ edges:
 - 选择最接近的模式作为起点，根据需求调整
 - 混合多种模式时，确保汇聚点清晰
 
-### dependency-graph.yaml（深度设计模式）
+### dependency-graph.yaml（复杂设计时）
 
-当 `analysis_depth: deep` 时，额外生成 `dependency-graph.yaml`：
+当存在多 Skill 依赖关系时，额外生成 `dependency-graph.yaml`：
 
 ```yaml
 skills:
@@ -206,9 +207,7 @@ edges:
   # ... 完整的流转边
 ```
 
-子工作流骨架不进入 Phase 2（不需要生成 Skill），但它是 Phase 1 决策的产出物——用于：
-- reviewer 评审时检查父子衔接
-- Phase 2 讨论时作为子工作流引用的上下文
+子工作流骨架不进入 Skill 编写阶段（不需要生成 Skill），但它是设计决策的产出物——用于 reviewer 评审时检查父子衔接。
 
 ## WORKFLOW.md 生成规范
 
@@ -258,9 +257,9 @@ flowchart TD
 }
 ```
 
-- `generated`：本次由 skill-writer 生成
+- `generated`：本次生成
 - `existing`：用户指定保留的已有 Skill
-- `inferred`：设计师推断但未被覆盖的 Skill，以 `⚠️ MISSING` 高亮
+- `inferred`：推断但未被覆盖的 Skill，以 `⚠️ MISSING` 高亮
 
 ## 质量自检
 

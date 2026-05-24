@@ -1,10 +1,10 @@
-# Analyzer
+# Analyzer Pack — 输入分析能力
 
-你是 Workflow Designer 的 **输入分析子代理**。你的唯一任务：深度分析输入材料（旧 Skill 或已有工作流），输出结构化分析报告。
+> 当需要分析旧 Skill、已有工作流或需求描述，以提取结构化信息用于工作流设计时，加载此包。
 
-## 启动时必读
+## 执行前必读规范
 
-**在开始分析前，你必须自行读取以下规范文件：**
+分析前必须自行读取以下规范文件：
 
 | 规范文件 | 用途 |
 |---------|------|
@@ -18,16 +18,17 @@
 1. 输入材料（下列之一）：
    - **旧 Skill 模式**：一个或多个旧 SKILL.md 的完整内容
    - **已有工作流模式**：WORKFLOW.yaml + WORKFLOW.md + 关联 skills/
-2. 用户在 Phase 0 的决策摘要（改造方向、合并策略、红线约束等）
+   - **从零开始模式**：用户的一句话需求描述
+2. 用户在设计初期提供的决策摘要（改造方向、合并策略、红线约束等）
 
-## 输出格式
+## 输出
 
-输出 YAML 文件保存到主 Agent 指定路径，由主 Agent 按需转换为 JSON。
+输出 YAML 格式的分析报告，保存到 `$WD/analysis-report.yaml`：
 
 ```yaml
 analysis_version: "3.0.0"
-mode: single|multi|workflow_upgrade
-analysis_depth: standard|deep  # standard=标准分析, deep=额外输出依赖关系详细分析
+mode: single|multi|workflow_upgrade|from_scratch
+analysis_depth: standard|deep
 
 source_skills:
   - path: 输入路径
@@ -127,7 +128,7 @@ proposed_edges:
     reason: 为什么这样连接
     is_cross_skill: false
 
-sub_workflows:  # 检测到的子工作流引用
+sub_workflows:
   - parent_stage_id: s03
     workflow_ref: module-design-pipeline@1.0.0
     path: artifacts/workflows/module-design-pipeline@1.0.0/
@@ -155,6 +156,7 @@ source_workflow:
 
 - **旧 Skill 模式**：按 SKILL.md 的章节结构拆解步骤，`skill_index` 标识归属
 - **已有工作流模式**：按 WORKFLOW.yaml 的 stages 拆解，标注每个 stage 的当前状态
+- **从零开始模式**：从用户描述中提取隐含的逻辑步骤，推断所需能力
 - 每个步骤标记类型：analysis / generation / validation / communication / script_call / subagent_call
 
 ### 2. AskUserQuestion 点识别
@@ -208,9 +210,9 @@ source_workflow:
 对每个文件评估：
 - **用途**：这个文件在新 Skill 的业务逻辑中还有用吗？
 - **迁移决策**：`should_migrate: true` 表示必须迁移；`false` 表示可以丢弃
-- **理由**：说明为什么迁移或不迁移——后续阶段（Phase 2 skill-writer）依赖这个判断来执行实际操作
+- **理由**：说明为什么迁移或不迁移——后续阶段依赖这个判断来执行实际操作
 
-> ⚠️ 这是防止 references/scripts 在改造过程中丢失的关键步骤。如果旧 Skill 有捆绑资源但 analyzer 没有列出，后续所有阶段都不会知道它们的存在。
+> ⚠️ 这是防止 references/scripts 在改造过程中丢失的关键步骤。如果旧 Skill 有捆绑资源但没有列出，后续所有阶段都不会知道它们的存在。
 
 ### 8. 子工作流检测
 
