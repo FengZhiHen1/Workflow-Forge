@@ -143,7 +143,7 @@ def run_next(instance_id: str) -> dict:
         stage_actions = _allocate_and_spawn(ready, instance, instance_id, adj, spec, running_agents)
 
         # 12. 确认点聚合
-        confirm_action = _collect_confirm_action(instance)
+        confirm_action = _collect_confirm_action(instance, adj)
 
         # 13. 子工作流驱动：为新创建的子实例生成 child_next action
         child_next_actions: list[dict] = []
@@ -1211,7 +1211,7 @@ def _build_context(stage_id: str, adj, instance: dict) -> dict:
     }
 
 
-def _collect_confirm_action(instance: dict) -> dict | None:
+def _collect_confirm_action(instance: dict, adj) -> dict | None:
     """聚合 AWAITING_CONFIRM stages——含父实例自身和子工作流实例。"""
     root = find_root()
     pending: list[dict] = []
@@ -1223,6 +1223,7 @@ def _collect_confirm_action(instance: dict) -> dict | None:
                 "stage_id": s["stage_id"],
                 "instance_id": instance["instance_id"],
                 "questions": s.get("confirm_questions", []),
+                "valid_choices": _collect_valid_choices(adj, s["stage_id"]),
             })
 
     # 2. 子工作流实例中的 AWAITING_CONFIRM
@@ -1252,12 +1253,23 @@ def _collect_confirm_action(instance: dict) -> dict | None:
                     "instance_id": child["instance_id"],
                     "parent_stage_id": parent_stage["stage_id"] if parent_stage else None,
                     "questions": child_s.get("confirm_questions", []),
+                    "valid_choices": None,  # 子实例需加载子工作流 spec，由编排器从子实例 actual workflow 获取
                 })
 
     if not pending:
         return None
 
     return {"action": "confirm", "pending": pending}
+
+
+def _collect_valid_choices(adj, stage_id: str) -> list[str]:
+    """收集 stage 所有 confirmed + rejected 边的 choice 值（去重）。"""
+    from core.dag import get_confirmed_edges, get_rejected_edges
+    choices: list[str] = []
+    for e in get_confirmed_edges(adj, stage_id) + get_rejected_edges(adj, stage_id):
+        if e.choice and e.choice not in choices:
+            choices.append(e.choice)
+    return choices
 
 
 def _check_all_done(instance: dict, spec) -> bool:

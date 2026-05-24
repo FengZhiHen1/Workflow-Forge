@@ -196,31 +196,35 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 {
   "action": "confirm",
   "pending": [
-    {"stage_id": "s03", "instance_id": "20260519-003", "questions": ["确认建模方案？"]},
-    {"stage_id": "s01-scheme-design", "instance_id": "child-001", "parent_stage_id": "p2-question-solution", "questions": ["确认方案设计？"]}
+    {
+      "stage_id": "s02",
+      "instance_id": "20260519-003",
+      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"],
+      "valid_choices": ["full_design", "code_only", "both_exist", "放弃模块"]
+    }
   ]
 }
 ```
 
 - `instance_id`：需要确认的实例 ID。**与当前父实例不同时，确认目标为子工作流实例**
 - `parent_stage_id`：仅子实例 confirm 出现，标识对应父工作流的哪个 stage
+- `valid_choices`：该 stage 所有 `confirmed` + `rejected` 边的 `choice` 值——**这是选项的权威来源**。可能为 `null`（子实例尚未加载其工作流 spec）
+- `questions`：SubAgent 上报的原始选项文本，仅用于提供 `description`
 
 执行步骤：
 0. **确认时机判断**：读取每条 pending 的 questions 内容，判断是前置对齐还是终审验收（详见「确认时机判断」章节）
-1. **解析 questions 为 AskUserQuestion**：SubAgent 的 `confirm_questions` 按 `contracts/output.md` §七 的格式约定产出，每条 option 为 `"<choice>：<显示文本>"`。你按以下规则解析：
+1. **以 `valid_choices` 为权威构造 AskUserQuestion**：
 
-   a. 对每条 option，找**第一个中文全角冒号 `：`** 的位置
-   b. `：` 之前 = `label`（即 edge 的 `choice` 值），`：` 之后 = `description`（用户可见描述）
-   c. 若某条 option 不含 `：`，整条作为 `label`（兼容旧格式）
+   a. 若 `valid_choices` 非空：用它作为选项列表，从 `questions` 中匹配描述文本
+   b. 解析 `questions`：对每条 question 找**第一个中文全角冒号 `：`**，之前为 `choice_key`，之后为 `description`
+   c. 将 `valid_choices` 逐条映射：choice 匹配到 question → 用其 description；未匹配 → description 为 `"（未提供描述）"`
+   d. 若 `valid_choices` 为 `null`（子实例）：降级为直接从 `questions` 解析（旧逻辑）
 
-   将解析结果构造为 `AskUserQuestion`：
-   - `multiSelect: false`
-   - `header`: "确认 `{stage} 阶段`"
-   - `options`: `[{label: "<choice>", description: "<显示文本>"}, ...]`
+   构造 `AskUserQuestion`：
+   - `header`: `"确认 {stage_id} 阶段"`
+   - `options`: `[{label: "<choice>", description: "<映射到的描述>"}, ...]`
 
-   用户选择后，答案直接为 `label` 值——无需再做文本解析，直接用作 `--choice`。
-
-   示例：`"full_design：全新设计，从意图澄清开始"` → `label: "full_design"`, `description: "全新设计，从意图澄清开始"` → 用户选此项 → `--choice "full_design"`
+   用户选择后，答案即为 `label`（即 `valid_choices` 中的原始 choice 值），直接用作 `--choice`。
 
 2. 若判断为前置对齐，在 description 中按「确认时机判断」的呈现方式追加警告
 3. 用户选择后，**使用 `pending` 条目中的 `instance_id`**（不是父实例 ID）调用：

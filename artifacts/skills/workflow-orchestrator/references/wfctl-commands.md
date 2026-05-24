@@ -241,13 +241,19 @@ confirm：
 {
   "action": "confirm",
   "pending": [
-    {"stage_id": "s03", "instance_id": "20260517-001", "questions": ["确认建模方案？选项: ..."]},
-    {"stage_id": "s01-scheme-design", "instance_id": "child-001", "parent_stage_id": "p2-question-solution", "questions": ["确认方案设计？"]}
+    {
+      "stage_id": "s02",
+      "instance_id": "20260517-001",
+      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"],
+      "valid_choices": ["full_design", "code_only", "both_exist", "放弃模块"]
+    },
+    {"stage_id": "s01-scheme-design", "instance_id": "child-001", "parent_stage_id": "p2-question-solution", "questions": ["确认方案设计？"], "valid_choices": null}
   ]
 }
 ```
 - `instance_id`：确认目标实例。与当前父实例不同时，编排器应对子实例调用 `wfctl confirm --instance <instance_id>`
 - `parent_stage_id`：仅子实例条目出现，标记父工作流中对应的 stage
+- `valid_choices`：该 stage 所有 confirmed + rejected 边的 choice 值（权威选项来源）。为 `null` 时编排器降级解析 questions
 
 conflict：
 ```json
