@@ -15,7 +15,8 @@
   "worktree": ".tmp/worktrees/instance-20260517-001/",
   "model": "standard",
   "requires_parallel_targets": false,
-  "confirmation_point": true,
+  "confirmation_point": false,
+  "valid_routing_choices": ["full_design", "code_only", "both_exist"],
   "context": {
     "goal": "为 M01-M05 模块编写落地规范",
     "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成选题分析..."}],
@@ -54,7 +55,8 @@
   "worktree": ".tmp/worktrees/instance-20260517-001/",
   "system_agent_id": "agent-001",
   "requires_parallel_targets": false,
-  "confirmation_point": true,
+  "confirmation_point": false,
+  "valid_routing_choices": [],
   "context": {
     "goal": "为 M01-M05 模块编写落地规范",
     "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成需求收集..."}]

@@ -88,6 +88,23 @@ def consume_messages(instance_id: str, instance: dict, worktree_map: dict[str, P
             continue
 
         if new_status == "DONE":
+            routing_choice = msg.get("routing_choice")
+            if routing_choice:
+                valid = stage.get("valid_routing_choices", [])
+                if valid and routing_choice not in valid:
+                    stage["status"] = "ERROR"
+                    _append_timeline(instance_id, stage_id, "running→error",
+                                     {"message_id": msg["message_id"],
+                                      "reason": f"非法 routing_choice: '{routing_choice}'，合法值: {valid}"})
+                    consumed_ids.add(msg["message_id"])
+                    changes.append({
+                        "stage_id": stage_id,
+                        "old_status": old_status,
+                        "new_status": "ERROR",
+                        "message": msg,
+                    })
+                    continue
+                stage["routing_choice"] = routing_choice
             stage["status"] = "DONE"
             stage["exit_condition"] = "success"
             stage["output_message_id"] = msg["message_id"]

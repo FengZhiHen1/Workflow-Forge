@@ -36,8 +36,8 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 | `AskUserQuestion`（任何需要用户决策的场景） | `--status AWAITING_CONFIRM --questions "问题1" "问题2"` |
 编排器收到你的 AWAITING_CONFIRM 后，会自动将其翻译回 `AskUserQuestion` 呈现给用户，并将用户的选择回传。
 
-工作完成后调用（--checkpoint 用于向下游 stage 传递交接上下文）：
-  python .claude/scripts/wfctl/main.py message write --instance <instance_id> --stage <stage_id> --status DONE --report "<conventional-commit格式摘要>" --checkpoint "已完成：<产出>；关键上下文：<决策和约束>；待处理：<遗留问题>"
+工作完成后调用（--checkpoint 用于向下游 stage 传递交接上下文；若本 stage 支持条件路由，加 --choice）：
+  python .claude/scripts/wfctl/main.py message write --instance <instance_id> --stage <stage_id> --status DONE --report "<conventional-commit格式摘要>" --checkpoint "已完成：<产出>；关键上下文：<决策和约束>；待处理：<遗留问题>" [--choice "<路由选择>"]
 
 对应 SKILL.md 中的 AskUserQuestion——需要用户确认时调用（--questions 每项一个参数，空格分隔）：
   python .claude/scripts/wfctl/main.py message write --instance <instance_id> --stage <stage_id> --status AWAITING_CONFIRM --report "..." --questions "问题1" "问题2"
@@ -106,6 +106,22 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 2. 编排器在用户确认后会安排你继续执行（continue），届时根据用户选择完成最终产出并上报 DONE。
 
 注意：确认点意味着你不能直接上报 DONE。即使你认为答案已明确，也必须走 AWAITING_CONFIRM → 确认 → continue → DONE 的流程。直接上报 DONE 会导致下游路由边无法匹配，工作流卡死。
+```
+
+### valid_routing_choices 非空
+
+在 prompt 中追加以下指令（放在「上报」段之后）：
+
+```
+本 stage 支持条件路由——你可以根据分析结果自主选择下游路径。合法的路由选项：
+<valid_routing_choices 中每条：>
+  - `<choice>`
+<若为空列表则写"无（直接报 DONE，不传 --choice）">
+
+上报 DONE 时通过 --choice 传入你选定的路由值：
+  python .claude/scripts/wfctl/main.py message write ... --status DONE --choice "<choice>"
+
+--choice 的值必须来自上述合法选项。传错会导致消息被拒绝、stage 置 ERROR。
 ```
 
 ### requires_parallel_targets = true

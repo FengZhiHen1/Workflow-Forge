@@ -79,6 +79,10 @@ def _all_satisfied(upstream_edges: list[EdgeSpec], stage_states: dict) -> bool:
         if edge.condition == EdgeCondition.ALWAYS:
             return True
         if edge.condition == EdgeCondition.SUCCESS and exit_cond in ("success", ""):
+            if edge.choice:
+                routing_choice = upstream_stage.get("routing_choice", "")
+                if routing_choice != edge.choice:
+                    continue
             # "" 兼容旧实例（升级前已 DONE 的 stage）
             return True
         if edge.condition == EdgeCondition.CONFIRMED and exit_cond in ("confirmed", ""):

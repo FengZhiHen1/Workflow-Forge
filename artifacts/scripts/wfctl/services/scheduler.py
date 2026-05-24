@@ -1090,6 +1090,9 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
         )
         stage_state["requires_parallel_targets"] = needs_targets
 
+        routing_choices = _collect_success_choices(adj, stage_id)
+        stage_state["valid_routing_choices"] = routing_choices
+
         if matched_agent:
             # Level 2: 同步 stage worktree ↔ 实例 worktree（continue 前）
             sync_ok, conflict_files = sync_stage_with_instance(instance_id, stage_inst_id)
@@ -1125,6 +1128,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
                 "system_agent_id": sys_id,
                 "requires_parallel_targets": needs_targets,
                 "confirmation_point": stage_spec.confirmation_point,
+                "valid_routing_choices": routing_choices,
                 "context": context,
             })
         else:
@@ -1135,6 +1139,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
                 "worktree": str(worktree.relative_to(root)),
                 "requires_parallel_targets": needs_targets,
                 "confirmation_point": stage_spec.confirmation_point,
+                "valid_routing_choices": routing_choices,
                 "context": context,
             })
 
@@ -1268,6 +1273,17 @@ def _collect_valid_choices(adj, stage_id: str) -> list[str]:
     choices: list[str] = []
     for e in get_confirmed_edges(adj, stage_id) + get_rejected_edges(adj, stage_id):
         if e.choice and e.choice not in choices:
+            choices.append(e.choice)
+    return choices
+
+
+def _collect_success_choices(adj, stage_id: str) -> list[str]:
+    """收集 stage 所有 SUCCESS 边的 choice 值（去重，不含 None）。
+    返回空列表表示该 stage 无路由选择。
+    """
+    choices: list[str] = []
+    for e in adj.outgoing.get(stage_id, []):
+        if e.condition.value == "success" and e.choice and e.choice not in choices:
             choices.append(e.choice)
     return choices
 

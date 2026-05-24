@@ -21,6 +21,7 @@ def write_message(
     checkpoint_summary: str | None = None,
     confirm_questions: list[str] | None = None,
     parallel_targets: list[dict] | None = None,
+    routing_choice: str | None = None,
     worktree: Path | None = None,
     message_target_path: str | None = None,
 ) -> dict:
@@ -63,6 +64,7 @@ def write_message(
         "checkpoint_summary": checkpoint_summary or "",
         "confirm_questions": confirm_questions or [],
         "parallel_targets": parallel_targets,
+        "routing_choice": routing_choice,
         "modified_files": modified_files,
         "timestamp": iso_timestamp(),
     }

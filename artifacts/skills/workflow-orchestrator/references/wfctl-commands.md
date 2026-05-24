@@ -156,6 +156,7 @@ wfctl next --instance <id>
       "worktree": ".tmp/worktrees/instance-20260517-001/",
       "requires_parallel_targets": false,
       "confirmation_point": false,
+      "valid_routing_choices": [],
       "context": {
         "goal": "为 M01-M05 模块编写规范",
         "upstream_summaries": [],

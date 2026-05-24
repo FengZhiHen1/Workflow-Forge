@@ -18,6 +18,7 @@ def register_message_write(subparsers):
     write_p.add_argument("--checkpoint", default=None, help="checkpoint_summary")
     write_p.add_argument("--questions", nargs="*", default=[], help="确认问题列表")
     write_p.add_argument("--parallel-targets", nargs="*", default=[], help="parallel 目标")
+    write_p.add_argument("--choice", default=None, help="路由选择（匹配 SUCCESS 边的 choice）")
     write_p.set_defaults(handler=_handle_message_write)
 
 
@@ -76,6 +77,7 @@ def _handle_message_write(args) -> dict:
         checkpoint_summary=args.checkpoint,
         confirm_questions=list(args.questions) if args.questions else None,
         parallel_targets=parallel_targets,
+        routing_choice=args.choice,
         worktree=worktree,
         message_target_path=identity.get("message_target_path"),
     )
