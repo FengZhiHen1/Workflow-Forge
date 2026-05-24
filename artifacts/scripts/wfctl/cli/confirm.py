@@ -100,6 +100,7 @@ def _handle_confirm(args) -> dict:
 
         stage["status"] = "DONE"
         stage["exit_condition"] = "confirmed"
+        stage["confirmed_choice"] = choice
         _append_timeline(args.instance, stage_id, "awaiting_confirm→done",
                          {"confirmed_by": "user", "choice": choice})
 

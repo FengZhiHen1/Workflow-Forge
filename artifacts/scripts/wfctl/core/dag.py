@@ -82,6 +82,11 @@ def _all_satisfied(upstream_edges: list[EdgeSpec], stage_states: dict) -> bool:
             # "" 兼容旧实例（升级前已 DONE 的 stage）
             return True
         if edge.condition == EdgeCondition.CONFIRMED and exit_cond in ("confirmed", ""):
+            # CONFIRMED 边有 choice 时，必须匹配上游 stage 的 confirmed_choice
+            if edge.choice:
+                upstream_choice = upstream_stage.get("confirmed_choice", "")
+                if upstream_choice and upstream_choice != edge.choice:
+                    continue
             # "" 兼容旧实例
             return True
         # failure / rejected / loop_exceeded 跳过，不计入常规就绪
