@@ -242,12 +242,19 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITING_CONFIRM` 的 stage 列表。你按以下协议处理：
 
-1. 从 `pending` 中选取**一个** stage，先判断确认时机（前置对齐/终审验收，见上方「确认时机判断」），再呈现给用户
-2. 用户回复后，调用 `wfctl confirm --instance <id> --stage <stage_id> --choice "<值>"`
-3. 立即调用 `wfctl next`——剩余 pending 自然出现在下一轮
-4. 重复，直到 `next` 不再返回 `confirm` action
+1. 对 `pending` 中的**每个**条目，按上方「以 valid_choices 为权威」步骤构造对应的 question（含 options）。多条 pending → 多个 question
+2. **一次性**通过 `AskUserQuestion` 呈现所有 question（`questions` 数组，`multiSelect: false`）
+   - 每个 question 的 `header` 使用 `stage_id`，方便用户区分
+   - 若某条 question 判断为前置对齐，在其 `description` 中追加警告
+3. 用户一次性回答所有问题后，按 question 逐一映射回 `(instance_id, stage_id, choice)`：
+   ```
+   对每条回答：
+     wfctl confirm --instance <对应instance_id> --stage <对应stage_id> --choice "<label>"
+   ```
+4. 全部 confirm 完成后，调用一次 `wfctl next`——级联效应产生的新 pending 自然出现在下一轮
+5. 重复，直到 `next` 不再返回 `confirm` action
 
-**`--choice` 的值**：取用户选择的 `label` 值（见步骤 1 的解析规则），直接传给 `wfctl confirm`。不修改、不自生成。
+**`--choice` 的值**：取用户选择的 `label` 值（即 `valid_choices` 中的原始 choice），直接传给 `wfctl confirm`。不修改、不自生成。
 
 **拒绝处理**：用户选择 `rejected` 选项时：
 - 有 `rejected` edge → stage → PENDING（重做），SubAgent 重新 spawn 时注入 `--feedback`
