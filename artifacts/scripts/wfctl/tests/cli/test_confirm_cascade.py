@@ -129,7 +129,7 @@ class TestCascadeReset:
         assert instance["stages"][2]["status"] == "PENDING"
 
     def test_s08_to_s06_backward_cascade(self, tmp_path):
-        """s08→s06 回边：应重置 s06 和 s07，s02–s05 保持 DONE。"""
+        """s08→s06 回边：应重置 s06、s07、s08（含 from_stage），s02–s05 保持 DONE。"""
         spec = _make_spec(10)
         instance = _make_instance({
             "s00-workflow-start": "DONE",
@@ -148,11 +148,10 @@ class TestCascadeReset:
         _cascade_reset_on_backward_edge(instance, spec, "s08", "s06", "test-001")
 
         statuses = {s["stage_id"]: s["status"] for s in instance["stages"]}
-        # s06–s07 应重置
+        # s06–s08 应重置（含 from_stage——需重新执行才能产出新结果）
         assert statuses["s06"] == "PENDING"
         assert statuses["s07"] == "PENDING"
-        # s08（from_stage）不受影响——它已是 DONE
-        assert statuses["s08"] == "DONE"
+        assert statuses["s08"] == "PENDING"
         # s02–s05 在重置范围之前，保持 DONE
         assert statuses["s02"] == "DONE"
         assert statuses["s03"] == "DONE"
@@ -160,7 +159,7 @@ class TestCascadeReset:
         assert statuses["s05"] == "DONE"
 
     def test_s08_to_s02_deep_backward_cascade(self, tmp_path):
-        """s08→s02 深回边：应重置 s02–s07。"""
+        """s08→s02 深回边：应重置 s02–s08（含 from_stage）。"""
         spec = _make_spec(10)
         instance = _make_instance({
             "s00-workflow-start": "DONE",
@@ -179,11 +178,9 @@ class TestCascadeReset:
         _cascade_reset_on_backward_edge(instance, spec, "s08", "s02", "test-001")
 
         statuses = {s["stage_id"]: s["status"] for s in instance["stages"]}
-        # s02–s07 应重置
-        for sid in [f"s0{i}" for i in range(2, 8)]:
+        # s02–s08 应重置（含 from_stage）
+        for sid in [f"s0{i}" for i in range(2, 9)]:
             assert statuses[sid] == "PENDING", f"{sid} should be PENDING"
-        # s08 不受影响
-        assert statuses["s08"] == "DONE"
         # s01 在范围之前，保持 DONE
         assert statuses["s01"] == "DONE"
 
@@ -205,14 +202,15 @@ class TestCascadeReset:
 
         _cascade_reset_on_backward_edge(instance, spec, "s08", "s06", "test-001")
 
-        # 检查 s06 的新条目
-        s06_entry = next(s for s in instance["stages"] if s["stage_id"] == "s06")
-        assert s06_entry["system_agent_id"] is None
-        assert s06_entry["output_message_id"] is None
-        assert s06_entry["child_instance_id"] is None
-        assert "fan_out_target" not in s06_entry or s06_entry["fan_out_target"] is None
-        assert s06_entry["loop_counter"] == 0
-        assert s06_entry["attempt_count"] == 0
+        # 检查 s06 和 s08 的新条目（均应在重置范围内）
+        for sid in ("s06", "s08"):
+            entry = next(s for s in instance["stages"] if s["stage_id"] == sid)
+            assert entry["system_agent_id"] is None, f"{sid} system_agent_id should be None"
+            assert entry["output_message_id"] is None, f"{sid} output_message_id should be None"
+            assert entry["child_instance_id"] is None, f"{sid} child_instance_id should be None"
+            assert "fan_out_target" not in entry or entry["fan_out_target"] is None
+            assert entry["loop_counter"] == 0
+            assert entry["attempt_count"] == 0
 
     def test_backward_collapses_parallel_instances(self, tmp_path):
         """回边重置应将 parallel 实例折叠为单一 PENDING 条目。"""
