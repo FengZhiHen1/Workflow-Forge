@@ -33,26 +33,18 @@ description: >
 
 ## 核心设计原则
 
-完整原则定义见 `references/design-principles.md`。
+设计决策受 12 条原则约束，分为三层：**不可妥协**（4条，所有轨道100%遵守）、**核心**（3条，深度可调）、**扩展**（5条，快速通道可裁剪）。完整定义和各轨道应用差异见 `references/design-principles.md`。
 
-| 分层 | 原则 | 快速通道 | 标准设计 | 深度设计 |
-|------|------|---------|---------|---------|
-| **不可妥协** | 失败路径完整 | 模板自动补全 | 5维度覆盖 | + reviewer检查 |
-| **不可妥协** | 无审批不修改 | 3个强制门控 | 每Phase门控 | + 评审后确认 |
-| **不可妥协** | 双重视角 | 脚本自动替换 | 讨论中标注 | 输出路径映射表 |
-| **不可妥协** | 可观测性 | 一句话播报 | 决策文档实时更新 | 结构化摘要+依赖图 |
-| **核心** | 程序AI分工 | 人工判断为主 | 标准分工 | 依赖图脚本化+reviewer |
-| **核心** | 实时留档 | 简化模板 | 完整模板 | 扩展模板 |
-| **核心** | 不挑输入 | 全输入类型 | 全输入类型 | 全输入类型 |
-| **扩展** | 语义阻塞点 | 只留2个 | 5维度潜在阻塞 | 7维度+可跳过 |
-| **扩展** | 上下文压缩 | 只加载原文 | analyzer摘要 | 结构化摘要+依赖图 |
-| **扩展** | 讨论执行 | 讨论1轮，串行 | 5维度讨论，并行 | 7维度讨论，层级并行 |
-| **扩展** | 共享资源 | 识别后可跳过 | 识别→确认→建立 | 识别→论证→建立→校验 |
-| **扩展** | 隔离分层 | v3规范遵守 | v3规范遵守 | + 集成校验 |
+关键速记：
+- **不可妥协**：失败路径完整、无审批不修改、双重视角（车间/消费者路径映射）、可观测性
+- **核心**：程序与AI分工、实时留档、不挑输入
+- **扩展**：语义阻塞点、上下文压缩、讨论串行执行并行、共享资源意识、隔离分层
 
 ## Skill 与工作流的绝对边界
 
 > **这是本 Skill 产出物的最高准则。违反此条的设计将被视为不合格。**
+>
+> 完整论述见 `references/skill-writer-prompt.md`。边界校验脚本：`scripts/validate_skill_boundary.py`。
 
 **Skill 绝对不能感知、干涉工作流。** Skill 是一个盲执行者——它只知道自己的输入和任务，不知道也不关心自己是否在某个工作流中运行。
 
@@ -63,19 +55,7 @@ description: >
 | "我的产出放在配置指定的路径" | "我的产出会作为下游 Stage 的输入" |
 | "如果输入缺失，我降级处理或报错" | "如果输入缺失，我通知编排器暂停工作流" |
 
-**为什么必须隔离：**
-- **可复用性**：同一个 Skill 可被不同工作流、甚至独立使用
-- **可测试性**：不感知工作流协议，就能脱离工作流单独测试
-- **可维护性**：工作流重构（改 Stage 名、调 edges）不应波及 Skill
-- **复杂度隔离**：编排器已足够复杂，Skill 不应操心全局状态
-
-**在产出 SKILL.md 时，必须确保：**
-- AskUserQuestion **可以保留**——框架注入替换规则，SubAgent 自觉转为 AWAITING_CONFIRM
-- **禁止**写入 SubAgent 调度、Stage 名称、workflow_id、edges、依赖关系
-- **禁止**写入 `[WORKFLOW_CONFIG]`、`[WORKFLOW_MESSAGE]` 等工作流协议块
-- **禁止**引用生产车间路径（`artifacts/`、`workshop/`）
-- **禁止**描述"完成后会触发 XX Stage"等下游行为
-- **唯一允许的上报语义**：产出完成 → 上报 DONE
+**产出 SKILL.md 时的违规对照：**
 
 | 违规写法 | 正确写法 |
 |---------|---------|
@@ -84,131 +64,21 @@ description: >
 | "如果用户确认，则进入 p3" | 不写（编排器在 Stage 层处理确认） |
 | "读取上游 `p1c-dependency-analysis` 的产出" | "读取 `.agent/workspace/<problem>/dependency-analysis.md`" |
 | "调用 scheme-reviewer SubAgent 进行审查" | 不写（编排器按 edges 调度下一个 Stage） |
+| 写入 `[WORKFLOW_CONFIG]`、`[WORKFLOW_MESSAGE]` 协议块 | 不写（框架注入） |
+| 引用 `artifacts/`、`workshop/` 路径 | 使用消费者项目路径（`.claude/`、`.agent/`） |
+| 写入 Stage 名称、workflow_id、edges、依赖关系 | 不写 |
 
-## 子工作流设计
+> AskUserQuestion **可以保留**——框架注入替换规则，SubAgent 自觉转为 AWAITING_CONFIRM。Skill 不需要知道替换的存在。
 
-当 Stage 的 `workflow` 字段指向另一个 WORKFLOW.yaml 时，该 Stage 在执行时会创建独立的子工作流实例。
+## 子工作流与 Stage 拆分
 
-| 模式 | YAML 字段 | 何时使用 |
-|------|----------|---------|
-| **子工作流** | `workflow: <id>@<ver>` | 子任务本身是多 Stage 流程，有独立确认点，可独立重试 |
-| **parallel 扇出** | `parallel: {source: ...}` | 同一 Skill 逻辑在 N 个独立目标上执行。⚠️ 若 source stage 同时设了确认点，有特殊约束，见下方「parallel 扇出 + 确认点」 |
-| **多 Stage 串行** | 多个 `skill_id` Stage | 不同 Skill 按顺序接力 |
-| **SUCCESS choice 路由** | `choice` 字段用于 `success` 边 | SubAgent 自主判定路径，无需确认点。见下方「条件路由」节 |
+完整设计指南见 `references/subworkflow-design.md`，涵盖：
+- **子工作流判定**：何时用 `workflow` 字段、嵌套深度上限 3 层、设计/优化时的感知义务
+- **Stage 拆分原则**：5 项收益 vs 2 项损失——列不出具体收益就别拆。"确认点"本身不是拆分理由
+- **parallel 扇出 + 确认点**：强制中继确认（自循环），禁止终局确认直接关闭
+- **条件路由**：`success + choice`（SubAgent 自主路由）vs `confirmed + choice`（用户决策）。不要为获得条件路由而设立确认点
 
-**核心判断标准**：如果 Stage 内部还要分好几步、还要用户确认——那就该用子工作流而不是单个 Skill。
-
-**设计约束**：嵌套深度上限 3 层。父 Stage 状态 = 子实例汇总状态。
-
-**子工作流感知义务**（设计/优化时）：
-- 分析已有工作流：检测 `workflow` 字段 → 读取子工作流 → 纳入分析报告
-- 优化已有工作流：父工作流改了，必须检查子工作流是否有同步优化空间
-- 设计新工作流：判定需要子工作流后，designer 输出子工作流骨架 WORKFLOW.yaml
-- 增量更新：修改父工作流 `workflow` 引用版本时，同步检查子工作流
-
-### Stage 拆分原则
-
-一个 stage 对工作流系统是**状态跃迁的原子单元**（启动→执行→上报→DAG 决定下一步），对 SubAgent 是**封闭任务**（收 prompt→干活→上报）。拆分只有在带来的架构收益大于上下文损失时才有意义。
-
-**收益（满足任一可考虑拆分）**：
-
-| # | 收益 | 说明 |
-|---|------|------|
-| 1 | **换 Skill** | 两个阶段需要不同专业能力。硬边界，不拆不行 |
-| 2 | **DAG 路由点** | 中间结果决定下游走哪条路。路由发生在阶段末尾 → 那就是 stage 边界 |
-| 3 | **用户显式暂停/回退点** | 用户说"这一步做完我要看一下，可能回退重来" |
-| 4 | **并行** | 不同分支可以同时走 |
-| 5 | **故障隔离** | 这一段容易出错，出错后只想重试这一段 |
-
-**损失**：
-
-| # | 损失 | 说明 |
-|---|------|------|
-| 1 | **上下文断裂** | 下一个 SubAgent 冷启动，仅靠 `checkpoint_summary` 和文件重建理解，前一个 SubAgent 的推理上下文全部丢失 |
-| 2 | **延迟** | 多一次 wfctl next 往返 |
-
-**决策方法**：列出具体收益项，一项都列不出来就别拆。
-
-**常见反模式**：同一 Skill、无 DAG 路由、无并行机会、无用户暂停需求、上下游共享同一推理上下文，却拆成两个 stage。结果是 SubAgent 无法感知 stage 边界——它在第一个 stage 里把第二个 stage 的活也干了，在错误的 stage 上报错误的状态。`existing-artifact-detector` 是典型案例：阶段 A（扫描）和阶段 B（路径判定）是同一分析的上下游，SubAgent 自然从 A 流到 B。
-
-**"确认点"本身不是拆分理由**——relay 确认完全可以在单 stage 内部完成多轮交互（AWAITING_CONFIRM → 用户答 → continue → 继续工作），不需要 stage 边界。
-
-### parallel 扇出 + 确认点 设计约束
-
-当 stage 同时满足以下两个条件时，存在一条**强制性设计约束**：
-
-1. 本 stage 设有 `confirmation_point: true`
-2. 存在下游 stage 通过 `parallel: {source: <本 stage>}` 引用本 stage 的输出
-
-**约束：该 stage 的确认点不可使用终局确认（`to` 指向下游 stage）。必须使用中继确认（`to` 指向自身，自循环），确保 SubAgent 在用户确认后能继续执行并产出 `parallel_targets`。**
-
-```
-# 错误：终局确认 — SubAgent 在确认后直接关闭，无法产出 parallel_targets
-- from: s07-dispatch
-  to: s08-fanout
-  condition: confirmed
-  choice: "确认调度"
-
-# 正确：中继确认 + success 边 — SubAgent 确认后继续，产出 targets 再 DONE
-- from: s07-dispatch
-  to: s08-fanout
-  condition: success                         # ← DONE(success) 才解锁下游
-- from: s07-dispatch
-  to: s07-dispatch
-  condition: confirmed
-  choice: "确认调度"
-  max_loop: 3                                # ← 自循环，SubAgent 继续执行
-```
-
-**原因**：终局确认直接关闭 stage（AWAITING_CONFIRM → DONE），SubAgent 不会再获得控制权。此时若消息中未包含 `parallel_targets`，下游并行拆分无法执行。中继确认让 stage 回到 PENDING → SubAgent 通过 `continue` 继续 → 处理用户选择 → 产出 `parallel_targets` → 上报 DONE(success) → `success` 边解锁下游并行 stage。
-
-**运行时防护**：`wfctl confirm` 会在终局确认阶段检测此违规——若 stage 的 `requires_parallel_targets` 已持久化为 `true` 而消息中无 `parallel_targets`，将拒绝关闭并返回 `PARALLEL_TARGETS_REQUIRED` 错误。但不应依赖运行时拦截——设计阶段就应避免。
-
-### 条件路由：success + choice vs confirmed + choice
-
-当 stage 的下游有多条互斥路径需要根据运行时判定来路由时，有两种互不依赖的机制：
-
-| | `success` + `choice` | `confirmed` + `choice` |
-|---|---|---|
-| **谁决定** | SubAgent 自主判断 | 用户确认选择 |
-| **需要 confirmation_point** | 否 | 是 |
-| **SubAgent 行为** | 分析 → 选定 choice → `DONE --choice "xxx"` | 分析 → `AWAITING_CONFIRM` → 用户确认 → continue → `DONE` |
-| **典型场景** | 检测结果明确，SubAgent 能独立判定路径（如：扫描到代码→走逆向工程；无代码→走全新设计） | 用户做主观决策（如：方案选择、范围确认、是否需要留档） |
-| **安全网** | `valid_routing_choices` 校验 choice 合法性，非法则置 ERROR | `valid_choices` 编排器层面兜底 + confirm 拦截 |
-
-**核心原则：不要为了获得条件路由而设立确认点。** 如果 SubAgent 自己就能判断该走哪条路，用 `success + choice`，不设 `confirmation_point`。设了确认点反而多一轮无意义交互。
-
-**YAML 示例——SubAgent 自主路由（无需确认点）**：
-
-```yaml
-- stage_id: s02-analyze
-  name: "分析与路由判定"
-  skill_id: path-analyzer
-  confirmation_point: false               # ← 无需确认
-
-edges:
-  - from: s02-analyze
-    to: s03-full-design
-    condition: success
-    choice: "full_design"                  # ← SubAgent 的 --choice 匹配此处
-  - from: s02-analyze
-    to: s04-reverse-engineer
-    condition: success
-    choice: "code_only"
-  - from: s02-analyze
-    to: s99-workflow-end
-    condition: failure
-```
-
-**决策流程**：
-
-```
-SubAgent 能自主决定走哪条路？
-  ├─ 是 → success + choice，不设 confirmation_point
-  └─ 否，需要用户判断 → confirmed + choice + confirmation_point: true
-```
-
-**注意**：若全部 SUCCESS 边都没有 `choice`，则 `valid_routing_choices` 为空列表——SubAgent 无需传 `--choice`，DONE 后所有 SUCCESS 边视为同时满足（OR 语义激活下游）。
+速记：一个 stage = 一次状态跃迁原子单元。拆分的唯一理由是换 Skill / DAG路由 / 用户暂停回退 / 并行 / 故障隔离。
 
 ## 轨道系统
 
@@ -318,15 +188,7 @@ workflow-designer 根据输入特征自动推荐三条轨道之一。用户可�
 
 ## Phase 2 输入清洗
 
-主 Agent 在调度 skill-writer 前，必须对 Stage 需求规格执行脱敏：
-
-| 原始表述 | 清洗后 |
-|---------|--------|
-| "在 `p2-scheme-design` Stage 中" | 删除 |
-| "上游 `p1c-dependency-analysis` 的产出" | `.agent/workspace/<problem>/dependency-analysis.md` |
-| "下游 `p3-implementation` 需要" | 删除 |
-| "完成后触发下一阶段" | "完成后上报 DONE" |
-| "调用 scheme-reviewer SubAgent" | 删除（不写） |
+主 Agent 在调度 skill-writer 前，必须对 Stage 需求规格执行脱敏（完整脱敏规则见 `references/orbit-common.md`）：删除 Stage 名称/上下游引用/编排行为，所有路径转为消费者项目规范。
 
 ### Phase 2 调度前：提取 choices 约束
 
@@ -389,3 +251,25 @@ workflow-designer 根据输入特征自动推荐三条轨道之一。用户可�
 - **忽略旧Skill的捆绑资源**：references/scripts/assets 是旧 Skill 的核心资产。遗漏它们意味着改造是有损的。
 - **忽略子工作流**：父工作流的质量直接受制于子工作流。跳过子工作流检查等于只检查了一半。
 - **版本号变动时在原工作流目录上直接修改**：原版本是历史参照，不可覆盖。新版本必须是从原版复制出来的独立副本。
+
+## 参考文件索引
+
+| 需要做什么 | 读取 |
+|-----------|------|
+| 了解设计原则和各轨道差异 | `references/design-principles.md` |
+| 选定轨道后的公共流程 | `references/orbit-common.md` |
+| 快速/标准/深度轨道特有流程 | `references/orbit-fast.md` / `standard.md` / `deep.md` |
+| 设计 Stage 拆分、parallel 约束、条件路由 | `references/subworkflow-design.md` |
+| 理解路径映射（生产车间 ↔ 消费者项目） | `references/path-conventions.md` |
+| 套用常见工作流模式模板 | `references/workflow-patterns.md` |
+| 调度 analyzer SubAgent | `references/analyzer-prompt.md` |
+| 调度 designer SubAgent | `references/designer-prompt.md` / `designer-prompt-fast.md` |
+| 调度 skill-writer SubAgent | `references/skill-writer-prompt.md` |
+| 调度 reviewer SubAgent（深度设计） | `references/reviewer-prompt.md` |
+| 调度 skill-reviewer SubAgent（深度设计） | `references/skill-reviewer-prompt.md` |
+| 填写 Phase 1 决策文档 | `references/phase1-decision-template*.md` |
+| 填写 Phase 2 Skill 决策文档 | `references/phase2-decision-template.md` |
+| 校验 WORKFLOW.yaml 合法性 | `scripts/validate_workflow.py` |
+| 校验设计规则（确认点密度等） | `scripts/evaluate_workflow_design.py` |
+| 校验 SKILL.md 边界合规 | `scripts/validate_skill_boundary.py` |
+| 提取已有 Skill 的 name/description | `scripts/extract_skill_meta.py` |

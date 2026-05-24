@@ -22,8 +22,7 @@
 6. 调度 designer（`references/designer-prompt.md`），输出：WORKFLOW.yaml + WORKFLOW.md + skill_manifest.json
 
 ### 质量门控
-- 【门控】L1 校验：validate_workflow.py
-- 【门控】L2 规则检查（4 项：确认点密度、死 Stage、循环出口、数据流完整性）
+- 【门控】L1 校验 + L2 规则检查（standard 模式，4项）→ 命令与流程见 `orbit-common.md`「通用交付流程」
 - 【门控】展示工作流摘要（Stage 数、确认点数、Mermaid 图），AskUserQuestion 确认
 
 ---
@@ -38,9 +37,8 @@
 5. 并行调度 skill-writer（基于依赖关系）
 
 ### 质量门控
-- 【门控】每个 SKILL.md 生成后，通过 `validate_skill_boundary.py` 扫描
-- 【门控】全部 Skill 生成后，执行 L1 校验（含 skills-dir + 子工作流）
-- 【门控】转正确认（强制门控）
+- 【门控】每个 SKILL.md 生成后，边界扫描 → 见 `orbit-common.md`「Phase 2 通用规则」
+- 【门控】全部 Skill 生成后，L1 校验（含 skills-dir + 子工作流）+ 转正确认 → 见 `orbit-common.md`「通用交付流程」
 
 ### 资源迁移
 Phase 2 讨论时，必须将 Phase 1 决策文档中的"旧 Skill 捆绑资源迁移"表作为讨论材料，与用户逐项确认每项迁移决策。确认后，将迁移清单作为 skill-writer 的输入 #5 传递。

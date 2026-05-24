@@ -18,8 +18,7 @@
 6. 调度 designer（`references/designer-prompt.md`，深度模式），输出：WORKFLOW.yaml + WORKFLOW.md + **dependency-graph.yaml** + skill_manifest.json
 
 ### 质量门控
-- 【门控】L1 校验
-- 【门控】L2 规则检查（6 项：确认点密度、死 Stage、循环出口、数据流完整性、并发效率、反模式检测）
+- 【门控】L1 校验 + L2 规则检查（deep 模式，6项）→ 命令与流程见 `orbit-common.md`「通用交付流程」
 - 【门控】调用 reviewer SubAgent（`references/reviewer-prompt.md`）评审设计质量
    - 输入：WORKFLOW.yaml + WORKFLOW.md + dependency-graph.yaml + 决策文档
    - 输出：`$WD/review-report.yaml`
@@ -49,11 +48,10 @@
    - 校验所有 Skill 间的接口一致性、共享资源引用完整性、SKILL.md 中无 `artifacts/` 路径
 
 ### 质量门控
-- 【门控】每个 SKILL.md 生成后，通过 `validate_skill_boundary.py` 扫描
+- 【门控】每个 SKILL.md 生成后，边界扫描 → 见 `orbit-common.md`「Phase 2 通用规则」
 - 【门控】每个 SKILL.md 通过 skill-reviewer 审查
 - 【门控】集成校验通过
-- 【门控】L1 最终校验（含 skills-dir + 子工作流）
-- 【门控】转正确认（强制门控）
+- 【门控】L1 最终校验（含 skills-dir + 子工作流）+ 转正确认 → 见 `orbit-common.md`「通用交付流程」
 
 ### 资源迁移
 Phase 1 决策文档中的"旧 Skill 捆绑资源迁移"表已包含影响分析和适配说明。Phase 2 讨论时逐项复审，确认后作为 skill-writer 的输入 #5 传递。集成校验时额外检查：所有 ✅ 资源是否确实出现在新 Skill 目录中。

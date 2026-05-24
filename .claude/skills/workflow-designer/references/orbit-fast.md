@@ -17,8 +17,7 @@
 
 ### 质量门控
 - 【门控】调度 designer-fast 前，必须确认用户已认可 Stage 结构草案
-- 【门控】designer-fast 产出后，必须通过 L1 校验
-- 【门控】执行 L2 快速检查（确认点密度、死 Stage、循环出口）
+- 【门控】L1 校验 + L2 规则检查（fast 模式）→ 命令与流程见 `orbit-common.md`「通用交付流程」
 
 ### 可选策略
 - 输入是简单旧 Skill（<200 行，AskUserQuestion≤2，SubAgent≤1）→ 跳过 analyzer，主 Agent 内联提取
@@ -37,9 +36,8 @@
 3. 全部生成后执行 L1 校验（含 skills-dir + 子工作流）
 
 ### 质量门控
-- 【门控】每个 SKILL.md 生成后，通过 `validate_skill_boundary.py` 扫描
-- 【门控】全部 Skill 生成后，执行完整 L1 校验
-- 【门控】转正确认（强制门控）
+- 【门控】每个 SKILL.md 生成后，边界扫描 → 见 `orbit-common.md`「Phase 2 通用规则」
+- 【门控】全部 Skill 生成后，L1 校验 + 转正确认 → 见 `orbit-common.md`「通用交付流程」
 
 ### 资源迁移
 Phase 1 决策文档中的"旧 Skill 捆绑资源迁移（简化）"表直接作为 skill-writer 输入 #5，无需额外讨论（除非用户在此步骤提出异议）。
