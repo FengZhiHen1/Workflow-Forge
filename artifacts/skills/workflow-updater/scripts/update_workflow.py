@@ -237,18 +237,43 @@ def scan_factory_workflows(source_root: Path) -> list[dict]:
 
 # ── 差异对比 ────────────────────────────────────────────────
 
-def diff_directory(src: Path, dst: Path) -> dict:
-    """对比两个目录差异。返回 {identical, new_files, modified_files, removed_files}。"""
+def _excluded_part(rel: Path, skip_dirs: set[str] | None = None) -> bool:
+    """检查相对路径是否包含应排除的目录名。"""
+    blocked = set(rel.parts) & EXCLUDED_NAMES
+    if skip_dirs:
+        blocked |= set(rel.parts) & skip_dirs
+    return bool(blocked)
+
+
+def _collect_files(base: Path, skip_dirs: set[str] | None = None) -> dict[Path, Path]:
+    """递归收集目录下所有文件（排除指定顶级子目录和 EXCLUDED_NAMES）。"""
+    result: dict[Path, Path] = {}
+    for p in base.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(base)
+        if _excluded_part(rel, skip_dirs):
+            continue
+        result[rel] = p
+    return result
+
+
+def diff_directory(src: Path, dst: Path, skip_dirs: set[str] | None = None) -> dict:
+    """对比两个目录差异。返回 {identical, new_files, modified_files, removed_files}。
+
+    skip_dirs: 在对比中跳过这些顶级目录名（如 skills/）。EXCLUDED_NAMES 始终被跳过。
+    """
     result: dict = {"identical": True, "new_files": [], "modified_files": [], "removed_files": []}
 
     if not dst.exists():
         result["identical"] = False
         result["new_files"] = [str(p.relative_to(src)).replace("\\", "/")
-                               for p in src.rglob("*") if p.is_file()]
+                               for p in src.rglob("*")
+                               if p.is_file() and not _excluded_part(p.relative_to(src), skip_dirs)]
         return result
 
-    src_files = {p.relative_to(src): p for p in src.rglob("*") if p.is_file()}
-    dst_files = {p.relative_to(dst): p for p in dst.rglob("*") if p.is_file()}
+    src_files = _collect_files(src, skip_dirs)
+    dst_files = _collect_files(dst, skip_dirs)
 
     for rel_path in src_files:
         if rel_path not in dst_files:
@@ -511,8 +536,8 @@ def check_workflow_updates(installed: list, factory: list) -> list[dict]:
         factory_match = next((f for f in factory if f["workflow_id"] == inst["workflow_id"]), None)
         if not factory_match:
             continue
-        # 对比目录内容差异
-        diff_wf = diff_directory(factory_match["path"], inst["path"])
+        # 对比目录内容差异（排除 skills/——工厂端 skills/ 对应目标端 .claude/skills/）
+        diff_wf = diff_directory(factory_match["path"], inst["path"], skip_dirs={"skills"})
         if not diff_wf["identical"]:
             updates.append({
                 "type": "workflow",
@@ -597,7 +622,7 @@ def check_workflow_updates_recursive(
             child_inst = find_installed_workflow(installed, child["workflow_id"])
             if child_inst:
                 # 子工作流已安装，检查是否需要更新
-                diff = diff_directory(child["path"], child_inst["path"])
+                diff = diff_directory(child["path"], child_inst["path"], skip_dirs={"skills"})
                 if not diff["identical"] and child["workflow_id"] not in seen_ids:
                     seen_ids.add(child["workflow_id"])
                     updates.append({
