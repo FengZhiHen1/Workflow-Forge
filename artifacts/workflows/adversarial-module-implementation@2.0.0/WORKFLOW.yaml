@@ -57,7 +57,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     description: >
       基于 s01-detect 存量检测报告，应用自动判定规则推荐增量路径。
       自动规则（优先，无需用户确认）：
@@ -85,11 +85,11 @@ stages:
 
   - stage_id: s03-full-init
     name: "环境就绪与契约冻结"
-    skill_id: adversarial-module-implementation-init
+    skill_id: contract-initializer
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 300
     description: >
       等价于 v1.1.0 的 s01-init（core 模式）。
@@ -102,11 +102,11 @@ stages:
 
   - stage_id: s04-full-impl
     name: "实现落地执行"
-    skill_id: adversarial-module-implementation-impl-executor
+    skill_id: impl-executor
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 900
     exclusive: true
     description: >
@@ -118,11 +118,11 @@ stages:
 
   - stage_id: s05-full-validate
     name: "实现输出验证"
-    skill_id: adversarial-module-implementation-impl-validator
+    skill_id: impl-validator
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 120
     description: >
       等价于 v1.1.0 的 s03-validate。
@@ -135,11 +135,11 @@ stages:
 
   - stage_id: s06-full-testgen
     name: "对抗性测试生成"
-    skill_id: adversarial-module-implementation-test-generator
+    skill_id: test-generator
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -160,7 +160,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 300
     description: >
       模式 A：对比当前设计文档与已冻结的 contract-expectations.md，
@@ -171,11 +171,11 @@ stages:
 
   - stage_id: s04-incr-contract
     name: "增量契约更新"
-    skill_id: adversarial-module-implementation-init
+    skill_id: contract-initializer
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 300
     description: >
       基于 s03-incr-diff 的差异报告，增量更新 contract-expectations.md（contract-update 模式）。
@@ -185,11 +185,11 @@ stages:
 
   - stage_id: s05-incr-impl
     name: "增量实现更新"
-    skill_id: adversarial-module-implementation-impl-executor
+    skill_id: impl-executor
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -200,11 +200,11 @@ stages:
 
   - stage_id: s06-incr-validate
     name: "增量实现验证"
-    skill_id: adversarial-module-implementation-impl-validator
+    skill_id: impl-validator
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 120
     description: >
       同 s05-full-validate——条件确认点，针对增量变更做格式/合规验证。
@@ -212,11 +212,11 @@ stages:
 
   - stage_id: s07-incr-test
     name: "增量测试更新"
-    skill_id: adversarial-module-implementation-test-generator
+    skill_id: test-generator
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -237,7 +237,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: heavy
+    model: light
     timeout_seconds: 900
     exclusive: true
     description: >
@@ -250,11 +250,11 @@ stages:
 
   - stage_id: s04-code-contract
     name: "从逆向结果生成契约"
-    skill_id: adversarial-module-implementation-init
+    skill_id: contract-initializer
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 300
     description: >
       将逆向设计文档草稿转化为标准 contract-expectations.md（from-reverse 模式）。
@@ -263,11 +263,11 @@ stages:
 
   - stage_id: s05-code-testgen
     name: "对抗性测试生成（code_only）"
-    skill_id: adversarial-module-implementation-test-generator
+    skill_id: test-generator
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -287,7 +287,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 300
     description: >
       模式 B：对比实现代码的接口签名与设计文档的契约声明，识别差异：
@@ -302,7 +302,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 300
     description: >
       模式 C（复用 diff-arbitrator 实例，wfctl continue action 保持上下文）：
@@ -313,11 +313,11 @@ stages:
 
   - stage_id: s05-conflict-resolve
     name: "按仲裁结果修正"
-    skill_id: adversarial-module-implementation-impl-executor
+    skill_id: impl-executor
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -329,22 +329,22 @@ stages:
 
   - stage_id: s06-conflict-validate
     name: "修正后验证"
-    skill_id: adversarial-module-implementation-impl-validator
+    skill_id: impl-validator
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 120
     description: >
       同 s05-full-validate——条件确认点，验证修正后的代码合规性与契约一致性。
 
   - stage_id: s07-conflict-test
     name: "测试增量更新（冲突路径）"
-    skill_id: adversarial-module-implementation-test-generator
+    skill_id: test-generator
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -358,11 +358,11 @@ stages:
 
   - stage_id: s10-blindtest
     name: "盲测执行与分支判定"
-    skill_id: adversarial-module-implementation-blindtest
+    skill_id: blindtest-runner
     mandatory: true
     confirmation_point: true
     retry: 2
-    model: standard
+    model: light
     timeout_seconds: 600
     description: >
       等价于 v1.1.0 的 s05-blindtest。全路径收敛点。
@@ -379,11 +379,11 @@ stages:
 
   - stage_id: s11-fix-impl
     name: "实现代码修复"
-    skill_id: adversarial-module-implementation-impl-executor
+    skill_id: impl-executor
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -397,11 +397,11 @@ stages:
 
   - stage_id: s12-fix-test
     name: "测试缺陷修正"
-    skill_id: adversarial-module-implementation-test-generator
+    skill_id: test-generator
     mandatory: true
     confirmation_point: false
     retry: 2
-    model: heavy
+    model: light
     timeout_seconds: 600
     exclusive: true
     description: >
@@ -414,11 +414,11 @@ stages:
 
   - stage_id: s13-report
     name: "最终报告与验收"
-    skill_id: adversarial-module-implementation-reporter
+    skill_id: report-generator
     mandatory: true
     confirmation_point: true
     retry: 1
-    model: standard
+    model: light
     timeout_seconds: 300
     description: >
       等价于 v1.1.0 的 s08-report。全路径收敛点。

@@ -1,5 +1,5 @@
 ---
-name: adversarial-module-implementation-impl-validator
+name: impl-validator
 description: >
   验证模块实现产物的格式合规性与风险可控性。运行函数签名校验脚本，
   读取并评估待确认事项中的风险条目等级，存在重大风险时条件性请求用户确认。
@@ -29,7 +29,7 @@ description: >
 ### Step 2：运行函数签名验证
 
 ```bash
-python .claude/skills/adversarial-module-implementation-impl-validator/scripts/validate_function_signatures.py \
+python .claude/skills/impl-validator/scripts/validate_function_signatures.py \
     <function-signatures.json 路径> \
     --expected-module-id <module_id>
 ```

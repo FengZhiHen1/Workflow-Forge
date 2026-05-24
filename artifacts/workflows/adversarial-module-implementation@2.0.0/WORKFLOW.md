@@ -195,27 +195,27 @@ flowchart TD
 | s00-workflow-start | 工作流启动 | false | — (虚拟) | — | — | — | 共用 |
 | s01-detect | 存量制品检测 | false | existing-asset-detector (NEW) | light | 120 | — | 共用 |
 | s02-path | 增量路径判定 | **true** | incremental-path-determiner (NEW) | standard | — | — | 共用 |
-| s03-full-init | 环境就绪与契约冻结 | **true** | adversarial-module-implementation-init | standard | 300 | — | full |
-| s04-full-impl | 实现落地执行 | false | adversarial-module-implementation-impl-executor (模式A) | heavy | 900 | **yes** | full |
-| s05-full-validate | 实现输出验证 | **true** (条件) | adversarial-module-implementation-impl-validator | standard | 120 | — | full |
-| s06-full-testgen | 对抗性测试生成 | false | adversarial-module-implementation-test-generator (模式A) | heavy | 600 | **yes** | full |
+| s03-full-init | 环境就绪与契约冻结 | **true** | contract-initializer | standard | 300 | — | full |
+| s04-full-impl | 实现落地执行 | false | impl-executor (模式A) | heavy | 900 | **yes** | full |
+| s05-full-validate | 实现输出验证 | **true** (条件) | impl-validator | standard | 120 | — | full |
+| s06-full-testgen | 对抗性测试生成 | false | test-generator (模式A) | heavy | 600 | **yes** | full |
 | s03-incr-diff | 设计变更差异分析 | false | diff-arbitrator (NEW, 模式A) | standard | 300 | — | incr |
-| s04-incr-contract | 增量契约更新 | **true** | adversarial-module-implementation-init (contract-update) | standard | 300 | — | incr |
-| s05-incr-impl | 增量实现更新 | false | adversarial-module-implementation-impl-executor (模式C) | heavy | 600 | **yes** | incr |
-| s06-incr-validate | 增量实现验证 | **true** (条件) | adversarial-module-implementation-impl-validator | standard | 120 | — | incr |
-| s07-incr-test | 增量测试更新 | false | adversarial-module-implementation-test-generator (模式C) | heavy | 600 | **yes** | incr |
+| s04-incr-contract | 增量契约更新 | **true** | contract-initializer (contract-update) | standard | 300 | — | incr |
+| s05-incr-impl | 增量实现更新 | false | impl-executor (模式C) | heavy | 600 | **yes** | incr |
+| s06-incr-validate | 增量实现验证 | **true** (条件) | impl-validator | standard | 120 | — | incr |
+| s07-incr-test | 增量测试更新 | false | test-generator (模式C) | heavy | 600 | **yes** | incr |
 | s03-code-reverse | 逆向推导设计意图 | **true** | reverse-engineering-analyzer (NEW) | heavy | 900 | **yes** | code |
-| s04-code-contract | 从逆向结果生成契约 | **true** | adversarial-module-implementation-init (from-reverse) | standard | 300 | — | code |
-| s05-code-testgen | 对抗性测试生成 | false | adversarial-module-implementation-test-generator (模式A) | heavy | 600 | **yes** | code |
+| s04-code-contract | 从逆向结果生成契约 | **true** | contract-initializer (from-reverse) | standard | 300 | — | code |
+| s05-code-testgen | 对抗性测试生成 | false | test-generator (模式A) | heavy | 600 | **yes** | code |
 | s03-conflict-diff | 代码与设计差异对比 | false | diff-arbitrator (NEW, 模式B) | standard | 300 | — | conflict |
 | s04-conflict-arbitrate | 差异仲裁 | **true** | diff-arbitrator (NEW, 模式C, continue) | standard | 300 | — | conflict |
-| s05-conflict-resolve | 按仲裁结果修正 | false | adversarial-module-implementation-impl-executor (模式C) | heavy | 600 | **yes** | conflict |
-| s06-conflict-validate | 修正后验证 | **true** (条件) | adversarial-module-implementation-impl-validator | standard | 120 | — | conflict |
-| s07-conflict-test | 测试增量更新 | false | adversarial-module-implementation-test-generator (模式C) | heavy | 600 | **yes** | conflict |
-| s10-blindtest | 盲测执行与分支判定 | **true** | adversarial-module-implementation-blindtest | standard | 600 | — | 共用 |
-| s11-fix-impl | 实现代码修复 | false | adversarial-module-implementation-impl-executor (模式B, continue) | heavy | 600 | **yes** | 共用 |
-| s12-fix-test | 测试缺陷修正 | false | adversarial-module-implementation-test-generator (模式B, continue) | heavy | 600 | **yes** | 共用 |
-| s13-report | 最终报告与验收 | **true** | adversarial-module-implementation-reporter | standard | 300 | — | 共用 |
+| s05-conflict-resolve | 按仲裁结果修正 | false | impl-executor (模式C) | heavy | 600 | **yes** | conflict |
+| s06-conflict-validate | 修正后验证 | **true** (条件) | impl-validator | standard | 120 | — | conflict |
+| s07-conflict-test | 测试增量更新 | false | test-generator (模式C) | heavy | 600 | **yes** | conflict |
+| s10-blindtest | 盲测执行与分支判定 | **true** | blindtest-runner | standard | 600 | — | 共用 |
+| s11-fix-impl | 实现代码修复 | false | impl-executor (模式B, continue) | heavy | 600 | **yes** | 共用 |
+| s12-fix-test | 测试缺陷修正 | false | test-generator (模式B, continue) | heavy | 600 | **yes** | 共用 |
+| s13-report | 最终报告与验收 | **true** | report-generator | standard | 300 | — | 共用 |
 | s99-workflow-end | 工作流终止 | false | — (虚拟) | — | — | — | 共用 |
 
 ---
@@ -269,19 +269,19 @@ flowchart TD
 | incremental-path-determiner | s02-path | core | **NEW** |
 | diff-arbitrator | s03-incr-diff, s03-conflict-diff, s04-conflict-arbitrate | 模式A(差异对比) / 模式B(冲突对比) / 模式C(仲裁) | **NEW** |
 | reverse-engineering-analyzer | s03-code-reverse | core | **NEW** |
-| adversarial-module-implementation-init | s03-full-init, s04-incr-contract, s04-code-contract | core / contract-update / from-reverse / recontract | 复用+扩展 |
-| adversarial-module-implementation-impl-executor | s04-full-impl, s05-incr-impl, s05-conflict-resolve, s11-fix-impl | 模式A(全量) / 模式B(修复) / 模式C(增量) | 复用+扩展 |
-| adversarial-module-implementation-impl-validator | s05-full-validate, s06-incr-validate, s06-conflict-validate | core | 复用 |
-| adversarial-module-implementation-test-generator | s06-full-testgen, s07-incr-test, s05-code-testgen, s07-conflict-test, s12-fix-test | 模式A(全量) / 模式B(修复) / 模式C(增量) | 复用+扩展 |
-| adversarial-module-implementation-blindtest | s10-blindtest | core | 复用 |
-| adversarial-module-implementation-reporter | s13-report | core | 复用+扩展 |
+| contract-initializer | s03-full-init, s04-incr-contract, s04-code-contract | core / contract-update / from-reverse / recontract | 复用+扩展 |
+| impl-executor | s04-full-impl, s05-incr-impl, s05-conflict-resolve, s11-fix-impl | 模式A(全量) / 模式B(修复) / 模式C(增量) | 复用+扩展 |
+| impl-validator | s05-full-validate, s06-incr-validate, s06-conflict-validate | core | 复用 |
+| test-generator | s06-full-testgen, s07-incr-test, s05-code-testgen, s07-conflict-test, s12-fix-test | 模式A(全量) / 模式B(修复) / 模式C(增量) | 复用+扩展 |
+| blindtest-runner | s10-blindtest | core | 复用 |
+| report-generator | s13-report | core | 复用+扩展 |
 
 ### 同 Skill 跨 Stage 延续（wfctl continue action）
 
 | Skill | 延续链 | 机制 |
 |-------|--------|------|
-| adversarial-module-implementation-impl-executor | 路径内 impl → s11-fix-impl | 映射表命中后 continue，保持代码上下文 |
-| adversarial-module-implementation-test-generator | 路径内 testgen → s12-fix-test | 映射表命中后 continue，保持契约理解上下文 |
+| impl-executor | 路径内 impl → s11-fix-impl | 映射表命中后 continue，保持代码上下文 |
+| test-generator | 路径内 testgen → s12-fix-test | 映射表命中后 continue，保持契约理解上下文 |
 | diff-arbitrator | s03-conflict-diff → s04-conflict-arbitrate | 跨 Stage continue，复用差异分析上下文 |
 
 ---

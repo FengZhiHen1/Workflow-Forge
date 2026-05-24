@@ -1,5 +1,5 @@
 ---
-name: adversarial-module-implementation-init
+name: contract-initializer
 description: >
   对抗性模块实现流水线入口——环境就绪与契约冻结。
   负责环境检查、强化契约提取（含模糊边界显式仲裁）、契约冻结、

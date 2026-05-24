@@ -1,7 +1,7 @@
 # SubAgent 调度 Prompt 模板
 
-> 建立者：`adversarial-module-implementation-init`
-> 复用者：`adversarial-module-implementation-impl-executor`、`adversarial-module-implementation-test-generator`
+> 建立者：`contract-initializer`
+> 复用者：`impl-executor`、`test-generator`
 >
 > 本文件定义编排器调度各 SubAgent 时的标准 prompt 模板。
 > 每个模板使用 `{placeholder}` 标记变量部分，编排器在调度时替换。
@@ -21,22 +21,22 @@
 
 | SubAgent | 角色 | 禁止读取 | 对应铁律 |
 |:---|:---|:---|:---|
-| `adversarial-module-implementation-impl-executor` | 实现执行者 | `.tmp/adversarial-tests/` 下所有文件 | ISO-001 |
-| `adversarial-module-implementation-test-generator` | 测试生成者 | 实现源码目录下所有文件 | ISO-002 |
-| `adversarial-module-implementation-impl-executor` | 修复执行者 | 测试代码，仅可读 failure-summary | ISO-003 |
-| `adversarial-module-implementation-test-generator` | 测试修复者 | 实现代码，仅可读 test-defects | ISO-004 |
+| `impl-executor` | 实现执行者 | `.tmp/adversarial-tests/` 下所有文件 | ISO-001 |
+| `test-generator` | 测试生成者 | 实现源码目录下所有文件 | ISO-002 |
+| `impl-executor` | 修复执行者 | 测试代码，仅可读 failure-summary | ISO-003 |
+| `test-generator` | 测试修复者 | 实现代码，仅可读 test-defects | ISO-004 |
 
 ---
 
 ## 模板 1：实现落地执行（模式 A）
 
-**目标 Skill**：`adversarial-module-implementation-impl-executor`
+**目标 Skill**：`impl-executor`
 **角色**：实现落地执行
 **模式**：A（优雅实现）
 **铁律**：ISO-001
 
 ```
-【你被 adversarial-module-implementation 工作流编排器调度执行 adversarial-module-implementation-impl-executor skill (模式 A)】
+【你被 adversarial-module-implementation 工作流编排器调度执行 impl-executor skill (模式 A)】
 
 任务：按设计文档优雅实现模块代码。
 
@@ -74,13 +74,13 @@
 
 ## 模板 2：对抗性测试生成（模式 A）
 
-**目标 Skill**：`adversarial-module-implementation-test-generator`
+**目标 Skill**：`test-generator`
 **角色**：对抗性测试生成
 **模式**：A（对抗性测试生成）
 **铁律**：ISO-002
 
 ```
-【你被 adversarial-module-implementation 工作流编排器调度执行 adversarial-module-implementation-test-generator skill (模式 A)】
+【你被 adversarial-module-implementation 工作流编排器调度执行 test-generator skill (模式 A)】
 
 任务：基于接口契约黑盒生成对抗性测试代码。目标是找出实现漏洞，而非验证正确行为。
 
@@ -121,13 +121,13 @@
 
 ## 模板 3：实现代码修复（模式 B）
 
-**目标 Skill**：`adversarial-module-implementation-impl-executor`
+**目标 Skill**：`impl-executor`
 **角色**：实现代码修复
 **模式**：B（根据失败摘要修复）
 **铁律**：ISO-003
 
 ```
-【你被 adversarial-module-implementation 工作流编排器调度执行 adversarial-module-implementation-impl-executor skill (模式 B)】
+【你被 adversarial-module-implementation 工作流编排器调度执行 impl-executor skill (模式 B)】
 
 任务：根据盲测失败摘要修复实现代码。
 
@@ -173,13 +173,13 @@
 
 ## 模板 4：测试缺陷修正（模式 B）
 
-**目标 Skill**：`adversarial-module-implementation-test-generator`
+**目标 Skill**：`test-generator`
 **角色**：测试缺陷修正
 **模式**：B（修正测试缺陷）
 **铁律**：ISO-004
 
 ```
-【你被 adversarial-module-implementation 工作流编排器调度执行 adversarial-module-implementation-test-generator skill (模式 B)】
+【你被 adversarial-module-implementation 工作流编排器调度执行 test-generator skill (模式 B)】
 
 任务：修正对抗性测试代码中的缺陷。
 

@@ -21,6 +21,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   - stage_id: s02-architecture-selection
     name: "架构关节点选型"
@@ -72,6 +73,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   - stage_id: s08-dispatch-modules
     name: "模块设计子工作流调度"

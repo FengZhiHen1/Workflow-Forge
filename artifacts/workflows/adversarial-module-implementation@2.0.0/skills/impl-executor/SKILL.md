@@ -1,5 +1,5 @@
 ---
-name: adversarial-module-implementation-impl-executor
+name: impl-executor
 description: >
   模块实现执行器。根据输入材料类型自动选择工作模式——全量优雅实现（A）、
   最小化修复迭代（B）、增量更新或冲突修正（C）。

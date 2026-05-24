@@ -1,5 +1,5 @@
 ---
-name: adversarial-module-implementation-test-generator
+name: test-generator
 description: >
   在不知道实现细节的前提下，仅基于接口契约生成/修正/增量更新对抗性测试代码。
   自动检测输入类型切换模式 A（全量生成）、模式 B（缺陷修正）、模式 C（增量更新）。

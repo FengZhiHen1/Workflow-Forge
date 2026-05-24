@@ -1,5 +1,5 @@
 ---
-name: adversarial-module-implementation-reporter
+name: report-generator
 description: >
   对抗性验证最终报告生成与验收技能（v2.0.0）。收集全流程证据文件，执行最终全量测试运行，
   运行契约一致性与隔离合规审计脚本，执行分组验收检查，

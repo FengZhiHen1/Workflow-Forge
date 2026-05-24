@@ -1,6 +1,6 @@
 # 契约提取详细算法参考
 
-> 本文档为 `adversarial-module-implementation-init` Skill 的 Step 2（契约提取）和 Step 3（模糊边界显式仲裁）提供详细的程序化解析算法。
+> 本文档为 `contract-initializer` Skill 的 Step 2（契约提取）和 Step 3（模糊边界显式仲裁）提供详细的程序化解析算法。
 > Skill body 中仅保留流程入口，具体解析规则、正则模式、字段映射表、破坏性输入矩阵、模糊边界仲裁规则均定义于此。
 > 所属工作流：`adversarial-module-implementation@1.1.0`
 

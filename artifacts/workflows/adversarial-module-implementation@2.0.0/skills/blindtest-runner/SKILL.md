@@ -1,5 +1,5 @@
 ---
-name: adversarial-module-implementation-blindtest
+name: blindtest-runner
 description: >
   盲测执行与失败分类中枢（v2.0.0）。在信息隔离屏障下运行对抗性测试，
   自动分类失败根因（实现漏洞/测试缺陷/契约矛盾），生成隔离版本的失败摘要与测试缺陷报告，

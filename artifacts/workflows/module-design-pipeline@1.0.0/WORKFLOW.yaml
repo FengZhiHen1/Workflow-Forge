@@ -21,6 +21,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 1
+    model: light
 
   - stage_id: s02-determine-incremental-path
     name: "增量路径判定"
@@ -28,6 +29,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   # ==================== 增量路径：逆向工程（s02-re，触发条件 code_only）====================
 
@@ -85,6 +87,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 1
+    model: light
 
   - stage_id: s08-spec-research
     name: "技术决策预研"
@@ -92,6 +95,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 1
+    model: light
 
   - stage_id: s09-spec-design-doc
     name: "生成设计文档"
@@ -122,6 +126,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 0
+    model: light
 
 # ==================== 流转边 ====================
 
