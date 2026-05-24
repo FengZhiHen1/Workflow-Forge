@@ -78,7 +78,7 @@ def _all_satisfied(upstream_edges: list[EdgeSpec], stage_states: dict) -> bool:
 
         if edge.condition == EdgeCondition.ALWAYS:
             return True
-        if edge.condition == EdgeCondition.SUCCESS and exit_cond in ("success", ""):
+        if edge.condition == EdgeCondition.SUCCESS and exit_cond not in ("loop_exceeded",):
             if edge.choice:
                 routing_choice = upstream_stage.get("routing_choice", "")
                 if routing_choice != edge.choice:

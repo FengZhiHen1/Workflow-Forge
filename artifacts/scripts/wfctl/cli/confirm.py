@@ -98,6 +98,20 @@ def _handle_confirm(args) -> dict:
         if stage.get("requires_parallel_targets"):
             _validate_parallel_targets_in_message(args.instance, stage_id, stage)
 
+        # confirmation_point：用户确认 ≠ 完成，确认后 SubAgent 继续工作
+        stage_spec = adj.stages.get(stage_id)
+        if stage_spec and stage_spec.confirmation_point:
+            stage["status"] = "PENDING"
+            stage["confirmed_choice"] = choice
+            if args.feedback:
+                _write_feedback_message(args.instance, stage_id, stage, choice, args.feedback)
+            _append_timeline(args.instance, stage_id, "awaiting_confirm→pending",
+                             {"confirmed_by": "user", "choice": choice,
+                              "reason": "confirmation_point"})
+            save_instance(args.instance, instance)
+            return {"status": "ok", "stage_id": stage_id, "new_status": "PENDING",
+                    "matched": choice, "reason": "confirmation_point_continue"}
+
         stage["status"] = "DONE"
         stage["exit_condition"] = "confirmed"
         stage["confirmed_choice"] = choice
