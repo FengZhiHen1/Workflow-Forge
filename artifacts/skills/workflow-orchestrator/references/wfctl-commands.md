@@ -155,6 +155,7 @@ wfctl next --instance <id>
       "skill_id": "topic-analyst",
       "worktree": ".tmp/worktrees/instance-20260517-001/",
       "requires_parallel_targets": false,
+      "confirmation_point": false,
       "context": {
         "goal": "为 M01-M05 模块编写规范",
         "upstream_summaries": [],
@@ -191,6 +192,7 @@ spawn / retry：
   "worktree": ".tmp/worktrees/instance-<id>/",
   "model": "standard",
   "requires_parallel_targets": false,
+  "confirmation_point": true,
   "context": {
     "goal": "实例目标",
     "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成..."}],
@@ -208,6 +210,7 @@ continue：
   "worktree": ".tmp/worktrees/instance-<id>/",
   "system_agent_id": "agent-001",
   "requires_parallel_targets": false,
+  "confirmation_point": true,
   "context": {
     "goal": "实例目标",
     "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成需求收集，用户确认方案A"}]

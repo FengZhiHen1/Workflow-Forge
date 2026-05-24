@@ -1124,6 +1124,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
                 "worktree": str(worktree.relative_to(root)),
                 "system_agent_id": sys_id,
                 "requires_parallel_targets": needs_targets,
+                "confirmation_point": stage_spec.confirmation_point,
                 "context": context,
             })
         else:
@@ -1133,6 +1134,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
                 "skill_id": skill_id,
                 "worktree": str(worktree.relative_to(root)),
                 "requires_parallel_targets": needs_targets,
+                "confirmation_point": stage_spec.confirmation_point,
                 "context": context,
             })
 
