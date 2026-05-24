@@ -24,6 +24,7 @@ from cli.sync import register_sync
 from cli.cleanup import register_cleanup
 from cli.restore import register_restore
 from cli.terminate import register_terminate
+from cli.visualize import register_visualize
 
 
 def main():
@@ -46,6 +47,7 @@ def main():
     register_cleanup(subparsers)
     register_restore(subparsers)
     register_terminate(subparsers)
+    register_visualize(subparsers)
 
     args = parser.parse_args()
 

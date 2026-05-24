@@ -29,6 +29,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   - stage_id: s03-tech-stack-output
     name: "技术栈方案输出"
@@ -36,6 +37,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 1
+    model: light
 
   # ==================== 阶段二：项目结构设计（s04）====================
 
@@ -45,6 +47,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 1
+    model: light
 
   # ==================== 阶段三：模块拆解与依赖分析（s05-s06）====================
 
@@ -54,6 +57,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 1
+    model: light
 
   - stage_id: s06-dependency-analysis
     name: "模块依赖分析"
@@ -61,6 +65,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 1
+    model: light
 
   # ==================== 阶段四：模块调度（s07-s08）====================
   #
@@ -78,6 +83,7 @@ stages:
   - stage_id: s08-dispatch-modules
     name: "模块设计子工作流调度"
     workflow: module-design-pipeline@1.0.0
+    model: light
     parallel:
       source: s07-project-sync-and-dispatch
       max_instances: 10
@@ -92,6 +98,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
 # ==================== 流转边 ====================
 

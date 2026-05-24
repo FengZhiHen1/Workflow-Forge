@@ -77,6 +77,33 @@ def _run_next_inner(instance_id: str) -> dict:
     adj = build_adjacency(spec)
     worktree_map = _build_worktree_map(instance_id, instance)
 
+    # === 新 Orchestrator 路径（Phase 3 启用）===
+    import os
+    if os.environ.get("WFCTL_USE_ORCHESTRATOR", "0") == "1":
+        from services.scheduler.state_model import InstanceState
+        from services.scheduler.context import ExecutionContext
+        from services.scheduler.orchestrator import SchedulerOrchestrator
+        try:
+            state = InstanceState.from_dict(instance)
+            ctx = ExecutionContext(
+                instance_id=instance_id,
+                root=root,
+                spec=spec,
+                adj=adj,
+                worktree_map=worktree_map,
+            )
+            result = SchedulerOrchestrator().run(ctx, state)
+            # 保存状态回 instance.json
+            new_instance = state.apply_delta(result.get("_delta", StateDelta())).to_dict()
+            # 由于 Processor 中有些副作用直接修改了 instance dict（如 child_instance_id），
+            # 暂时不保存，只返回 actions
+            # TODO: Phase 3 完整集成后启用保存
+            return result
+        except Exception as e:
+            import traceback
+            print(f"[wfctl] Orchestrator failed, falling back to legacy: {e}", file=__import__('sys').stderr)
+            traceback.print_exc()
+
     # 1. 消费消息
     changes = consume_messages(instance_id, instance, worktree_map)
     for change in changes:

@@ -31,6 +31,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   # ==================== 增量路径：差异对比（s02-diff，触发条件 both_exist）====================
 
@@ -40,6 +41,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   # ==================== 阶段二：意图编写（s03-s04）====================
 
@@ -49,6 +51,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   - stage_id: s04-intent-generate-freeze
     name: "生成意图文档与冻结授权"
@@ -56,6 +59,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   # ==================== 阶段三：规格编写（s05-s09）====================
 
@@ -81,6 +85,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   - stage_id: s08-contract-harmonize
     name: "契约协调"
@@ -88,6 +93,7 @@ stages:
     mandatory: true
     confirmation_point: false
     retry: 1
+    model: light
 
   - stage_id: s09-spec-final
     name: "最终规格输出"
@@ -95,6 +101,7 @@ stages:
     mandatory: true
     confirmation_point: true
     retry: 0
+    model: light
 
   # ==================== 阶段四：同步上报与收尾（s10）====================
 
