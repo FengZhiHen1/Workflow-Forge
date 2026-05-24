@@ -202,7 +202,8 @@ def _compute_waiting_for(instance_data: dict, stage_id: str) -> list[str]:
 
 def _get_child_summary(child_id: str, parent_inst_dir: Path) -> dict | None:
     """读取子实例状态快照。"""
-    child_dir = parent_inst_dir / "children" / child_id
+    root = find_root()
+    child_dir = root / ".agent" / "instances" / child_id
     json_file = child_dir / "instance.json"
     if not json_file.exists():
         return None

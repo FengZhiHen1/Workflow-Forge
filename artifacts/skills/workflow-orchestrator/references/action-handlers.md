@@ -10,6 +10,7 @@
 ```json
 {
   "action": "spawn",
+  "instance_id": "20260517-001",
   "stage_id": "s03",
   "skill_id": "topic-analyst",
   "worktree": ".tmp/worktrees/instance-20260517-001/",
@@ -50,6 +51,7 @@
 ```json
 {
   "action": "continue",
+  "instance_id": "20260517-001",
   "stage_id": "s02",
   "skill_id": "design-tech-stack",
   "worktree": ".tmp/worktrees/instance-20260517-001/",
@@ -71,28 +73,6 @@
 3. **发送激活消息**：第一条消息恢复上下文后 SubAgent 可能不触发新的工具调用回合（`SendMessage` 返回 "resumed from transcript" 但 agent 仍 idle）。紧接发送第二条简短消息（如"收到请开始执行上述任务"）触发实际的工具调用回合
 4. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
 5. **不等待**——继续处理下一个 action
-
----
-
-## child_next —— 驱动子工作流
-
-```json
-{
-  "action": "child_next",
-  "child_instance_id": "20260519-002",
-  "parent_stage_id": "p2-question-solution",
-  "parent_instance_id": "20260519-001"
-}
-```
-
-子工作流实例已被 wfctl 创建但从未被调度——其内部 stage 全部处于 PENDING。编排器需立即推动其首次调度。
-
-执行步骤：
-1. 调用 `wfctl next --instance <child_instance_id>`
-2. 解析返回的 actions，按正常流程处理（spawn / confirm / etc.）
-3. 子实例的 `next` 可能返回 `child_next`——但子工作流通常不含嵌套子实例，如有则递归处理
-
-**时机**：父实例 `next` 返回 `child_next` 时，说明有新子实例刚创建。对每个 `child_next` 并行调 `wfctl next`。
 
 ---
 

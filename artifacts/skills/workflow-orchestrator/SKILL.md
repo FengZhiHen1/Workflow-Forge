@@ -50,7 +50,7 @@ python .claude/scripts/wfctl/main.py <command> [options]
 | `references/wfctl-commands.md` | wfctl 全部命令的签名、参数、返回 JSON 结构。**首次调度前必读** |
 | `references/subagent-prompt-template.md` | SubAgent prompt 构造模板，含全部占位符来源表和特殊场景处理 |
 | `references/model-mapping.yaml` | 模型档位映射表——按平台将 light/standard/heavy 解析为具体模型名 |
-| `references/action-handlers.md` | spawn/continue/child_next/conflict/merge_to_main/terminate/await 的完整 JSON 示例和执行步骤 |
+| `references/action-handlers.md` | spawn/continue/conflict/merge_to_main/terminate/await 的完整 JSON 示例和执行步骤 |
 | `references/running-agents-mapping.md` | SubAgent 映射表 schema、生命周期、命中规则、编排器操作速查 |
 | `references/edge-cases.md` | 回退/暂停/跳过/终止/恢复等低频场景的完整操作流程 |
 | `.claude/contracts/common.md` | 通用契约（SubAgent 自行读取，编排器不读不转述） |
@@ -138,7 +138,15 @@ wfctl next --instance <instance_id>
 - `actions` 仅含 `await` → 无就绪 stage，等待 SubAgent 完成通知
 - 用户主动中断 → `wfctl terminate --instance <id>`
 
-**关键**：每次 `spawn`/`continue` 后**不要**立即再调 `next`——等 SubAgent 完成后平台通知你再调。`confirm` 后应**立即**调 `next` 推进流转。
+**调度纪律**：
+
+1. 每次 `wfctl next` 返回的 `actions[]` 是一个**原子批次**。必须处理完当前批次中的**所有** action 后，才能进入下一轮 `wfctl next`
+2. **忽略 SubAgent 完成通知作为调度信号**：SubAgent 完成时平台会通知你，但你不应基于通知内容做任何判断。通知只是一个"该调 `wfctl next` 了"的提醒——进度变更已被 SubAgent 写入 message 池，`wfctl next` 自然会消费
+3. **在 action 批次处理期间收到的 SubAgent 通知**：不中断、不检查、不响应。完成当前批次后再统一调 `wfctl next` 获取最新状态
+4. `confirm` 处理后应立即调 `wfctl next` 推进流转
+5. `await` 是终态——当前无就绪 stage，等待 SubAgent 完成通知触发下一轮 `next`
+
+**为什么这样设计**：多个 SubAgent 的完成通知可能同时抵达，顺序不可预测。如果编排器每次收到通知都立即响应，会导致 confirm/spawn/通知三股乱流。`wfctl next` 已递归处理整棵实例树的消息池，是进度状态的**唯一权威来源**——编排器用它作为时钟，SubAgent 通知只是敲门声。
 
 ---
 
@@ -151,7 +159,6 @@ wfctl next --instance <instance_id>
 | `spawn` | 解析 skill 路径 → 构造 prompt → `Agent(run_in_background=true)` → 写映射表 | 下方 §spawn |
 | `continue` | 构造 prompt → `SendMessage` 两条 → 不等待 | 下方 §continue |
 | `confirm` | 判断时机 → `AskUserQuestion` → `wfctl confirm` → 立即 `next` | 下方 §confirm（完整） |
-| `child_next` | 对子实例调 `wfctl next` | `references/action-handlers.md` §child_next |
 | `conflict` | 启动 conflict-resolver SubAgent 消解 | `references/action-handlers.md` §conflict |
 | `merge_to_main` | 一级实例先经 `__merge__` 确认；子实例直接合入 | `references/action-handlers.md` §merge_to_main |
 | `terminate` | 报告终态，退出循环 | `references/action-handlers.md` §terminate |
@@ -333,7 +340,12 @@ wfctl 在每次 `next` 时自动同步。编排器无需额外操作。
 
 ## 子工作流
 
-当 `wfctl status --instance <id>` 显示某 stage 有 `child_instance` 字段时，子工作流正在执行。你无需额外操作——wfctl 自动追踪子实例状态。仅当子实例内部出现 `AWAITING_CONFIRM` 且阻塞父级时，你才需要介入呈现确认。
+`wfctl next --instance <root>` 已递归处理整棵实例树（父→子→孙），子工作流实例对编排器**完全透明**：
+- 子实例的 spawn/continue action 直接出现在父级 action 列表中（含 `instance_id` 字段，用于写入 `running_agents.json`）
+- 子实例的确认点自动聚合到父级 `confirm` action 的 `pending` 数组中（含正确的 `instance_id` 用于调 `wfctl confirm`）
+- 编排器**不需要**单独调 `wfctl next --instance <child_id>`，也不需要处理 `child_next` action（已移除）
+
+当 `wfctl status` 显示某 stage 有 `child_instance` 字段时，子工作流正在执行——你无需额外操作。
 
 子工作流嵌套深度上限 3 层，wfctl 在 `create` 时自动校验。
 

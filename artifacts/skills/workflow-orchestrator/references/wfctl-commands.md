@@ -178,8 +178,9 @@ wfctl next --instance <id>
 | `conflict` | 合并冲突 | 启动 conflict-resolver SubAgent 消解 |
 | `merge_to_main` | 实例已合入主仓库 | 子实例自动；一级实例需先经 `__merge__` 确认 |
 | `terminate` | 实例终态 | 报告用户，停止循环 |
-| `child_next` | 新子工作流实例待首次调度 | 对子实例调用 `wfctl next --instance <child_instance_id>` |
 | `await` | 无就绪 stage | 等待 SubAgent 完成通知 |
+
+> **v3.1**：`next --instance <root>` 已递归处理整棵实例树（父→子→孙），子工作流的 spawn/continue/confirm 自动出现在父级 action 列表中。编排器**不再**需要单独调用 `wfctl next --instance <child_id>`。`child_next` action 类型已移除。
 
 **各 action 的完整字段**：
 
@@ -187,6 +188,7 @@ spawn / retry：
 ```json
 {
   "action": "spawn",
+  "instance_id": "20260517-001",
   "stage_id": "s03",
   "stage_instance_id": "s03",
   "skill_id": "topic-analyst",
@@ -206,6 +208,7 @@ continue：
 ```json
 {
   "action": "continue",
+  "instance_id": "20260517-001",
   "stage_id": "s02",
   "skill_id": "design-tech-stack",
   "worktree": ".tmp/worktrees/instance-<id>/",
@@ -225,17 +228,6 @@ continue：
 `model` 字段来自 stage 在 WORKFLOW.yaml 中声明的模型档位（`light` / `standard` / `heavy`）。
 编排器读取 `references/model-mapping.yaml` 按当前平台解析为具体模型名后传入 `Agent(model=...)`。
 若 action 无 `model` 字段，Agent 继承父级模型。
-
-child_next：
-```json
-{
-  "action": "child_next",
-  "child_instance_id": "20260519-002",
-  "parent_stage_id": "p2-question-solution",
-  "parent_instance_id": "20260519-001"
-}
-```
-编排器调用 `wfctl next --instance <child_instance_id>` 驱动子工作流。返回的 actions 按标准流程处理（spawn/confirm/...）。可对多个 child_next 并行调 next。
 
 confirm：
 ```json

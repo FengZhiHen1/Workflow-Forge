@@ -42,8 +42,9 @@ from services.worktree_manager import (
 def run_next(instance_id: str) -> dict:
     """调度核心：消费消息，推进状态，返回 action。
 
-    同 Skill 延续检测：自动读取 .agent/running_agents.json（项目级唯一文件），
-    按 instance_id 过滤。编排器在 spawn/continue 后维护此文件。
+    递归处理整棵实例树（父→子→孙），返回归一化的 flat action 列表。
+    子工作流实例的处理对编排器完全透明——编排器只需调一次
+    ``wfctl next --instance <root>``，不再需要单独驱动子实例。
     """
     root = find_root()
     lock_path = root / ".agent" / "instances" / instance_id / "instance.json"
@@ -53,143 +54,148 @@ def run_next(instance_id: str) -> dict:
         raise StateError("Could not acquire instance lock", code="STATE_LOCKED")
 
     try:
-        instance = load_instance(instance_id)
-        if instance.get("status") != "ACTIVE":
-            return {"status": "error", "reason": f"Instance is {instance.get('status')}"}
-
-        # 0. 同步 worktree 与上游（Level 1 / Level 1.5），失败静默跳过
-        _sync_worktree_upstream(instance_id, instance)
-
-        spec = _load_workflow_for_instance(instance)
-        adj = build_adjacency(spec)
-
-        # 构建 worktree 映射（用于消费消息时注入 modified_files）
-        worktree_map = _build_worktree_map(instance_id, instance)
-
-        # 1. 消费消息
-        changes = consume_messages(instance_id, instance, worktree_map)
-        for change in changes:
-            if change["new_status"] == "ERROR":
-                append_deviation(
-                    instance_id,
-                    "STAGE_ERROR",
-                    change["message"].get("report", ""),
-                    stage_id=change["stage_id"],
-                )
-
-        # 1.5. AWAITING_CONFIRM 合法性校验：拒绝在无 confirmed 边的 stage 上报确认
-        stage_map = {s["stage_id"]: s for s in instance["stages"]}
-        for change in changes:
-            if change["new_status"] != "AWAITING_CONFIRM":
-                continue
-            sid = change["stage_id"]
-            if not get_confirmed_edges(adj, sid):
-                stage = stage_map.get(sid)
-                if stage:
-                    stage["status"] = "ERROR"
-                    _write_synthetic_error_message(
-                        instance_id, sid, stage,
-                        f"Stage {sid} 上报了 AWAITING_CONFIRM 但未定义任何 confirmed 边。"
-                        f"该 stage 不应设置确认点——请检查 Skill 是否在错误的阶段请求了确认。",
-                    )
-                    append_deviation(
-                        instance_id,
-                        "INVALID_AWAITING_CONFIRM",
-                        f"Stage {sid} 无 confirmed 边但上报了 AWAITING_CONFIRM，已转为 ERROR",
-                        stage_id=sid,
-                    )
-                    change["new_status"] = "ERROR"
-
-        # 2. 自动提交 DONE stage 的 worktree 变更 + 打锚点
-        _auto_commit_done_stages(instance_id, changes, worktree_map, spec.anchor_prefix)
-
-        # 2.5. 补锚：为 confirm 驱动 DONE 的 stage（不在 changes 中）确保锚点存在
-        _ensure_anchors_for_done_stages(instance_id, instance, worktree_map, spec.anchor_prefix)
-
-        # 3. 并发 stage 合并：将 DONE stage 的独立 worktree 合入实例 worktree
-        merge_conflict_actions = _merge_done_stage_worktrees(instance_id, instance, changes, worktree_map)
-
-        # 4. 子工作流检查
-        _check_child_workflows(instance, root)
-
-        # 5. parallel 拆分（需要 running_agents 检测上游 SubAgent 存活状态）
-        running_agents = _load_running_agents(instance_id)
-        parallel_actions = _check_parallel(adj, instance, instance_id, spec, running_agents)
-
-        # 5.5. 子工作流实例创建：为 PENDING 的 WORKFLOW 类型 stage 创建子 Instance
-        new_children = _spawn_child_workflows(instance, instance_id, spec, adj)
-
-        # 6. ERROR 分支（处理 SubAgent 主动上报的 ERROR）
-        error_actions = _handle_error_stages(instance, adj, spec)
-
-        # 6.5. 超时检测（在 ERROR 分支之后执行——本轮超时的 stage 在下轮 next 中处理，
-        # 确保主 Agent 能观测到 ERROR 状态再执行 retry）
-        _check_timeouts(instance, spec, instance_id)
-
-        # 7. CONFLICT 分支
-        conflict_actions = _handle_conflict_stages(instance, instance_id)
-
-        # 8. 虚拟 stage 预处理——在就绪计算前，将满足条件的虚拟 stage 提前标记为 DONE，
-        # 确保下游真实 stage 在同一次 next 中被调度，避免需要两次 next 调用。
-        _resolve_virtual_stages(adj, instance, instance_id, spec)
-
-        # 9. 就绪计算
-        ready = compute_ready(adj, instance)
-
-        # 10. 调度约束
-        ready = _apply_scheduling_constraints(ready, instance, spec)
-
-        # 11. worktree 分配 + spawn/continue action
-        stage_actions = _allocate_and_spawn(ready, instance, instance_id, adj, spec, running_agents)
-
-        # 12. 确认点聚合
-        confirm_action = _collect_confirm_action(instance, adj)
-
-        # 13. 子工作流驱动：为新创建的子实例生成 child_next action
-        child_next_actions: list[dict] = []
-        for child_info in new_children:
-            child_next_actions.append({
-                "action": "child_next",
-                "child_instance_id": child_info["child_instance_id"],
-                "parent_stage_id": child_info["parent_stage_id"],
-                "parent_instance_id": instance_id,
-            })
-
-        # 14. 组装 actions（reinforce 优先，主 Agent 应首先处理）
-        actions: list[dict] = []
-        actions.extend(parallel_actions)
-        actions.extend(error_actions)
-        actions.extend(conflict_actions)
-        actions.extend(merge_conflict_actions)
-        actions.extend(stage_actions)
-        actions.extend(child_next_actions)
-        if confirm_action:
-            actions.append(confirm_action)
-
-        # 15. 全部 DONE？执行实例合并（一级实例需先确认）
-        if _check_all_done(instance, spec):
-            if not instance.get("parent_instance_id") and not instance.get("merge_confirmed"):
-                instance.setdefault("stages", []).append({
-                    "stage_id": "__merge__",
-                    "stage_instance_id": "__merge__",
-                    "status": "AWAITING_CONFIRM",
-                    "confirm_questions": [
-                        f"实例 {instance_id}（{instance.get('goal', '')}）全部 stage 已完成，是否合入 main？",
-                    ],
-                })
-            else:
-                merge_result = _execute_merge_to_main(instance, spec, instance_id)
-                actions.append(merge_result)
-
-        if not actions:
-            actions.append({"action": "await", "reason": "no ready stages"})
-
-        # 保存状态
-        save_instance(instance_id, instance)
-
-        return {"status": "ok", "actions": actions}
+        return _run_next_inner(instance_id)
     finally:
         lock.release()
+
+
+def _run_next_inner(instance_id: str) -> dict:
+    """单实例调度核心（不含顶层锁管理，供递归调用）。
+
+    调用方负责获取本实例的 instance.json 锁。
+    内部递归处理子实例时，会为每个子实例独立获取/释放锁。
+    """
+    root = find_root()
+    instance = load_instance(instance_id)
+    if instance.get("status") != "ACTIVE":
+        return {"status": "error", "reason": f"Instance is {instance.get('status')}"}
+
+    # 0. 同步 worktree 与上游（Level 1 / Level 1.5），失败静默跳过
+    _sync_worktree_upstream(instance_id, instance)
+
+    spec = _load_workflow_for_instance(instance)
+    adj = build_adjacency(spec)
+    worktree_map = _build_worktree_map(instance_id, instance)
+
+    # 1. 消费消息
+    changes = consume_messages(instance_id, instance, worktree_map)
+    for change in changes:
+        if change["new_status"] == "ERROR":
+            append_deviation(
+                instance_id, "STAGE_ERROR",
+                change["message"].get("report", ""),
+                stage_id=change["stage_id"],
+            )
+
+    # 1.5. AWAITING_CONFIRM 合法性校验
+    stage_map = {s["stage_id"]: s for s in instance["stages"]}
+    for change in changes:
+        if change["new_status"] != "AWAITING_CONFIRM":
+            continue
+        sid = change["stage_id"]
+        if not get_confirmed_edges(adj, sid):
+            stage = stage_map.get(sid)
+            if stage:
+                stage["status"] = "ERROR"
+                _write_synthetic_error_message(
+                    instance_id, sid, stage,
+                    f"Stage {sid} 上报了 AWAITING_CONFIRM 但未定义任何 confirmed 边。"
+                    f"该 stage 不应设置确认点——请检查 Skill 是否在错误的阶段请求了确认。",
+                )
+                append_deviation(
+                    instance_id, "INVALID_AWAITING_CONFIRM",
+                    f"Stage {sid} 无 confirmed 边但上报了 AWAITING_CONFIRM，已转为 ERROR",
+                    stage_id=sid,
+                )
+                change["new_status"] = "ERROR"
+
+    # 2. 自动提交 DONE stage
+    _auto_commit_done_stages(instance_id, changes, worktree_map, spec.anchor_prefix)
+
+    # 2.5. 补锚
+    _ensure_anchors_for_done_stages(instance_id, instance, worktree_map, spec.anchor_prefix)
+
+    # 3. 并发 stage worktree 合并
+    merge_conflict_actions = _merge_done_stage_worktrees(instance_id, instance, changes, worktree_map)
+
+    # 4. 子工作流完成检查（处理上一轮已完成的子实例）
+    _check_child_workflows(instance, root)
+
+    # 5. parallel 拆分
+    running_agents = _load_running_agents(instance_id)
+    parallel_actions = _check_parallel(adj, instance, instance_id, spec, running_agents)
+
+    # 5.5. 子工作流实例创建
+    _spawn_child_workflows(instance, instance_id, spec, adj)
+
+    # 5.6. 递归处理所有活跃子实例（统一消费子实例消息池）
+    child_results = _recurse_child_instances(instance, instance_id)
+
+    # 5.6.1. 子实例递归后重新检查完成状态（子实例可能在本次递归中完成）
+    _check_child_workflows(instance, root)
+
+    # 6. ERROR 分支
+    error_actions = _handle_error_stages(instance, adj, spec, instance_id)
+
+    # 6.5. 超时检测
+    _check_timeouts(instance, spec, instance_id)
+
+    # 7. CONFLICT 分支
+    conflict_actions = _handle_conflict_stages(instance, instance_id)
+
+    # 8. 虚拟 stage 预处理
+    _resolve_virtual_stages(adj, instance, instance_id, spec)
+
+    # 9. 就绪计算
+    ready = compute_ready(adj, instance)
+
+    # 10. 调度约束
+    ready = _apply_scheduling_constraints(ready, instance, spec)
+
+    # 11. worktree 分配 + spawn/continue action（带 instance_id）
+    stage_actions = _allocate_and_spawn(ready, instance, instance_id, adj, spec, running_agents)
+
+    # 12. 确认点聚合：本实例 + 所有子实例
+    local_confirm_pending = _collect_confirm_pending(instance, adj)
+    all_confirm_pending = (local_confirm_pending or []) + child_results.get("confirm_pending", [])
+    confirm_action = {"action": "confirm", "pending": all_confirm_pending} if all_confirm_pending else None
+
+    # 13. 组装 actions（不再包含 child_next）
+    actions: list[dict] = []
+    actions.extend(parallel_actions)
+    actions.extend(error_actions)
+    actions.extend(conflict_actions)
+    actions.extend(merge_conflict_actions)
+    actions.extend(child_results.get("error", []))
+    actions.extend(child_results.get("conflict", []))
+    actions.extend(child_results.get("merge_conflict", []))
+    actions.extend(stage_actions)
+    actions.extend(child_results.get("spawn_continue", []))
+    actions.extend(child_results.get("retry", []))
+    actions.extend(child_results.get("reinforce", []))
+    if confirm_action:
+        actions.append(confirm_action)
+
+    # 14. 全部 DONE？执行实例合并
+    if _check_all_done(instance, spec):
+        if not instance.get("parent_instance_id") and not instance.get("merge_confirmed"):
+            instance.setdefault("stages", []).append({
+                "stage_id": "__merge__",
+                "stage_instance_id": "__merge__",
+                "status": "AWAITING_CONFIRM",
+                "confirm_questions": [
+                    f"实例 {instance_id}（{instance.get('goal', '')}）全部 stage 已完成，是否合入 main？",
+                ],
+            })
+        else:
+            merge_result = _execute_merge_to_main(instance, spec, instance_id)
+            actions.append(merge_result)
+
+    if not actions:
+        actions.append({"action": "await", "reason": "no ready stages"})
+
+    save_instance(instance_id, instance)
+    return {"status": "ok", "actions": actions}
 
 
 def run_sync(instance_id: str) -> dict:
@@ -408,6 +414,7 @@ def _merge_done_stage_worktrees(instance_id: str, instance: dict, changes: list[
                     stage["conflict_files"] = conflict_files
                 conflict_actions.append({
                     "action": "conflict",
+                    "instance_id": instance_id,
                     "stage_id": stage_id,
                     "worktree": str(worktree_map[stage_id].relative_to(root)),
                     "conflict_files": conflict_files,
@@ -419,6 +426,7 @@ def _merge_done_stage_worktrees(instance_id: str, instance: dict, changes: list[
                 stage["status"] = "CONFLICT"
             conflict_actions.append({
                 "action": "conflict",
+                "instance_id": instance_id,
                 "stage_id": stage_id,
                 "worktree": str(worktree_map[stage_id].relative_to(root)),
                 "conflict_files": [],
@@ -584,6 +592,7 @@ def _handle_missing_targets(instance: dict, stage, instance_id: str, source_stag
         )
         return [{
             "action": "reinforce",
+            "instance_id": instance_id,
             "type": "parallel_targets_missing",
             "stage_id": stage.stage_id,
             "source_stage_id": source_stage_id,
@@ -767,6 +776,95 @@ def _spawn_child_workflows(instance: dict, instance_id: str, spec, adj) -> list[
     return created
 
 
+def _recurse_child_instances(parent_instance: dict, parent_instance_id: str) -> dict:
+    """递归处理所有活跃子工作流实例，合并它们的 actions。
+
+    对每个 RUNNING 的 WORKFLOW 类型 stage（已有 child_instance_id），
+    获取子实例锁并调用 _run_next_inner()，合并返回的 actions。
+
+    子实例的 await 不传播——子实例在等自己的 SubAgent，不应阻塞父级。
+    子实例的 confirm 由调用方与父级 confirm 合并。
+
+    Returns:
+        {
+            "spawn_continue": [...],   # spawn + continue actions
+            "retry": [...],
+            "reinforce": [...],
+            "confirm_pending": [...],  # AWAITING_CONFIRM 条目
+            "error": [...],
+            "conflict": [...],
+            "merge_conflict": [...],
+            "terminate": [...],
+        }
+    """
+    root = find_root()
+    result: dict[str, list[dict]] = {
+        "spawn_continue": [],
+        "retry": [],
+        "reinforce": [],
+        "confirm_pending": [],
+        "error": [],
+        "conflict": [],
+        "merge_conflict": [],
+        "terminate": [],
+    }
+
+    for s in parent_instance.get("stages", []):
+        child_id = s.get("child_instance_id")
+        if not child_id:
+            continue
+        if s.get("status") != "RUNNING":
+            continue
+
+        try:
+            child_instance = load_instance(child_id)
+        except Exception:
+            continue
+
+        if child_instance.get("status") != "ACTIVE":
+            continue
+
+        child_lock_path = root / ".agent" / "instances" / child_id / "instance.json"
+        child_lock = FileLock(child_lock_path)
+        if not child_lock.acquire(timeout=10.0):
+            append_deviation(
+                parent_instance_id, "CHILD_LOCK_FAILED",
+                f"Could not acquire lock for child instance {child_id}",
+                stage_id=s.get("stage_id"),
+            )
+            continue
+
+        try:
+            child_result = _run_next_inner(child_id)
+            if child_result.get("status") != "ok":
+                continue
+
+            for action in child_result.get("actions", []):
+                action_type = action.get("action")
+                if action_type in ("spawn", "continue"):
+                    result["spawn_continue"].append(action)
+                elif action_type == "retry":
+                    result["retry"].append(action)
+                elif action_type == "reinforce":
+                    result["reinforce"].append(action)
+                elif action_type == "confirm":
+                    result["confirm_pending"].extend(action.get("pending", []))
+                elif action_type == "conflict":
+                    if action.get("source_stage"):
+                        result["merge_conflict"].append(action)
+                    else:
+                        result["conflict"].append(action)
+                elif action_type == "terminate":
+                    result["terminate"].append(action)
+                elif action_type in ("error",):
+                    result["error"].append(action)
+                # await 不传播——子实例等待中，父级不受影响
+        finally:
+            child_lock.release()
+
+    return result
+
+
 def _check_timeouts(instance: dict, spec, instance_id: str) -> None:
     """检测 RUNNING stage 是否超时，自动写入 ERROR 并追加 deviation。
 
@@ -887,7 +985,7 @@ def _all_satisfied_virtual(upstream_edges: list, stage_states: dict) -> bool:
     return False
 
 
-def _handle_error_stages(instance: dict, adj, spec) -> list[dict]:
+def _handle_error_stages(instance: dict, adj, spec, instance_id: str) -> list[dict]:
     """处理 ERROR 分支。"""
     actions: list[dict] = []
     stage_map = {s["stage_id"]: s for s in instance["stages"]}
@@ -907,6 +1005,7 @@ def _handle_error_stages(instance: dict, adj, spec) -> list[dict]:
             s["attempt_count"] = attempt_count + 1
             actions.append({
                 "action": "retry",
+                "instance_id": instance_id,
                 "stage_id": stage_id,
                 "attempt": s["attempt_count"],
             })
@@ -921,6 +1020,7 @@ def _handle_error_stages(instance: dict, adj, spec) -> list[dict]:
                 instance["status"] = "FAILED"
                 actions.append({
                     "action": "terminate",
+                    "instance_id": instance_id,
                     "status": "FAILED",
                     "reason": "failure edge targets non-existent stage",
                 })
@@ -929,6 +1029,7 @@ def _handle_error_stages(instance: dict, adj, spec) -> list[dict]:
             target_stage["loop_counter"] = loop_counter + 1
             actions.append({
                 "action": "spawn",
+                "instance_id": instance_id,
                 "stage_id": failure_edge.to_stage,
                 "reason": "failure-edge",
             })
@@ -942,6 +1043,7 @@ def _handle_error_stages(instance: dict, adj, spec) -> list[dict]:
                 target_stage["status"] = "PENDING"
             actions.append({
                 "action": "spawn",
+                "instance_id": instance_id,
                 "stage_id": loop_exceeded_edge.to_stage,
                 "reason": "loop-exceeded",
             })
@@ -951,6 +1053,7 @@ def _handle_error_stages(instance: dict, adj, spec) -> list[dict]:
         instance["status"] = "FAILED"
         actions.append({
             "action": "terminate",
+            "instance_id": instance_id,
             "status": "FAILED",
             "reason": f"no handler for stage {stage_id} error",
         })
@@ -980,6 +1083,7 @@ def _handle_conflict_stages(instance: dict, instance_id: str) -> list[dict]:
             else:
                 actions.append({
                     "action": "conflict",
+                    "instance_id": instance_id,
                     "stage_id": stage_id,
                     "conflict_files": s.get("conflict_files", []),
                     "source_stage": stage_id,
@@ -987,6 +1091,7 @@ def _handle_conflict_stages(instance: dict, instance_id: str) -> list[dict]:
         except GitError as e:
             actions.append({
                 "action": "conflict",
+                "instance_id": instance_id,
                 "stage_id": stage_id,
                 "conflict_files": s.get("conflict_files", []),
                 "source_stage": stage_id,
@@ -1101,6 +1206,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
                 stage_state["conflict_files"] = conflict_files
                 actions.append({
                     "action": "conflict",
+                    "instance_id": instance_id,
                     "stage_id": stage_id,
                     "worktree": str(worktree.relative_to(root)),
                     "conflict_files": conflict_files,
@@ -1122,6 +1228,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
 
             actions.append({
                 "action": "continue",
+                "instance_id": instance_id,
                 "stage_id": stage_id,
                 "skill_id": skill_id,
                 "worktree": str(worktree.relative_to(root)),
@@ -1134,6 +1241,7 @@ def _allocate_and_spawn(ready: list[str], instance: dict, instance_id: str, adj,
         else:
             actions.append({
                 "action": "spawn",
+                "instance_id": instance_id,
                 "stage_id": stage_id,
                 "skill_id": skill_id,
                 "worktree": str(worktree.relative_to(root)),
@@ -1252,12 +1360,13 @@ def _build_successor_stages_block(stage_id: str, stage_spec, adj) -> str:
     return "\n".join(lines)
 
 
-def _collect_confirm_action(instance: dict, adj) -> dict | None:
-    """聚合 AWAITING_CONFIRM stages——含父实例自身和子工作流实例。"""
-    root = find_root()
-    pending: list[dict] = []
+def _collect_confirm_pending(instance: dict, adj) -> list[dict] | None:
+    """收集当前实例自身的 AWAITING_CONFIRM stage。
 
-    # 1. 父实例自身的 AWAITING_CONFIRM
+    子工作流实例的确认由 _recurse_child_instances() 收集并合并。
+    返回 None 表示无待确认项。
+    """
+    pending: list[dict] = []
     for s in instance.get("stages", []):
         if s.get("status") == "AWAITING_CONFIRM":
             pending.append({
@@ -1266,41 +1375,7 @@ def _collect_confirm_action(instance: dict, adj) -> dict | None:
                 "questions": s.get("confirm_questions", []),
                 "valid_choices": _collect_valid_choices(adj, s["stage_id"]),
             })
-
-    # 2. 子工作流实例中的 AWAITING_CONFIRM
-    parent_instance_id = instance["instance_id"]
-    children_dir = root / ".agent" / "instances" / parent_instance_id / "children"
-    if children_dir.exists():
-        import json as _json
-        for child_dir in children_dir.iterdir():
-            child_json = child_dir / "instance.json"
-            if not child_json.exists():
-                continue
-            try:
-                child = _json.loads(child_json.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            for child_s in child.get("stages", []):
-                if child_s.get("status") != "AWAITING_CONFIRM":
-                    continue
-                # 找到对应的父 stage
-                parent_stage = next(
-                    (s for s in instance.get("stages", [])
-                     if s.get("child_instance_id") == child.get("instance_id")),
-                    None,
-                )
-                pending.append({
-                    "stage_id": child_s["stage_id"],
-                    "instance_id": child["instance_id"],
-                    "parent_stage_id": parent_stage["stage_id"] if parent_stage else None,
-                    "questions": child_s.get("confirm_questions", []),
-                    "valid_choices": None,  # 子实例需加载子工作流 spec，由编排器从子实例 actual workflow 获取
-                })
-
-    if not pending:
-        return None
-
-    return {"action": "confirm", "pending": pending}
+    return pending if pending else None
 
 
 def _collect_valid_choices(adj, stage_id: str) -> list[str]:
