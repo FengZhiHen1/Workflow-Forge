@@ -2,8 +2,8 @@
 
 import pytest
 
-from core.dag import AdjacencyList, build_adjacency
-from core.schema.interface import (
+from domain.dag.graph import AdjacencyList, build_adjacency
+from domain.workflow.spec import (
     EdgeCondition,
     EdgeSpec,
     StageSpec,
@@ -13,7 +13,7 @@ from core.schema.interface import (
 )
 from domain.transition.policy import TransitionPolicy
 from domain.transition.results import TransitionResult
-from services.scheduler.state_model import StageState
+from state.model import StageState
 
 
 def _make_simple_adj() -> AdjacencyList:

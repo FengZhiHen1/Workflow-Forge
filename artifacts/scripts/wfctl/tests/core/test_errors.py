@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.errors import (
+from infrastructure.errors import (
     GitError,
     InputError,
     SchemaError,

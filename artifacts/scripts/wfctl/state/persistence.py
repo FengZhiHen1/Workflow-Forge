@@ -12,10 +12,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from core.atomic_write import atomic_write_json
-from core.errors import InputError, StateError
-from core.project import find_root
-from services.scheduler.state_model import InstanceState
+from infrastructure.io import atomic_write_json
+from infrastructure.errors import InputError, StateError
+from infrastructure.project import find_root
+from state.model import InstanceState
 
 
 class DataVersion(Enum):

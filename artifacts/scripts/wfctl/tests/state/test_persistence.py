@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from core.errors import InputError, StateError
-from services.scheduler.state_model import InstanceState, StageState, CycleMeta
+from infrastructure.errors import InputError, StateError
+from state.model import InstanceState, StageState, CycleMeta
 from state.persistence import (
     DataVersion,
     InstanceDataAdapter,

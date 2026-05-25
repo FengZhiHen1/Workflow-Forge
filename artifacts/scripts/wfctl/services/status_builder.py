@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from core.dag import build_adjacency
-from core.project import find_root
-from core.schema.loader import load_workflow
+from domain.dag.graph import build_adjacency
+from infrastructure.project import find_root
+from domain.workflow.parser import load_workflow
 
 
 def build_project_status() -> dict:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from core.schema.interface import (
+from domain.workflow.spec import (
     EdgeCondition,
     EdgeSpec,
     StageSpec,

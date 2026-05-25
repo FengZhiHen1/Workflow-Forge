@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from core.project import find_root
+from infrastructure.project import find_root
 
 
 def test_find_root_from_claude(tmp_path: Path):

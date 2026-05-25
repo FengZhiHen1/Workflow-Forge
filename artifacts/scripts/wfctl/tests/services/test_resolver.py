@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.errors import InputError
+from infrastructure.errors import InputError
 from services.resolver import resolve, resolve_workflow
 
 

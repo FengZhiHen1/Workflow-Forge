@@ -9,9 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.dag import AdjacencyList
-from core.schema.interface import EdgeCondition, EdgeSpec, StageSpec, StageStatus, StageTargetType
-from services.scheduler.state_model import InstanceState, StageState, StateDelta, InstanceStatus
+from domain.dag.graph import AdjacencyList
+from domain.workflow.spec import EdgeCondition, EdgeSpec, StageSpec, StageStatus, StageTargetType
+from state.model import InstanceState, StageState, StateDelta, InstanceStatus
 
 from domain.transition.results import (
     CascadeResetResult,
@@ -413,7 +413,7 @@ class TransitionPolicy:
         Returns:
             RollbackResult 含 reset_stage_ids 和对应的 StateDelta
         """
-        from core.dag import collect_downstream
+        from domain.dag.graph import collect_downstream
 
         downstream = collect_downstream(
             adj, self.stage_id, {EdgeCondition.FAILURE, EdgeCondition.LOOP_EXCEEDED}
@@ -458,23 +458,23 @@ class TransitionPolicy:
         FORCEABLE_STATES = {"PENDING", "RUNNING", "AWAITING_CONFIRM", "ERROR"}
         targets = state.stages_by_id(self.stage_id)
         if not targets:
-            from core.errors import StateError
+            from infrastructure.errors import StateError
             raise StateError(f"Stage not found: {self.stage_id}")
 
         if all(s.status == StageStatus.DONE for s in targets):
-            from core.errors import StateError
+            from infrastructure.errors import StateError
             raise StateError(f"All instances of stage {self.stage_id} are already DONE")
 
         for s in targets:
             status = s.status.value if hasattr(s.status, 'value') else str(s.status)
             if status not in FORCEABLE_STATES:
-                from core.errors import StateError
+                from infrastructure.errors import StateError
                 raise StateError(
                     f"Stage {self.stage_id} ({s.stage_instance_id}) is {status}, "
                     f"only {sorted(FORCEABLE_STATES)} stages can be skipped"
                 )
             if status != "PENDING" and not force:
-                from core.errors import StateError
+                from infrastructure.errors import StateError
                 raise StateError(
                     f"Stage {self.stage_id} ({s.stage_instance_id}) is {status}, "
                     f"not PENDING. Use --force to skip non-PENDING stages."

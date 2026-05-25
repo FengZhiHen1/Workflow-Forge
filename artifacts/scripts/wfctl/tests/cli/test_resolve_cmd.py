@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cli.resolve import _handle_resolve
+from cli.workflow.resolve import _handle_resolve
 
 
 class FakeArgs:

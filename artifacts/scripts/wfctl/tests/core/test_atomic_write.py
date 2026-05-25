@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from core.atomic_write import atomic_write_json, atomic_write_text
+from infrastructure.io import atomic_write_json, atomic_write_text
 
 
 def test_atomic_write_json(tmp_path: Path):

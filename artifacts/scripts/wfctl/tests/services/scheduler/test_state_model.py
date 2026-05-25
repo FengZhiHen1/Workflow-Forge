@@ -2,8 +2,8 @@
 
 import pytest
 
-from core.schema.interface import StageStatus, InstanceStatus
-from services.scheduler.state_model import InstanceState, StageState, StateDelta, CycleMeta
+from domain.workflow.spec import StageStatus, InstanceStatus
+from state.model import InstanceState, StageState, StateDelta, CycleMeta
 
 
 class TestStageState:

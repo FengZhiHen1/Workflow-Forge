@@ -2,8 +2,8 @@
 
 import pytest
 
-from core.dag import build_adjacency, collect_downstream, compute_ready
-from core.schema.interface import (
+from domain.dag.graph import build_adjacency, collect_downstream, compute_ready
+from domain.workflow.spec import (
     EdgeCondition,
     EdgeSpec,
     StageSpec,
@@ -11,7 +11,7 @@ from core.schema.interface import (
     StageTargetType,
     WorkflowSpec,
 )
-from services.scheduler.state_model import InstanceState, StageState
+from state.model import InstanceState, StageState
 
 
 def _ids(ready: list[tuple[str, str]]) -> list[str]:

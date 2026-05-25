@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.errors import ValidationError
+from infrastructure.errors import ValidationError
 from services.validator import validate_modified_files
 
 

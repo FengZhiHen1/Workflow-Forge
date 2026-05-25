@@ -10,8 +10,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from core.atomic_write import atomic_write_json
-from core.project import find_root
+from infrastructure.io import atomic_write_json
+from infrastructure.project import find_root
 
 
 class RunningAgentManager:

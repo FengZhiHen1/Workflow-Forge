@@ -2,9 +2,9 @@
 
 import pytest
 
-from core.errors import SchemaError
-from core.schema.loader import _get_adapter, load_workflow
-from core.schema.v3 import V3Adapter
+from infrastructure.errors import SchemaError
+from domain.workflow.parser import _get_adapter, load_workflow
+from domain.workflow.parser import V3Adapter
 
 
 SAMPLE_YAML = """

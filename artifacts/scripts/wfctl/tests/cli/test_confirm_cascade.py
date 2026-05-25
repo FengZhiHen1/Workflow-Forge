@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.schema.interface import (
+from domain.workflow.spec import (
     EdgeCondition,
     EdgeSpec,
     StageSpec,
@@ -10,7 +10,7 @@ from core.schema.interface import (
     WorkflowSpec,
 )
 from domain.transition.policy import TransitionPolicy
-from services.scheduler.state_model import InstanceState, StageState, StageStatus
+from state.model import InstanceState, StageState, StageStatus
 
 
 def _make_spec(num_stages: int = 10):

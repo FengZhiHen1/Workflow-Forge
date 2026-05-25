@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from core.errors import GitError, WorktreeError
-from services.worktree_manager import (
+from infrastructure.errors import GitError, WorktreeError
+from runtime.worktree.manager import (
     create_instance_worktree,
     create_parallel_worktree,
     create_stage_worktree,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from core.lock import FileLock
+from infrastructure.lock import FileLock
 
 
 def test_lock_acquire_release(tmp_path: Path):

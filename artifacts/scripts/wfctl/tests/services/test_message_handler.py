@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from services.message_handler import inject_modified_files, scan_messages, write_message
+from runtime.message.handler import inject_modified_files, scan_messages, write_message
 
 
 def test_write_message(monkeypatch, tmp_path: Path):

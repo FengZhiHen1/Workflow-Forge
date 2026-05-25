@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from core.errors import InputError
+from infrastructure.errors import InputError
 from services.creator import create_instance
 
 

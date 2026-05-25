@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from core.dag import AdjacencyList
-from core.schema.interface import EdgeSpec
+from domain.dag.graph import AdjacencyList
+from domain.workflow.spec import EdgeSpec
 
 
 @dataclass(frozen=True)

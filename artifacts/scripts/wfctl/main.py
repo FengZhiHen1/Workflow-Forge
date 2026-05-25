@@ -5,26 +5,26 @@ import json
 import sys
 import traceback
 
-from core.errors import WfctlError
-from core.logging import log_error
+from infrastructure.errors import WfctlError
+from infrastructure.logging import log_error
 
-from cli.create import register_create
-from cli.confirm import register_confirm
-from cli.deviate import register_deviate
-from cli.identity import register_identity
-from cli.message_write import register_message_write
-from cli.next_cmd import register_next
-from cli.pause import register_pause
-from cli.resolve import register_resolve
-from cli.resume import register_resume
-from cli.rollback import register_rollback
-from cli.skip import register_skip
-from cli.status import register_status
-from cli.sync import register_sync
-from cli.cleanup import register_cleanup
-from cli.restore import register_restore
-from cli.terminate import register_terminate
-from cli.visualize import register_visualize
+from cli.workflow.create import register_create
+from cli.stage.confirm import register_confirm
+from cli.stage.deviate import register_deviate
+from cli.message.identity import register_identity
+from cli.message.write import register_message_write
+from cli.stage.next_cmd import register_next
+from cli.instance.pause import register_pause
+from cli.workflow.resolve import register_resolve
+from cli.instance.resume import register_resume
+from cli.stage.rollback import register_rollback
+from cli.stage.skip import register_skip
+from cli.instance.status import register_status
+from cli.instance.sync import register_sync
+from cli.workflow.cleanup import register_cleanup
+from cli.workflow.restore import register_restore
+from cli.instance.terminate import register_terminate
+from cli.workflow.visualize import register_visualize
 
 
 def main():

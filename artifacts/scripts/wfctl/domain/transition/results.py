@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
-from core.schema.interface import StageStatus
+from domain.workflow.spec import StageStatus
 
 if TYPE_CHECKING:
-    from services.scheduler.state_model import StateDelta
+    from state.model import StateDelta
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ class RollbackResult:
 
     @property
     def state_delta(self) -> StateDelta:
-        from services.scheduler.state_model import StateDelta
+        from state.model import StateDelta
         return self.delta if isinstance(self.delta, StateDelta) else StateDelta()
 
 
@@ -85,7 +85,7 @@ class SkipResult:
 
     @property
     def state_delta(self) -> StateDelta:
-        from services.scheduler.state_model import StateDelta
+        from state.model import StateDelta
         return self.delta if isinstance(self.delta, StateDelta) else StateDelta()
 
 

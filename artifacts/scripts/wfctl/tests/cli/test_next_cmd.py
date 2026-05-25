@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cli.next_cmd import _handle_next
+from cli.stage.next_cmd import _handle_next
 
 
 class FakeArgs:

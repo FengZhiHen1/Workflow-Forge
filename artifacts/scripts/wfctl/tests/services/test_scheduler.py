@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from core.schema.interface import (
+from domain.workflow.spec import (
     EdgeCondition,
     EdgeSpec,
     StageSpec,
     StageTargetType,
     WorkflowSpec,
 )
-from services.scheduler import run_next, run_sync
+from scheduler.entry import run_next, run_sync
 
 
 def _make_workflow_spec() -> WorkflowSpec:

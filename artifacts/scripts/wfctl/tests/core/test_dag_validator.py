@@ -2,8 +2,8 @@
 
 import pytest
 
-from core.dag_validator import validate_workflow, ValidationIssue
-from core.schema.interface import (
+from domain.dag.validator import validate_workflow, ValidationIssue
+from domain.workflow.spec import (
     EdgeCondition,
     EdgeSpec,
     ParallelSpec,

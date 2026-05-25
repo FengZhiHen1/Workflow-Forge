@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from core.errors import InputError, StateError
+from infrastructure.errors import InputError, StateError
 from services.state_manager import (
     append_deviation,
     load_instance,

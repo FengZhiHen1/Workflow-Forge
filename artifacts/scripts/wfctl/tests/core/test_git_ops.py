@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.git_ops import (
+from runtime.worktree.git import (
     git_add_all,
     git_branch,
     git_checkout,
@@ -38,7 +38,7 @@ def repo():
 
 def test_git_command_construction(repo):
     """验证 git 命令正确构造：-C + repo + 子命令。"""
-    with patch("core.git_ops.subprocess.run") as mock_run:
+    with patch("runtime.worktree.git.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="M file.txt\n", stderr="")
         rc, stdout, stderr = git_status_porcelain(repo)
         assert rc == 0
@@ -52,7 +52,7 @@ def test_git_command_construction(repo):
 
 def test_git_error_propagation(repo):
     """验证 git 错误（非零返回码 + stderr）通过包装函数正确传播。"""
-    with patch("core.git_ops.subprocess.run") as mock_run:
+    with patch("runtime.worktree.git.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="fatal: not a git repository")
         rc, stdout, stderr = git_status_porcelain(repo)
         assert rc == 1
@@ -64,7 +64,7 @@ def test_git_error_propagation(repo):
 
 def test_worktree_add_basic(repo):
     path = Path("/tmp/wt")
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_worktree_add(repo, path, "HEAD")
         assert rc == 0
@@ -75,7 +75,7 @@ def test_worktree_add_basic(repo):
 
 def test_worktree_add_with_branch(repo):
     path = Path("/tmp/wt-branch")
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_worktree_add(repo, path, "HEAD", branch="feature-x")
         assert rc == 0
@@ -89,7 +89,7 @@ def test_worktree_add_with_branch(repo):
 
 def test_worktree_remove_basic(repo):
     path = Path("/tmp/wt")
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_worktree_remove(repo, path)
         assert rc == 0
@@ -100,7 +100,7 @@ def test_worktree_remove_basic(repo):
 
 def test_worktree_remove_force(repo):
     path = Path("/tmp/wt")
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_worktree_remove(repo, path, force=True)
         assert rc == 0
@@ -113,7 +113,7 @@ def test_worktree_remove_force(repo):
 
 
 def test_worktree_list(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "worktree /path\nHEAD abc123\n", "")
         rc, stdout, stderr = git_worktree_list(repo)
         assert rc == 0
@@ -125,7 +125,7 @@ def test_worktree_list(repo):
 
 def test_fetch(repo):
     source = Path("/source/repo")
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_fetch(repo, source, "refs/heads/main")
         assert rc == 0
@@ -138,7 +138,7 @@ def test_fetch(repo):
 
 
 def test_merge_default_no_ff(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "Merge made", "")
         rc, stdout, stderr = git_merge(repo, "feature-branch")
         assert rc == 0
@@ -146,7 +146,7 @@ def test_merge_default_no_ff(repo):
 
 
 def test_merge_allow_ff(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "Fast-forward", "")
         rc, stdout, stderr = git_merge(repo, "feature-branch", no_ff=False)
         assert rc == 0
@@ -157,7 +157,7 @@ def test_merge_allow_ff(repo):
 
 
 def test_checkout(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_checkout(repo, "main")
         assert rc == 0
@@ -168,7 +168,7 @@ def test_checkout(repo):
 
 
 def test_tag(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_tag(repo, "v1.0", "HEAD")
         assert rc == 0
@@ -176,7 +176,7 @@ def test_tag(repo):
 
 
 def test_tag_delete(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_tag_delete(repo, "v1.0")
         assert rc == 0
@@ -184,19 +184,19 @@ def test_tag_delete(repo):
 
 
 def test_tag_exists_found(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "v1.0\n", "")
         assert git_tag_exists(repo, "v1.0") is True
 
 
 def test_tag_exists_not_found(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "\n", "")
         assert git_tag_exists(repo, "v1.0") is False
 
 
 def test_tag_exists_git_error(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (128, "", "fatal: not a git repo")
         assert git_tag_exists(repo, "v1.0") is False
 
@@ -205,7 +205,7 @@ def test_tag_exists_git_error(repo):
 
 
 def test_status_porcelain(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "M file.txt\n", "")
         rc, stdout, stderr = git_status_porcelain(repo)
         assert rc == 0
@@ -216,7 +216,7 @@ def test_status_porcelain(repo):
 
 
 def test_merge_base(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "abc123def456\n", "")
         rc, stdout, stderr = git_merge_base(repo, "main", "feature")
         assert rc == 0
@@ -227,7 +227,7 @@ def test_merge_base(repo):
 
 
 def test_worktree_prune(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_worktree_prune(repo)
         assert rc == 0
@@ -238,7 +238,7 @@ def test_worktree_prune(repo):
 
 
 def test_rev_parse(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "abc123\n", "")
         rc, stdout, stderr = git_rev_parse(repo, "HEAD")
         assert rc == 0
@@ -249,7 +249,7 @@ def test_rev_parse(repo):
 
 
 def test_add_all(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_add_all(repo)
         assert rc == 0
@@ -260,7 +260,7 @@ def test_add_all(repo):
 
 
 def test_commit(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_commit(repo, "test commit")
         assert rc == 0
@@ -272,7 +272,7 @@ def test_commit(repo):
 
 def test_commit_file(repo):
     msg_file = Path("/tmp/msg.txt")
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_commit_file(repo, msg_file)
         assert rc == 0
@@ -283,7 +283,7 @@ def test_commit_file(repo):
 
 
 def test_merge_abort(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_merge_abort(repo)
         assert rc == 0
@@ -294,7 +294,7 @@ def test_merge_abort(repo):
 
 
 def test_branch_default_ref(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_branch(repo, "feature-x")
         assert rc == 0
@@ -302,7 +302,7 @@ def test_branch_default_ref(repo):
 
 
 def test_branch_explicit_ref(repo):
-    with patch("core.git_ops._git") as mock_git:
+    with patch("runtime.worktree.git._git") as mock_git:
         mock_git.return_value = (0, "", "")
         rc, stdout, stderr = git_branch(repo, "feature-x", "abc123")
         assert rc == 0

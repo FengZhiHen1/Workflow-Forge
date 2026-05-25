@@ -2,8 +2,8 @@
 
 import pytest
 
-from core.dag import AdjacencyList, build_adjacency
-from core.schema.interface import (
+from domain.dag.graph import AdjacencyList, build_adjacency
+from domain.workflow.spec import (
     EdgeCondition,
     EdgeSpec,
     StageSpec,

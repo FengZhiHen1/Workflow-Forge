@@ -5,17 +5,16 @@ import shutil
 import time
 from pathlib import Path
 
-from core.dag import collect_ancestors
-from core.errors import InputError
-from core.git_ops import git_rev_parse
-from core.project import find_root
-from core.schema.interface import StageStatus, StageTargetType
-from core.schema.loader import load_workflow
+from domain.dag.graph import collect_ancestors
+from infrastructure.errors import InputError
+from runtime.worktree.git import git_rev_parse
+from infrastructure.project import find_root
+from domain.workflow.spec import StageStatus, StageTargetType
+from domain.workflow.parser import load_workflow
 from services.resolver import find_workflow_dir
-from services.scheduler.state_model import InstanceState, StageState
-from services.state_manager import load_instance, save_instance, append_deviation
+from state.model import InstanceState, StageState
 from state.persistence import save_instance_state
-from services.worktree_manager import (
+from runtime.worktree.manager import (
     create_instance_worktree,
     tag_anchor,
 )
@@ -134,7 +133,7 @@ def create_instance(
     instance_id = _generate_instance_id(root)
 
     # 创建前清理残留的 git worktree 注册（目录已丢失但注册还在）
-    from core.git_ops import git_worktree_prune
+    from runtime.worktree.git import git_worktree_prune
     git_worktree_prune(root)
 
     # 创建实例 worktree
@@ -159,7 +158,7 @@ def create_instance(
         # ── fast-forward：将目标 stage 的拓扑前驱标为 DONE ──
         fast_forwarded: list[str] = []
         if fast_forward_to:
-            from core.dag import build_adjacency as _build_adj
+            from domain.dag.graph import build_adjacency as _build_adj
             adj = _build_adj(spec)
             ancestors = collect_ancestors(adj, fast_forward_to)
             if fast_forward_to not in adj.stages or adj.stages[fast_forward_to].target_type == StageTargetType.VIRTUAL:
@@ -224,7 +223,7 @@ def create_instance(
         return result
     except Exception:
         # 回滚：清理已创建的资源
-        from services.worktree_manager import remove_anchor, remove_instance_worktree
+        from runtime.worktree.manager import remove_anchor, remove_instance_worktree
         if worktree is not None and worktree.exists():
             try:
                 remove_anchor(instance_id, anchor_name, worktree=worktree)
@@ -280,7 +279,7 @@ def _create_from_clone(
     goal = goal or old_inst.get("goal", "")
 
     # 创建前清理残留的 git worktree 注册
-    from core.git_ops import git_worktree_prune
+    from runtime.worktree.git import git_worktree_prune
     git_worktree_prune(root)
 
     # 获取旧 worktree HEAD 作为新 worktree 基准
@@ -351,7 +350,7 @@ def _create_from_clone(
                     if src.exists():
                         data = json.loads(src.read_text(encoding="utf-8"))
                         data["instance_id"] = instance_id
-                        from core.atomic_write import atomic_write_json
+                        from infrastructure.io import atomic_write_json
                         atomic_write_json(new_msgs_dir / f"{msg_id}.json", data)
                         consumed_message_ids.append(msg_id)
 
@@ -421,7 +420,7 @@ def _create_from_clone(
 
     except Exception:
         # 回滚
-        from services.worktree_manager import remove_anchor, remove_instance_worktree
+        from runtime.worktree.manager import remove_anchor, remove_instance_worktree
         if worktree is not None and worktree.exists():
             try:
                 remove_anchor(instance_id, anchor_name, worktree=worktree)

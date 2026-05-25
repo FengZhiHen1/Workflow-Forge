@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from core.errors import ValidationError
-from core.project import find_root
+from infrastructure.errors import ValidationError
+from infrastructure.project import find_root
 
 
 def validate_modified_files(worktree: Path, modified_files: list[str], stage_id: str) -> None:

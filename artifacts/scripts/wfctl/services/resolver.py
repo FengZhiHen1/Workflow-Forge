@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from core.errors import InputError
-from core.project import find_root
-from core.schema.interface import WorkflowSpec
-from core.schema.loader import load_workflow
+from infrastructure.errors import InputError
+from infrastructure.project import find_root
+from domain.workflow.spec import WorkflowSpec
+from domain.workflow.parser import load_workflow
 
 
 def find_workflow_dir(workflow_id: str, version: str | None = None) -> Path:

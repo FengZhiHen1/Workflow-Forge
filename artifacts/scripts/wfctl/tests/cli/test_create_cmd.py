@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cli.create import _handle_create
+from cli.workflow.create import _handle_create
 
 
 class FakeArgs:
