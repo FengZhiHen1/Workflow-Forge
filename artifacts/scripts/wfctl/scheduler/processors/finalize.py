@@ -11,8 +11,8 @@ from infrastructure.errors import GitError
 from domain.workflow.spec import StageTargetType
 from scheduler.context import ExecutionContext
 from state.model import InstanceState, StageStatus, InstanceStatus, StateDelta
-from scheduler.processors.base import ProcessorResult
-from runtime.worktree.manager import merge_instance_to_main, tag_anchor
+from scheduler.processors.base import ProcessorResult, SideEffect
+from runtime.worktree.manager import merge_instance_to_main, tag_anchor as _tag_anchor
 
 
 @dataclass
@@ -54,15 +54,27 @@ class FinalizeProcessor:
         """执行实例 worktree 合入主仓库。"""
         delta = StateDelta()
         actions: list[dict] = []
+        side_effects: list[SideEffect] = []
+
+        def _silent_tag(iid: str, anchor: str) -> None:
+            try:
+                _tag_anchor(iid, anchor)
+            except Exception:
+                pass
+
         try:
             success, conflict_files = merge_instance_to_main(ctx.instance_id)
+            side_effects.append(SideEffect(
+                kind="git_merge", description="Finalize merge to main", execute=None,
+            ))
             if success:
                 delta.instance_updates["status"] = InstanceStatus.COMPLETED
                 anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-final"
-                try:
-                    tag_anchor(ctx.instance_id, anchor)
-                except Exception:
-                    pass
+                side_effects.append(SideEffect(
+                    kind="git_tag",
+                    description="Final anchor",
+                    execute=lambda iid=ctx.instance_id, a=anchor: _silent_tag(iid, a),
+                ))
                 actions.append({"action": "merge_to_main", "status": "completed"})
             else:
                 actions.append({
@@ -73,4 +85,4 @@ class FinalizeProcessor:
         except GitError as e:
             actions.append({"action": "merge_to_main", "status": "error", "reason": str(e)})
 
-        return ProcessorResult(state_delta=delta, actions=actions)
+        return ProcessorResult(state_delta=delta, actions=actions, side_effects=side_effects)

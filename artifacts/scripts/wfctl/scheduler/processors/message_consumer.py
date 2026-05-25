@@ -18,10 +18,10 @@ from state.model import (
     StageStatus,
     StateDelta,
 )
-from scheduler.processors.base import ProcessorResult
-from services.state_manager import append_deviation
-from state.timeline import append_timeline
-from services.validator import validate_modified_files
+from scheduler.processors.base import ProcessorResult, SideEffect
+from services.state_manager import append_deviation as _append_deviation
+from state.timeline import append_timeline as _append_timeline
+from services.validator import validate_modified_files as _validate_modified_files
 
 
 @dataclass
@@ -37,6 +37,10 @@ class ConsumeMessagesProcessor:
         messages = scan_messages(ctx.instance_id, consumed_ids)
 
         delta = StateDelta()
+        side_effects: list[SideEffect] = []
+        side_effects.append(SideEffect(
+            kind="file_read", description="Scan messages", execute=None,
+        ))
         cycle_meta = state.cycle_meta
         new_consumed: set[str] = set(consumed_ids)
 
@@ -62,16 +66,20 @@ class ConsumeMessagesProcessor:
             try:
                 wt = ctx.worktree_map.get(st.stage_id) if ctx.worktree_map else None
                 if msg.get("modified_files") and wt:
-                    validate_modified_files(wt, msg["modified_files"], st.stage_id)
+                    _validate_modified_files(wt, msg["modified_files"], st.stage_id)
+                    side_effects.append(SideEffect(
+                        kind="file_read", description=f"Validate modified files for {st.stage_id}", execute=None,
+                    ))
             except Exception as e:
                 import traceback
                 delta.stage_updates[st.stage_instance_id] = {}
-                append_timeline(ctx.instance_id, st.stage_id, "running→error", {
-                    "reason": str(e),
-                    "message_id": msg_id,
-                    "intended_status": msg.get("status"),
-                    "traceback": traceback.format_exc(),
-                })
+                side_effects.append(SideEffect(
+                    kind="file_write",
+                    description=f"Timeline running→error for {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, sid=st.stage_id, r=str(e), mid=msg_id, ist=msg.get("status"), tb=traceback.format_exc(): _append_timeline(
+                        iid, sid, "running→error", {"reason": r, "message_id": mid, "intended_status": ist, "traceback": tb},
+                    ),
+                ))
                 cycle_meta = cycle_meta.with_error(st.stage_instance_id)
                 new_consumed.add(msg_id)
                 continue
@@ -90,10 +98,13 @@ class ConsumeMessagesProcessor:
                     valid = st.valid_routing_choices
                     if valid and routing_choice not in valid:
                         cycle_meta = cycle_meta.with_error(st.stage_instance_id)
-                        append_timeline(ctx.instance_id, st.stage_id, "running→error", {
-                            "message_id": msg_id,
-                            "reason": f"非法 routing_choice: '{routing_choice}'，合法值: {valid}",
-                        })
+                        side_effects.append(SideEffect(
+                            kind="file_write",
+                            description=f"Timeline invalid routing_choice for {st.stage_id}",
+                            execute=lambda iid=ctx.instance_id, sid=st.stage_id, mid=msg_id, rc=routing_choice, v=valid: _append_timeline(
+                                iid, sid, "running→error", {"message_id": mid, "reason": f"非法 routing_choice: '{rc}'，合法值: {v}"},
+                            ),
+                        ))
                         new_consumed.add(msg_id)
                         continue
                     delta.stage_updates[st.stage_instance_id] = {
@@ -106,16 +117,26 @@ class ConsumeMessagesProcessor:
                         "exit_condition": "success",
                         "output_message_id": msg_id,
                     }
-                append_timeline(ctx.instance_id, st.stage_id, "running→done", {"message_id": msg_id})
+                side_effects.append(SideEffect(
+                    kind="file_write",
+                    description=f"Timeline running→done for {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, sid=st.stage_id, mid=msg_id: _append_timeline(
+                        iid, sid, "running→done", {"message_id": mid},
+                    ),
+                ))
                 cycle_meta = cycle_meta.with_done(st.stage_instance_id)
 
             elif msg_status == "ERROR":
                 delta.stage_updates[st.stage_instance_id] = {
                     "output_message_id": msg_id,
                 }
-                append_timeline(ctx.instance_id, st.stage_id, "running→error", {
-                    "message_id": msg_id, "reason": msg.get("report", ""),
-                })
+                side_effects.append(SideEffect(
+                    kind="file_write",
+                    description=f"Timeline running→error for {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, sid=st.stage_id, mid=msg_id, rpt=msg.get("report", ""): _append_timeline(
+                        iid, sid, "running→error", {"message_id": mid, "reason": rpt},
+                    ),
+                ))
                 cycle_meta = cycle_meta.with_error(st.stage_instance_id)
 
             elif msg_status == "AWAITING_CONFIRM":
@@ -125,12 +146,24 @@ class ConsumeMessagesProcessor:
                 if msg.get("confirm_questions"):
                     updates["confirm_questions"] = msg["confirm_questions"]
                 delta.stage_updates[st.stage_instance_id] = updates
-                append_timeline(ctx.instance_id, st.stage_id, "running→awaiting_confirm", {"message_id": msg_id})
+                side_effects.append(SideEffect(
+                    kind="file_write",
+                    description=f"Timeline running→awaiting_confirm for {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, sid=st.stage_id, mid=msg_id: _append_timeline(
+                        iid, sid, "running→awaiting_confirm", {"message_id": mid},
+                    ),
+                ))
                 cycle_meta = cycle_meta.with_awaiting_confirm(st.stage_instance_id)
 
             elif msg_status == "RUNNING":
                 delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.RUNNING}
-                append_timeline(ctx.instance_id, st.stage_id, "scheduled", {"message_id": msg_id})
+                side_effects.append(SideEffect(
+                    kind="file_write",
+                    description=f"Timeline scheduled for {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, sid=st.stage_id, mid=msg_id: _append_timeline(
+                        iid, sid, "scheduled", {"message_id": mid},
+                    ),
+                ))
 
             new_consumed.add(msg_id)
 
@@ -149,11 +182,15 @@ class ConsumeMessagesProcessor:
                 )
                 # 清除已写入的元数据
                 delta.stage_updates.pop(sid, None)
-                append_deviation(
-                    ctx.instance_id, "INVALID_AWAITING_CONFIRM",
-                    f"Stage {st.stage_id} 无 confirmed 边但上报了 AWAITING_CONFIRM，已转为 ERROR",
-                    stage_id=st.stage_id,
-                )
+                side_effects.append(SideEffect(
+                    kind="deviation_write",
+                    description=f"Invalid AWAITING_CONFIRM for {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, sid=st.stage_id: _append_deviation(
+                        iid, "INVALID_AWAITING_CONFIRM",
+                        f"Stage {sid} 无 confirmed 边但上报了 AWAITING_CONFIRM，已转为 ERROR",
+                        stage_id=sid,
+                    ),
+                ))
 
         # 更新 consumed_message_ids
         delta.instance_updates["consumed_message_ids"] = frozenset(new_consumed)
@@ -166,7 +203,7 @@ class ConsumeMessagesProcessor:
             remove_stage_instance_ids=delta.remove_stage_instance_ids,
             cycle_meta=cycle_meta,
         )
-        return ProcessorResult(state_delta=final_delta)
+        return ProcessorResult(state_delta=final_delta, side_effects=side_effects)
 
     @staticmethod
     def _find_stage(

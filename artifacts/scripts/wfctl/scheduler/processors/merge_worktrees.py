@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from infrastructure.errors import GitError
 from scheduler.context import ExecutionContext
 from state.model import InstanceState, StateDelta, StageState, StageStatus
-from scheduler.processors.base import ProcessorResult
+from scheduler.processors.base import ProcessorResult, SideEffect
 from runtime.worktree.manager import merge_stage_worktree
 
 
@@ -45,10 +45,16 @@ class MergeWorktreesProcessor:
 
         delta = StateDelta()
         actions: list[dict] = []
+        side_effects: list[SideEffect] = []
 
         for st in merge_candidates:
             try:
                 success, conflict_files = merge_stage_worktree(ctx.instance_id, st.stage_instance_id)
+                side_effects.append(SideEffect(
+                    kind="git_merge",
+                    description=f"Merge stage worktree {st.stage_instance_id}",
+                    execute=None,
+                ))
                 if not success:
                     delta.stage_updates[st.stage_instance_id] = {
                         "status": StageStatus.CONFLICT,
@@ -73,4 +79,4 @@ class MergeWorktreesProcessor:
                     "source_stage": st.stage_id,
                 })
 
-        return ProcessorResult(state_delta=delta, actions=actions)
+        return ProcessorResult(state_delta=delta, actions=actions, side_effects=side_effects)

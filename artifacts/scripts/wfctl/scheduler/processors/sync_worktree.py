@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 from scheduler.context import ExecutionContext
 from state.model import InstanceState
-from scheduler.processors.base import ProcessorResult
-from services.state_manager import append_deviation
+from scheduler.processors.base import ProcessorResult, SideEffect
+from services.state_manager import append_deviation as _append_deviation
 from runtime.worktree.manager import sync_instance_with_main, sync_instance_with_parent
 
 
@@ -20,6 +20,7 @@ class SyncWorktreeProcessor:
     """同步实例 worktree 与上游。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
+        side_effects: list[SideEffect] = []
         parent_id = state.parent_instance_id
 
         if parent_id:
@@ -27,7 +28,15 @@ class SyncWorktreeProcessor:
         else:
             result = sync_instance_with_main(ctx.instance_id)
 
-        if not result.success:
-            append_deviation(ctx.instance_id, "SYNC_SKIPPED", result.message)
+        side_effects.append(SideEffect(
+            kind="git_merge", description="Sync worktree with upstream", execute=None,
+        ))
 
-        return ProcessorResult()
+        if not result.success:
+            side_effects.append(SideEffect(
+                kind="deviation_write",
+                description="Sync skipped deviation",
+                execute=lambda iid=ctx.instance_id, msg=result.message: _append_deviation(iid, "SYNC_SKIPPED", msg),
+            ))
+
+        return ProcessorResult(side_effects=side_effects)

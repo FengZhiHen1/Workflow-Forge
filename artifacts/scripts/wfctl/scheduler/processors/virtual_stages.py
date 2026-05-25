@@ -12,8 +12,8 @@ from domain.workflow.spec import StageTargetType
 from domain.transition.policy import TransitionPolicy
 from scheduler.context import ExecutionContext
 from state.model import InstanceState, StageState, StateDelta, StageStatus
-from scheduler.processors.base import ProcessorResult
-from runtime.worktree.manager import tag_anchor
+from scheduler.processors.base import ProcessorResult, SideEffect
+from runtime.worktree.manager import tag_anchor as _tag_anchor
 
 
 @dataclass
@@ -22,7 +22,14 @@ class VirtualStagesProcessor:
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
         delta = StateDelta()
+        side_effects: list[SideEffect] = []
         policy_cache: dict[str, TransitionPolicy] = {}
+
+        def _silent_tag(iid: str, anchor: str) -> None:
+            try:
+                _tag_anchor(iid, anchor)
+            except Exception:
+                pass
 
         def _get_policy(stage_id: str) -> TransitionPolicy:
             if stage_id not in policy_cache:
@@ -47,18 +54,18 @@ class VirtualStagesProcessor:
                 policy = _get_policy(st.stage_id)
                 if _all_upstream_virtual_satisfied(upstream_edges, state, policy):
                     delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.DONE}
-                    # TODO Phase 3: move tag_anchor to AutoCommitProcessor
                     anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{st.stage_instance_id}"
-                    try:
-                        tag_anchor(ctx.instance_id, anchor)
-                    except Exception:
-                        pass
+                    side_effects.append(SideEffect(
+                        kind="git_tag",
+                        description=f"Virtual stage anchor {st.stage_instance_id}",
+                        execute=lambda iid=ctx.instance_id, a=anchor: _silent_tag(iid, a),
+                    ))
                     changed = True
 
             if changed:
                 state = state.apply_delta(delta)
 
-        return ProcessorResult(state_delta=delta)
+        return ProcessorResult(state_delta=delta, side_effects=side_effects)
 
 
 def _all_upstream_virtual_satisfied(

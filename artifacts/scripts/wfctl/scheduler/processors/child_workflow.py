@@ -23,8 +23,8 @@ from state.model import (
     StateDelta,
     InstanceStatus,
 )
-from scheduler.processors.base import ProcessorResult
-from services.state_manager import append_deviation
+from scheduler.processors.base import ProcessorResult, SideEffect
+from services.state_manager import append_deviation as _append_deviation
 
 
 @dataclass
@@ -35,18 +35,19 @@ class ChildWorkflowProcessor:
         delta = StateDelta()
         cycle_meta = state.cycle_meta
         actions: list[dict] = []
+        side_effects: list[SideEffect] = []
 
         # 1. 检查子工作流完成状态
-        self._check_child_workflows(state, ctx, delta)
+        self._check_child_workflows(state, ctx, delta, side_effects)
 
         # 2. 创建子工作流实例
-        self._spawn_child_workflows(state, ctx, delta)
+        self._spawn_child_workflows(state, ctx, delta, side_effects)
 
         # 3. 递归调度活跃子实例
-        child_results = self._recurse_child_instances(state, ctx)
+        child_results = self._recurse_child_instances(state, ctx, side_effects)
 
         # 4. 递归后二次检查
-        self._check_child_workflows(state, ctx, delta)
+        self._check_child_workflows(state, ctx, delta, side_effects)
 
         # 5. 组装 actions 和 cycle_meta
         actions.extend(child_results.get("spawn_continue", []))
@@ -72,10 +73,11 @@ class ChildWorkflowProcessor:
             remove_stage_instance_ids=delta.remove_stage_instance_ids,
             cycle_meta=cycle_meta,
         )
-        return ProcessorResult(state_delta=final_delta, actions=actions)
+        return ProcessorResult(state_delta=final_delta, actions=actions, side_effects=side_effects)
 
     def _check_child_workflows(
-        self, state: InstanceState, ctx: ExecutionContext, delta: StateDelta
+        self, state: InstanceState, ctx: ExecutionContext, delta: StateDelta,
+        side_effects: list[SideEffect],
     ) -> None:
         """检查 RUNNING WORKFLOW stage 的子实例状态。"""
         for st in state.stages:
@@ -85,6 +87,9 @@ class ChildWorkflowProcessor:
                 continue
             try:
                 child_state = load_instance_state(st.child_instance_id)
+                side_effects.append(SideEffect(
+                    kind="file_read", description=f"Load child state {st.child_instance_id}", execute=None,
+                ))
             except Exception:
                 continue
 
@@ -97,7 +102,8 @@ class ChildWorkflowProcessor:
                 delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.ERROR}
 
     def _spawn_child_workflows(
-        self, state: InstanceState, ctx: ExecutionContext, delta: StateDelta
+        self, state: InstanceState, ctx: ExecutionContext, delta: StateDelta,
+        side_effects: list[SideEffect],
     ) -> None:
         """为 PENDING WORKFLOW stage 创建子实例。"""
         from runtime.worktree.git import git_rev_parse
@@ -108,6 +114,9 @@ class ChildWorkflowProcessor:
         inst_wt = root / ".tmp" / "worktrees" / f"instance-{ctx.instance_id}"
 
         rc, head_ref, _ = git_rev_parse(inst_wt, "HEAD")
+        side_effects.append(SideEffect(
+            kind="git_read", description="Git rev-parse for child base ref", execute=None,
+        ))
         base_ref = head_ref.strip() if rc == 0 else "HEAD"
 
         for st in state.stages:
@@ -140,6 +149,12 @@ class ChildWorkflowProcessor:
                 parent_instance_id=ctx.instance_id,
                 worktree_base_ref=base_ref,
             )
+            side_effects.append(SideEffect(
+                kind="worktree_create", description=f"Create child instance {child_state.instance_id}", execute=None,
+            ))
+            side_effects.append(SideEffect(
+                kind="json_write", description=f"Save child instance {child_state.instance_id}", execute=None,
+            ))
 
             delta.stage_updates[st.stage_instance_id] = {
                 "child_instance_id": child_state.instance_id,
@@ -148,7 +163,7 @@ class ChildWorkflowProcessor:
             }
 
     def _recurse_child_instances(
-        self, state: InstanceState, ctx: ExecutionContext
+        self, state: InstanceState, ctx: ExecutionContext, side_effects: list[SideEffect],
     ) -> dict[str, list[dict]]:
         """递归调度所有活跃子工作流实例。"""
         from scheduler.orchestrator import SchedulerOrchestrator
@@ -174,6 +189,9 @@ class ChildWorkflowProcessor:
 
             try:
                 child_state = load_instance_state(child_id)
+                side_effects.append(SideEffect(
+                    kind="file_read", description=f"Load child state {child_id} for recurse", execute=None,
+                ))
             except Exception:
                 continue
 
@@ -183,11 +201,15 @@ class ChildWorkflowProcessor:
             child_lock_path = root / ".agent" / "instances" / child_id / "instance.json"
             child_lock = FileLock(child_lock_path)
             if not child_lock.acquire(timeout=10.0):
-                append_deviation(
-                    ctx.instance_id, "CHILD_LOCK_FAILED",
-                    f"Could not acquire lock for child instance {child_id}",
-                    stage_id=st.stage_id,
-                )
+                side_effects.append(SideEffect(
+                    kind="deviation_write",
+                    description=f"Child lock failed for {child_id}",
+                    execute=lambda iid=ctx.instance_id, cid=child_id, sid=st.stage_id: _append_deviation(
+                        iid, "CHILD_LOCK_FAILED",
+                        f"Could not acquire lock for child instance {cid}",
+                        stage_id=sid,
+                    ),
+                ))
                 continue
 
             try:
@@ -211,7 +233,13 @@ class ChildWorkflowProcessor:
                 )
 
                 orchestrator = SchedulerOrchestrator()
+                side_effects.append(SideEffect(
+                    kind="file_read", description=f"Acquire lock for child {child_id}", execute=None,
+                ))
                 child_result = orchestrator.run(child_ctx, child_state)
+                side_effects.append(SideEffect(
+                    kind="git_merge", description=f"Recursive orchestration for child {child_id}", execute=None,
+                ))
 
                 if child_result.get("status") != "ok":
                     continue

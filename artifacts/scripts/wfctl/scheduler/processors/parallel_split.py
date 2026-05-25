@@ -13,8 +13,8 @@ from infrastructure.project import find_root
 from infrastructure.timestamp import iso_timestamp
 from scheduler.context import ExecutionContext
 from state.model import InstanceState, StageState, StateDelta, StageStatus
-from scheduler.processors.base import ProcessorResult
-from services.state_manager import append_deviation
+from scheduler.processors.base import ProcessorResult, SideEffect
+from services.state_manager import append_deviation as _append_deviation
 
 
 @dataclass
@@ -27,6 +27,10 @@ class ParallelSplitProcessor:
         agent_mgr = RunningAgentManager(ctx.root)
         running_agents = agent_mgr.load()
         actions: list[dict] = []
+        side_effects: list[SideEffect] = []
+        side_effects.append(SideEffect(
+            kind="file_read", description="Load running_agents.json", execute=None,
+        ))
         delta = StateDelta()
 
         for stage_spec in ctx.spec.stages:
@@ -56,7 +60,7 @@ class ParallelSplitProcessor:
             if not msg_id:
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
                     state, stage_spec, ctx.instance_id, source_stage_id, running_agents,
-                    "上游 stage 已完成但未产出 output_message_id",
+                    "上游 stage 已完成但未产出 output_message_id", side_effects,
                 )
                 actions.extend(reinforce_actions)
                 delta = delta.merge(reinforce_delta)
@@ -66,18 +70,21 @@ class ParallelSplitProcessor:
             if not msg_path.exists():
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
                     state, stage_spec, ctx.instance_id, source_stage_id, running_agents,
-                    f"上游 stage 的消息文件 {msg_id}.json 不存在",
+                    f"上游 stage 的消息文件 {msg_id}.json 不存在", side_effects,
                 )
                 actions.extend(reinforce_actions)
                 delta = delta.merge(reinforce_delta)
                 continue
 
+            side_effects.append(SideEffect(
+                kind="file_read", description=f"Read message {msg_id}", execute=None,
+            ))
             try:
                 msg = json.loads(msg_path.read_text(encoding="utf-8"))
             except Exception:
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
                     state, stage_spec, ctx.instance_id, source_stage_id, running_agents,
-                    f"上游 stage 的消息文件 {msg_id}.json 解析失败",
+                    f"上游 stage 的消息文件 {msg_id}.json 解析失败", side_effects,
                 )
                 actions.extend(reinforce_actions)
                 delta = delta.merge(reinforce_delta)
@@ -89,7 +96,7 @@ class ParallelSplitProcessor:
                     f"（SubAgent 上报时未传 --parallel-targets）"
                 )
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
-                    state, stage_spec, ctx.instance_id, source_stage_id, running_agents, reason,
+                    state, stage_spec, ctx.instance_id, source_stage_id, running_agents, reason, side_effects,
                 )
                 actions.extend(reinforce_actions)
                 delta = delta.merge(reinforce_delta)
@@ -126,11 +133,11 @@ class ParallelSplitProcessor:
             ))
             delta = delta.merge(StateDelta(append_stages=new_stages))
 
-        return ProcessorResult(state_delta=delta, actions=actions)
+        return ProcessorResult(state_delta=delta, actions=actions, side_effects=side_effects)
 
     def _handle_missing_targets(
         self, state: InstanceState, stage_spec, instance_id: str, source_stage_id: str,
-        running_agents: list[dict], reason: str
+        running_agents: list[dict], reason: str, side_effects: list[SideEffect],
     ) -> tuple[list[dict], StateDelta]:
         max_retry = 2
         retry_count = self._get_parallel_retry(state, stage_spec.stage_id)
@@ -143,13 +150,15 @@ class ParallelSplitProcessor:
 
         if source_agent and retry_count < max_retry:
             new_count = retry_count + 1
-            append_deviation(
-                instance_id,
-                "PARALLEL_TARGETS_REINFORCE",
-                f"stage {stage_spec.stage_id}: 上游 {source_stage_id} 未产出 parallel_targets，"
-                f"第 {new_count}/{max_retry} 次强化重试",
-                stage_id=stage_spec.stage_id,
-            )
+            side_effects.append(SideEffect(
+                kind="deviation_write",
+                description=f"Parallel targets reinforce {stage_spec.stage_id} #{new_count}",
+                execute=lambda iid=instance_id, sid=stage_spec.stage_id, nc=new_count, mr=max_retry, src=source_stage_id: _append_deviation(
+                    iid, "PARALLEL_TARGETS_REINFORCE",
+                    f"stage {sid}: 上游 {src} 未产出 parallel_targets，第 {nc}/{mr} 次强化重试",
+                    stage_id=sid,
+                ),
+            ))
             # 递增 retry count
             for s in state.stages:
                 if s.stage_id == stage_spec.stage_id and s.status == StageStatus.PENDING and not s.fan_out_target:

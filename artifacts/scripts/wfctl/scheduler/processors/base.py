@@ -12,8 +12,8 @@ from state.model import InstanceState
 # ── 副作用类型 ──
 
 SideEffectKind = Literal[
-    "file_write", "file_delete",
-    "git_commit", "git_tag", "git_merge",
+    "file_read", "file_write", "file_delete",
+    "git_read", "git_commit", "git_tag", "git_merge",
     "json_write", "deviation_write", "worktree_create",
 ]
 
