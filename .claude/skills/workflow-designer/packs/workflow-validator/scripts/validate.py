@@ -46,6 +46,12 @@ try:
 except ImportError:
     yaml = None
 
+try:
+    from dag_topology import build_adjacency, analyze_topology, _is_ancestor
+    _HAS_DAG_TOPOLOGY = True
+except ImportError:
+    _HAS_DAG_TOPOLOGY = False
+
 
 VALID_CONDITIONS = {"always", "success", "failure", "loop_exceeded"}
 VALID_MODELS = {"light", "standard", "heavy"}
@@ -486,6 +492,198 @@ def validate_virtual_stage_edges(stage_ids: dict, edges: list, errors: list) -> 
             _err(f"edges[{i}] 虚拟起始 stage 's00-workflow-start' 不应有入边", errors)
 
 
+def validate_cycles(adj, topo, errors: list) -> None:
+    """检测自环无 max_loop 和多节点环（基于 Tarjan SCC 结果）。"""
+    for cycle in topo.cycles:
+        if len(cycle) == 1:
+            node = cycle[0]
+            for edge in adj.outgoing.get(node, []):
+                if edge.get("to") == node:
+                    ml = edge.get("max_loop")
+                    if ml is None or ml <= 0:
+                        cond = edge.get("condition", "?")
+                        errors.append(
+                            f"UNBOUNDED_LOOP: Stage '{node}' 的自环 {cond} 边缺少 max_loop 限制"
+                        )
+        else:
+            names = " → ".join(cycle)
+            has_max = any(
+                e.get("max_loop") and e.get("max_loop") > 0
+                for n in cycle
+                for e in adj.outgoing.get(n, [])
+                if e.get("to") in cycle
+            )
+            if not has_max:
+                errors.append(
+                    f"MULTI_NODE_CYCLE: 多节点环 [{names}] 中无任何边设置 max_loop 限制"
+                )
+
+
+def validate_back_edge_max_loop(topo, errors: list) -> None:
+    """检测回边是否误设了 max_loop。"""
+    for edge in topo.back_edges:
+        ml = edge.get("max_loop")
+        if ml is not None and ml > 0:
+            fr = edge.get("from")
+            to = edge.get("to")
+            errors.append(
+                f"BACK_EDGE_MAX_LOOP (WARNING): 回边 '{fr}'→'{to}' 设置了 max_loop={ml}，"
+                f"回边的循环控制应在目标 stage 的自环边上设置"
+            )
+
+
+def validate_ambiguous_routing(edges: list, errors: list) -> None:
+    """检测 SUCCESS 边的 choice 歧义路由（部分有、部分无 choice）。"""
+    from collections import defaultdict
+    success_edges: dict[str, list[dict]] = defaultdict(list)
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        if edge.get("condition") == "success":
+            fr = edge.get("from")
+            if fr:
+                success_edges[fr].append(edge)
+
+    for fr, edge_list in success_edges.items():
+        if len(edge_list) <= 1:
+            continue
+        with_choice = [e for e in edge_list if e.get("choice")]
+        without_choice = [e for e in edge_list if not e.get("choice")]
+        if with_choice and without_choice:
+            errors.append(
+                f"AMBIGUOUS_ROUTING: Stage '{fr}' 的 success 边中部分有 choice、部分无 choice，"
+                f"匹配存在歧义"
+            )
+
+
+def validate_terminal_leak(stages: list, edges: list, errors: list) -> None:
+    """检测终态 virtual stage 是否有非 ALWAYS 出边。"""
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        sid = stage.get("stage_id", "")
+        name = stage.get("name", "")
+        is_terminal = (
+            sid == "s99-workflow-end"
+            or "workflow-end" in sid
+            or "终结" in name
+            or "终止" in name
+        )
+        if not is_terminal:
+            continue
+        # virtual stage: 无 skill_id 且无 workflow
+        if stage.get("skill_id") or stage.get("workflow"):
+            continue
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            if edge.get("from") == sid and edge.get("condition") != "always":
+                cond = edge.get("condition", "?")
+                errors.append(
+                    f"TERMINAL_LEAK: 终态 stage '{sid}' 有非 ALWAYS 出边: {cond}"
+                )
+
+
+def validate_dead_failure_edge(stages: list, edges: list, errors: list) -> None:
+    """检测 failure_edge 但 retry=0（死 failure_edge）。"""
+    out_conditions: dict[str, set[str]] = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        fr = edge.get("from")
+        cond = edge.get("condition")
+        if fr and cond:
+            out_conditions.setdefault(fr, set()).add(cond)
+
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        sid = stage.get("stage_id")
+        retry = stage.get("retry", 0)
+        if not isinstance(retry, int) or retry > 0:
+            continue
+        if sid and "failure" in out_conditions.get(sid, set()):
+            errors.append(
+                f"DEAD_FAILURE_EDGE (WARNING): Stage '{sid}' 有 failure_edge 但 retry={retry}，"
+                f"error 后直接终止，failure_edge 永远不会触发"
+            )
+
+
+def validate_orphan_loop_exceeded(edges: list, errors: list) -> None:
+    """检测 loop_exceeded_edge 但无 failure_edge（锚定缺失）。"""
+    out_conditions: dict[str, set[str]] = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        fr = edge.get("from")
+        cond = edge.get("condition")
+        if fr and cond:
+            out_conditions.setdefault(fr, set()).add(cond)
+
+    for fr, conds in out_conditions.items():
+        if "loop_exceeded" in conds and "failure" not in conds:
+            errors.append(
+                f"ORPHAN_LOOP_EXCEEDED (WARNING): Stage '{fr}' 有 loop_exceeded_edge 但无 "
+                f"failure_edge，loop_exceeded 锚定缺失"
+            )
+
+
+def validate_cascade_reset(edges: list, stage_ids: dict, adj, errors: list) -> None:
+    """检测 cascade_reset_until 指向不存在的 stage 或非祖先。"""
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        target = edge.get("cascade_reset_until")
+        if not target:
+            continue
+        fr = edge.get("from")
+        to = edge.get("to")
+        if target not in stage_ids:
+            errors.append(
+                f"INVALID_CASCADE_TARGET: 边 '{fr}'→'{to}' 的 cascade_reset_until='{target}' "
+                f"指向不存在的 stage"
+            )
+        elif not _is_ancestor(adj, target, fr):
+            errors.append(
+                f"INVALID_CASCADE_TARGET: 边 '{fr}'→'{to}' 的 cascade_reset_until='{target}' "
+                f"不是 '{fr}' 的祖先节点"
+            )
+
+
+def validate_parallel_fanin(stages: list, edges: list, errors: list) -> None:
+    """检测 parallel stage 的 fan-in 一致性。"""
+    parallel_stages = set()
+    for stage in stages:
+        if isinstance(stage, dict) and stage.get("parallel"):
+            parallel_stages.add(stage.get("stage_id"))
+
+    if not parallel_stages:
+        return
+
+    incoming: dict[str, list[dict]] = {}
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        to = edge.get("to")
+        if to in parallel_stages:
+            incoming.setdefault(to, []).append(edge)
+
+    for sid in parallel_stages:
+        edges_in = incoming.get(sid, [])
+        if not edges_in:
+            errors.append(
+                f"PARALLEL_FANIN: Parallel stage '{sid}' 没有入边"
+            )
+        for edge in edges_in:
+            if edge.get("condition") != "always":
+                fr = edge.get("from")
+                cond = edge.get("condition", "?")
+                errors.append(
+                    f"PARALLEL_FANIN (WARNING): Parallel stage '{sid}' 的入边 '{fr}' "
+                    f"条件为 {cond}，建议使用 ALWAYS"
+                )
+
+
 def validate_s99_reachability(stage_ids: dict, edges: list, errors: list) -> None:
     """校验每个非虚拟 stage 是否存在到达 s99 的路径。
 
@@ -797,16 +995,37 @@ def validate_workflow_yaml(path: Path, skills_dir: Path | None = None,
     result = validate_stages(stages, errors)
     stage_ids = result["stage_ids"]
     skill_ids = result["skill_ids"]
+
+    # DAG 拓扑分析（用于新增的深度检查）
+    adj = None
+    topo = None
+    if _HAS_DAG_TOPOLOGY:
+        try:
+            adj = build_adjacency(data)
+            topo = analyze_topology(adj)
+        except Exception as e:
+            errors.append(f"DAG 拓扑分析失败: {e}")
+
     validate_edges(edges, stage_ids, result, errors)
     validate_confirmation_points(stages, stage_ids, edges, errors)
     validate_choice_uniqueness(stage_ids, edges, errors)
+    validate_ambiguous_routing(edges, errors)
     validate_loop_exceeded(stages, stage_ids, edges, errors)
+    validate_orphan_loop_exceeded(edges, errors)
     validate_retry_failure_exit(stages, stage_ids, edges, errors)
+    validate_dead_failure_edge(stages, edges, errors)
     validate_workflow_failure_edge(stages, stage_ids, edges, errors)
+    if adj is not None:
+        validate_cascade_reset(edges, stage_ids, adj, errors)
     validate_graph_structure(data, stage_ids, edges, errors)
+    if topo is not None:
+        validate_cycles(adj, topo, errors)
+        validate_back_edge_max_loop(topo, errors)
     validate_s99_reachability(stage_ids, edges, errors)
     validate_rejected_returnability(stage_ids, edges, errors)
     validate_virtual_stage_edges(stage_ids, edges, errors)
+    validate_terminal_leak(stages, edges, errors)
+    validate_parallel_fanin(stages, edges, errors)
     validate_parallel_source(parallel_sources=result["parallel_sources"],
                              stage_ids=stage_ids, errors=errors)
     validate_sub_workflow_depth(workflow_refs=result["workflow_refs"],
