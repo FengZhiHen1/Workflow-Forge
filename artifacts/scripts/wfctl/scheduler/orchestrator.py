@@ -45,8 +45,8 @@ class SchedulerOrchestrator:
         AutoCommitProcessor,          # 04 - 读 cycle_meta.newly_done
         MergeWorktreesProcessor,      # 05 - 读 cycle_meta.newly_done
         VirtualStagesProcessor,       # 06 - 虚拟 stage 无 worktree，不需 AutoCommit/Merge，放其后执行
-        ChildWorkflowProcessor,       # 07 - 递归调度
-        ParallelSplitProcessor,       # 08 - parallel 拆分
+        ParallelSplitProcessor,       # 07 - parallel 拆分（必须在 ChildWorkflow 之前，确保拆分后的 stage 都能创建子实例）
+        ChildWorkflowProcessor,       # 08 - 递归调度
         ErrorRecoveryProcessor,       # 09 - 基于 TransitionPolicy
         ConflictHandlerProcessor,     # 10 - 冲突自愈
         ReadyComputeProcessor,        # 11 - 就绪计算

@@ -94,8 +94,12 @@ class AutoCommitProcessor:
         self, ctx: ExecutionContext, state: InstanceState, side_effects: list[SideEffect],
     ) -> None:
         root = find_root()
+        newly_done = set(state.cycle_meta.newly_done_stage_instance_ids)
         for st in state.stages:
             if st.status != StageStatus.DONE:
+                continue
+            # 跳过 _auto_commit_done_stages 已处理的 stage，避免锚点重复创建
+            if st.stage_instance_id in newly_done:
                 continue
             stage_id = st.stage_id
             stage_inst = st.stage_instance_id

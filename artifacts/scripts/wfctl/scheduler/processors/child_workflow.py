@@ -43,8 +43,9 @@ class ChildWorkflowProcessor:
         # 2. 创建子工作流实例
         self._spawn_child_workflows(state, ctx, delta, side_effects)
 
-        # 3. 递归调度活跃子实例
-        child_results = self._recurse_child_instances(state, ctx, side_effects)
+        # 3. 递归调度活跃子实例（需合并 delta，确保刚创建的子实例也能被调度）
+        merged_state = state.apply_delta(delta)
+        child_results = self._recurse_child_instances(merged_state, ctx, side_effects)
 
         # 4. 递归后二次检查
         self._check_child_workflows(state, ctx, delta, side_effects)
