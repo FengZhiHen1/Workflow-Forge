@@ -1,17 +1,21 @@
-"""根据 schema_version 自动选择适配器。"""
+"""WORKFLOW.yaml 适配器注册表。
+
+按 schema_version 选择适配器，返回标准 WorkflowSpec。
+后续版本只需在此注册新适配器。
+"""
 
 from pathlib import Path
-from typing import Any
 
 import yaml
 
 from infrastructure.errors import SchemaError
 from domain.workflow.spec import WorkflowSpec
-from domain.workflow.v3 import V3Adapter
+from compat.protocol import WorkflowAdapter
+from compat.workflow.v3 import V3WorkflowAdapter
 
 
-_ADAPTERS: dict[str, Any] = {
-    "3.0.0": V3Adapter(),
+_ADAPTERS: dict[str, WorkflowAdapter] = {
+    "3.0.0": V3WorkflowAdapter(),
 }
 
 
@@ -36,7 +40,7 @@ def load_workflow(yaml_path: Path) -> WorkflowSpec:
     return adapter.parse(raw)
 
 
-def _get_adapter(version: str) -> Any:
+def _get_adapter(version: str) -> WorkflowAdapter:
     adapter = _ADAPTERS.get(version)
     if adapter is None:
         raise SchemaError(f"Unsupported schema_version: {version}", code="SCHEMA_VERSION_UNSUPPORTED")

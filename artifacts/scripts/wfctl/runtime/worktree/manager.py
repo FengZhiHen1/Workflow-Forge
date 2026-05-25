@@ -266,7 +266,7 @@ def restore_instance(instance_id: str) -> dict:
         git_worktree_add(root, inst_wt, branch_name)
 
     # 3. 重建 anchor tag
-    from domain.workflow.parser import load_workflow
+    from compat.workflow.registry import load_workflow
     from services.resolver import find_workflow_dir
     wf_dir = find_workflow_dir(data.get("workflow_id", ""), data.get("version", ""))
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")

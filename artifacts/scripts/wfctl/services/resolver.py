@@ -5,7 +5,7 @@ from pathlib import Path
 from infrastructure.errors import InputError
 from infrastructure.project import find_root
 from domain.workflow.spec import WorkflowSpec
-from domain.workflow.parser import load_workflow
+from compat.workflow.registry import load_workflow
 
 
 def find_workflow_dir(workflow_id: str, version: str | None = None) -> Path:

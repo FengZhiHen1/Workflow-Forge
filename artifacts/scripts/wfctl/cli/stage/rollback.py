@@ -6,9 +6,9 @@
 from domain.dag.graph import build_adjacency
 from infrastructure.errors import InputError
 from infrastructure.project import find_root
-from domain.workflow.parser import load_workflow
+from compat.workflow.registry import load_workflow
 from domain.transition.policy import TransitionPolicy
-from state.persistence import load_instance_state, save_instance_state
+from compat.instance.registry import load_instance_state, save_instance_state
 from services.state_manager import _append_timeline
 from runtime.worktree.manager import checkout_to_anchor, remove_anchor
 

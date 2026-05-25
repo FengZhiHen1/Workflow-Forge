@@ -1,19 +1,15 @@
-"""测试 state.persistence — 数据兼容层。"""
+"""测试 compat.instance — 数据兼容层。"""
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
+from compat import DataVersion
+from compat.instance.v2 import V2InstanceAdapter
+from compat.instance.registry import load_instance_state, save_instance_state
 from infrastructure.errors import InputError, StateError
 from state.model import InstanceState, StageState, CycleMeta
-from state.persistence import (
-    DataVersion,
-    InstanceDataAdapter,
-    load_instance_state,
-    save_instance_state,
-)
 
 
 class TestDataVersion:
@@ -22,76 +18,26 @@ class TestDataVersion:
         assert DataVersion.V3.value == "3.0.0"
 
 
-class TestInstanceDataAdapter:
-    def test_from_file_v3(self, tmp_path: Path):
-        path = tmp_path / "instance.json"
-        path.write_text(json.dumps({
-            "schema_version": "3.0.0",
-            "instance_id": "test",
-            "status": "ACTIVE",
-            "stages": [],
-        }), encoding="utf-8")
-        adapter = InstanceDataAdapter.from_file(path)
-        assert adapter.declared_version == DataVersion.V3
-
-    def test_from_file_v2_no_schema_version(self, tmp_path: Path):
-        path = tmp_path / "instance.json"
-        path.write_text(json.dumps({
-            "instance_id": "test",
-            "status": "active",
-            "stages": [],
-        }), encoding="utf-8")
-        adapter = InstanceDataAdapter.from_file(path)
-        assert adapter.declared_version == DataVersion.V2
-
-    def test_from_file_v2_old_schema_version(self, tmp_path: Path):
-        path = tmp_path / "instance.json"
-        path.write_text(json.dumps({
-            "schema_version": "2.0.0",
-            "instance_id": "test",
-            "stages": [],
-        }), encoding="utf-8")
-        adapter = InstanceDataAdapter.from_file(path)
-        assert adapter.declared_version == DataVersion.V2
-
-    def test_from_file_corrupt_json(self, tmp_path: Path):
-        path = tmp_path / "instance.json"
-        path.write_text("{not valid json", encoding="utf-8")
-        with pytest.raises(StateError, match="Corrupted instance file"):
-            InstanceDataAdapter.from_file(path)
-
-    def test_to_standard_v3_passthrough(self):
-        adapter = InstanceDataAdapter(
-            raw={"schema_version": "3.0.0", "instance_id": "test"},
-            declared_version=DataVersion.V3,
+class TestV2InstanceAdapter:
+    def test_to_standard_adds_fields(self):
+        adapter = V2InstanceAdapter()
+        result = adapter.to_standard(
+            {"instance_id": "test", "stages": [{"stage_id": "s01"}]}
         )
-        result = adapter.to_standard()
-        assert result["schema_version"] == "3.0.0"
-        assert result["instance_id"] == "test"
-
-    def test_migrate_v2_to_v3_adds_fields(self):
-        adapter = InstanceDataAdapter(
-            raw={"instance_id": "test", "stages": [{"stage_id": "s01"}]},
-            declared_version=DataVersion.V2,
-        )
-        result = adapter.to_standard()
         assert result["schema_version"] == "3.0.0"
         assert result["parent_instance_id"] is None
         assert result["merge_confirmed"] is False
         assert result["consumed_message_ids"] == []
         assert result["stages"][0]["stage_instance_id"] == "s01"
 
-    def test_migrate_v2_preserves_existing_fields(self):
-        adapter = InstanceDataAdapter(
-            raw={
-                "instance_id": "test",
-                "parent_instance_id": "parent-123",
-                "merge_confirmed": True,
-                "stages": [{"stage_id": "s01", "stage_instance_id": "s01_0"}],
-            },
-            declared_version=DataVersion.V2,
-        )
-        result = adapter.to_standard()
+    def test_to_standard_preserves_existing_fields(self):
+        adapter = V2InstanceAdapter()
+        result = adapter.to_standard({
+            "instance_id": "test",
+            "parent_instance_id": "parent-123",
+            "merge_confirmed": True,
+            "stages": [{"stage_id": "s01", "stage_instance_id": "s01_0"}],
+        })
         assert result["parent_instance_id"] == "parent-123"
         assert result["merge_confirmed"] is True
         assert result["stages"][0]["stage_instance_id"] == "s01_0"
@@ -99,10 +45,8 @@ class TestInstanceDataAdapter:
 
 class TestLoadSaveRoundTrip:
     def _setup_project(self, tmp_path: Path):
-        """设置模拟项目根目录结构。"""
         (tmp_path / ".agent" / "instances").mkdir(parents=True, exist_ok=True)
         (tmp_path / ".agent" / "workflows" / "instances").mkdir(parents=True, exist_ok=True)
-        # project root marker
         (tmp_path / ".git").mkdir(exist_ok=True)
 
     def test_save_and_load_v3(self, tmp_path: Path, monkeypatch):
@@ -164,15 +108,11 @@ class TestLoadSaveRoundTrip:
         assert len(inst.stages) == 1
         assert inst.stages[0].stage_instance_id == "s01"
 
-        # v3 目录已创建
         v3_path = tmp_path / ".agent" / "instances" / "old-instance" / "instance.json"
         assert v3_path.exists()
-
-        # v2 文件已删除
         assert not v2_path.exists()
 
     def test_v2_migration_stage_instance_id_filled(self, tmp_path: Path, monkeypatch):
-        """v2 stage 缺少 stage_instance_id → 迁移时用 stage_id 填充。"""
         self._setup_project(tmp_path)
         monkeypatch.chdir(tmp_path)
 
@@ -191,7 +131,6 @@ class TestLoadSaveRoundTrip:
         assert inst.stages[1].stage_instance_id == "s02_custom"
 
     def test_cycle_meta_not_persisted(self, tmp_path: Path, monkeypatch):
-        """cycle_meta 不持久化到 instance.json。"""
         self._setup_project(tmp_path)
         monkeypatch.chdir(tmp_path)
 

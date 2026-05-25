@@ -4,7 +4,7 @@ from pathlib import Path
 
 from domain.dag.graph import build_adjacency
 from infrastructure.project import find_root
-from domain.workflow.parser import load_workflow
+from compat.workflow.registry import load_workflow
 
 
 def build_project_status() -> dict:

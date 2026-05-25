@@ -10,8 +10,8 @@ from pathlib import Path
 from domain.dag.graph import build_adjacency
 from infrastructure.lock import FileLock
 from infrastructure.project import find_root
-from domain.workflow.parser import load_workflow
-from state.persistence import load_instance_state, save_instance_state
+from compat.workflow.registry import load_workflow
+from compat.instance.registry import load_instance_state, save_instance_state
 from scheduler.context import ExecutionContext
 from state.model import InstanceState, InstanceStatus
 from runtime.worktree.manager import sync_instance_with_main, sync_instance_with_parent

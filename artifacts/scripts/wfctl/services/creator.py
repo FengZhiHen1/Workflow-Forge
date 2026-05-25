@@ -5,15 +5,16 @@ import shutil
 import time
 from pathlib import Path
 
+from compat import CURRENT
 from domain.dag.graph import collect_ancestors
 from infrastructure.errors import InputError
 from runtime.worktree.git import git_rev_parse
 from infrastructure.project import find_root
 from domain.workflow.spec import StageStatus, StageTargetType
-from domain.workflow.parser import load_workflow
+from compat.workflow.registry import load_workflow
 from services.resolver import find_workflow_dir
 from state.model import InstanceState, StageState
-from state.persistence import save_instance_state
+from compat.instance.registry import save_instance_state
 from runtime.worktree.manager import (
     create_instance_worktree,
     tag_anchor,
@@ -175,7 +176,7 @@ def create_instance(
                     fast_forwarded.append(s.stage_id)
 
         instance_state = InstanceState(
-            schema_version="3.0.0",
+            schema_version=CURRENT.value,
             instance_id=instance_id,
             workflow_id=spec.workflow_id,
             version=spec.version,
@@ -355,7 +356,7 @@ def _create_from_clone(
                         consumed_message_ids.append(msg_id)
 
         instance_state = InstanceState(
-            schema_version="3.0.0",
+            schema_version=CURRENT.value,
             instance_id=instance_id,
             workflow_id=spec.workflow_id,
             version=spec.version,

@@ -13,7 +13,7 @@ from infrastructure.lock import FileLock
 from infrastructure.project import find_root
 from domain.workflow.spec import StageTargetType
 from infrastructure.timestamp import iso_timestamp
-from state.persistence import load_instance_state
+from compat.instance.registry import load_instance_state
 from scheduler.context import ExecutionContext
 from state.model import (
     CycleMeta,
@@ -192,7 +192,7 @@ class ChildWorkflowProcessor:
 
             try:
                 from domain.dag.graph import build_adjacency
-                from domain.workflow.parser import load_workflow
+                from compat.workflow.registry import load_workflow
                 from services.resolver import find_workflow_dir
 
                 child_wf_dir = find_workflow_dir(

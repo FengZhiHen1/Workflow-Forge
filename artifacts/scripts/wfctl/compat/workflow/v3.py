@@ -13,7 +13,7 @@ from domain.workflow.spec import (
 )
 
 
-class V3Adapter:
+class V3WorkflowAdapter:
     """schema_version "3.0.0" 适配器"""
 
     def parse(self, raw: dict[str, Any]) -> WorkflowSpec:

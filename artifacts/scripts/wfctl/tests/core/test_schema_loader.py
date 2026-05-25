@@ -3,8 +3,8 @@
 import pytest
 
 from infrastructure.errors import SchemaError
-from domain.workflow.parser import _get_adapter, load_workflow
-from domain.workflow.parser import V3Adapter
+from compat.workflow.registry import _get_adapter, load_workflow
+from compat.workflow.v3 import V3WorkflowAdapter
 
 
 SAMPLE_YAML = """
@@ -69,7 +69,7 @@ def test_unsupported_schema_version(tmp_path):
 
 def test_get_adapter_v3():
     adapter = _get_adapter("3.0.0")
-    assert isinstance(adapter, V3Adapter)
+    assert isinstance(adapter, V3WorkflowAdapter)
 
 
 def test_get_adapter_unknown():

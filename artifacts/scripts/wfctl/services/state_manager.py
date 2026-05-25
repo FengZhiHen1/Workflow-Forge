@@ -11,14 +11,14 @@ from infrastructure.project import find_root
 
 def load_instance(instance_id: str) -> dict:
     """[DEPRECATED] 读取 instance.json。使用 state.persistence.load_instance_state() 替代。"""
-    from state.persistence import load_instance_state
+    from compat.instance.registry import load_instance_state
     state = load_instance_state(instance_id)
     return state.to_dict()
 
 
 def save_instance(instance_id: str, data: dict) -> None:
     """[DEPRECATED] 原子写入 instance.json。使用 state.persistence.save_instance_state() 替代。"""
-    from state.persistence import save_instance_state
+    from compat.instance.registry import save_instance_state
     from state.model import InstanceState
     state = InstanceState.from_dict(data)
     save_instance_state(instance_id, state)

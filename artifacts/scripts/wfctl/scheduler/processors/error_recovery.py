@@ -9,6 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
+from compat import CURRENT
 from infrastructure.io import atomic_write_json
 from infrastructure.project import find_root
 from infrastructure.timestamp import iso_timestamp, parse_iso_timestamp
@@ -144,7 +145,7 @@ class ErrorRecoveryProcessor:
                 messages_dir.mkdir(parents=True, exist_ok=True)
                 msg_id = f"msg-{uuid.uuid4().hex[:8]}"
                 msg = {
-                    "schema_version": "3.0.0",
+                    "schema_version": CURRENT.value,
                     "message_id": msg_id,
                     "instance_id": ctx.instance_id,
                     "stage_id": st.stage_id,

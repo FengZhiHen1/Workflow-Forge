@@ -6,7 +6,7 @@
 from infrastructure.errors import InputError
 from runtime.worktree.git import _git, git_add_all, git_commit, git_rev_parse, git_status_porcelain
 from infrastructure.project import find_root
-from state.persistence import load_instance_state, save_instance_state
+from compat.instance.registry import load_instance_state, save_instance_state
 from state.model import InstanceStatus, StateDelta
 from services.state_manager import append_deviation
 from runtime.worktree.manager import (
@@ -61,7 +61,7 @@ def _handle_terminate(args) -> dict:
 
     # 1. 清理 anchor tags
     from services.resolver import find_workflow_dir
-    from domain.workflow.parser import load_workflow
+    from compat.workflow.registry import load_workflow
     version = state.version
     wf_dir = find_workflow_dir(state.workflow_id, version if version else None)
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")

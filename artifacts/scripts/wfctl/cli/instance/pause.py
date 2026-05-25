@@ -5,7 +5,7 @@
 
 from infrastructure.errors import StateError
 from domain.transition.policy import TransitionPolicy
-from state.persistence import load_instance_state, save_instance_state
+from compat.instance.registry import load_instance_state, save_instance_state
 from services.state_manager import _append_timeline, append_deviation
 
 

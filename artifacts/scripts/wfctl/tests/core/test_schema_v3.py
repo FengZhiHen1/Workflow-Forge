@@ -4,7 +4,7 @@ import pytest
 
 from infrastructure.errors import SchemaError
 from domain.workflow.spec import EdgeCondition, StageTargetType
-from domain.workflow.parser import V3Adapter
+from compat.workflow.v3 import V3WorkflowAdapter
 
 
 SAMPLE_YAML_DICT = {
@@ -44,7 +44,7 @@ SAMPLE_YAML_DICT = {
 
 
 def test_parse_basic():
-    adapter = V3Adapter()
+    adapter = V3WorkflowAdapter()
     spec = adapter.parse(SAMPLE_YAML_DICT)
     assert spec.workflow_id == "test-flow"
     assert spec.version == "1.0.0"
@@ -54,7 +54,7 @@ def test_parse_basic():
 
 
 def test_virtual_stage():
-    adapter = V3Adapter()
+    adapter = V3WorkflowAdapter()
     spec = adapter.parse(SAMPLE_YAML_DICT)
     start = spec.stages[0]
     assert start.target_type == StageTargetType.VIRTUAL
@@ -62,7 +62,7 @@ def test_virtual_stage():
 
 
 def test_skill_stage():
-    adapter = V3Adapter()
+    adapter = V3WorkflowAdapter()
     spec = adapter.parse(SAMPLE_YAML_DICT)
     s01 = spec.stages[1]
     assert s01.target_type == StageTargetType.SKILL
@@ -72,7 +72,7 @@ def test_skill_stage():
 
 
 def test_workflow_stage():
-    adapter = V3Adapter()
+    adapter = V3WorkflowAdapter()
     spec = adapter.parse(SAMPLE_YAML_DICT)
     s02 = spec.stages[2]
     assert s02.target_type == StageTargetType.WORKFLOW
@@ -84,14 +84,14 @@ def test_workflow_stage():
 
 
 def test_missing_required():
-    adapter = V3Adapter()
+    adapter = V3WorkflowAdapter()
     bad = {"schema_version": "3.0.0", "workflow_id": "x"}
     with pytest.raises(SchemaError):
         adapter.parse(bad)
 
 
 def test_stage_without_target():
-    adapter = V3Adapter()
+    adapter = V3WorkflowAdapter()
     bad = {
         "schema_version": "3.0.0",
         "workflow_id": "x",

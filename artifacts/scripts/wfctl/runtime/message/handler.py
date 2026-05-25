@@ -4,6 +4,7 @@ import json
 import uuid
 from pathlib import Path
 
+from compat import CURRENT
 from infrastructure.io import atomic_write_json
 from infrastructure.timestamp import iso_timestamp
 from infrastructure.errors import ValidationError
@@ -54,7 +55,7 @@ def write_message(
                         modified_files.append(parts[-1] if len(parts) > 1 else parts[0])
 
     msg = {
-        "schema_version": "3.0.0",
+        "schema_version": CURRENT.value,
         "message_id": message_id,
         "instance_id": instance_id,
         "stage_id": stage_id,

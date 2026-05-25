@@ -7,7 +7,7 @@ import argparse
 from domain.dag.graph import build_adjacency
 from infrastructure.errors import InputError
 from domain.workflow.spec import EdgeCondition, StageTargetType
-from domain.workflow.parser import load_workflow
+from compat.workflow.registry import load_workflow
 from services.resolver import find_workflow_dir
 
 
