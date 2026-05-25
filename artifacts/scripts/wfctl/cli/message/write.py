@@ -14,7 +14,8 @@ def register_message_write(subparsers):
     write_p.add_argument("--instance", required=True, help="实例 ID")
     write_p.add_argument("--stage", required=True, help="stage_id")
     write_p.add_argument("--status", required=True, help="消息状态")
-    write_p.add_argument("--report", required=True, help="执行摘要")
+    write_p.add_argument("--report", default="", help="执行摘要（直接文本）")
+    write_p.add_argument("--report-file", default=None, help="执行摘要文件路径（绕过 shell 转义）")
     write_p.add_argument("--checkpoint", default=None, help="checkpoint_summary")
     write_p.add_argument("--questions", nargs="*", default=[], help="确认问题列表")
     write_p.add_argument("--parallel-targets", nargs="*", default=[], help="parallel 目标")
@@ -54,6 +55,22 @@ def _handle_message_write(args) -> dict:
     # 从身份文件读取 stage_instance_id（解决 parallel 拆分场景）
     stage_instance_id = identity.get("stage_instance_id", args.stage)
 
+    # 解析 report：--report-file 优先级高于 --report，绕过 shell 转义
+    report = args.report
+    if args.report_file:
+        file_path = Path(args.report_file)
+        if not file_path.exists():
+            raise InputError(
+                f"Report file not found: {args.report_file}",
+                code="REPORT_FILE_NOT_FOUND",
+            )
+        report = file_path.read_text(encoding="utf-8").strip()
+    if not report:
+        raise InputError(
+            "必须提供 --report 或 --report-file 参数",
+            code="REPORT_REQUIRED",
+        )
+
     parallel_targets = None
     if args.parallel_targets:
         parallel_targets = []
@@ -73,7 +90,7 @@ def _handle_message_write(args) -> dict:
         stage_id=args.stage,
         stage_instance_id=stage_instance_id,
         status=args.status,
-        report=args.report,
+        report=report,
         checkpoint_summary=args.checkpoint,
         confirm_questions=list(args.questions) if args.questions else None,
         parallel_targets=parallel_targets,

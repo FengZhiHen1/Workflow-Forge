@@ -55,8 +55,8 @@ def write_message(
                         filename = rest.split(" -> ")[-1]
                     else:
                         filename = rest
-                    status = _map_git_status_xy(xy)
-                    modified_files.append({"path": filename, "status": status})
+                    file_status = _map_git_status_xy(xy)
+                    modified_files.append({"path": filename, "status": file_status})
 
     # 防线前移：status 必须为合法 StageStatus 枚举值
     from domain.workflow.spec import StageStatus as _StageStatus
