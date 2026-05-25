@@ -1,6 +1,7 @@
 """AutoCommitProcessor：DONE stage 自动提交 + 补锚。
 
 步骤 2, 2.5：对刚转为 DONE 的 stage 自动提交 git 变更并打锚点。
+git commit 流程保留在 processor 内执行（链式副作用），tag_anchor 提取为独立副作用。
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from runtime.worktree.git import git_add_all, git_commit_file, git_status_porcel
 from infrastructure.project import find_root
 from scheduler.context import ExecutionContext
 from state.model import InstanceState, StageStatus
-from scheduler.processors.base import ProcessorResult
+from scheduler.processors.base import ProcessorResult, SideEffect
 from runtime.worktree.manager import tag_anchor
 
 
@@ -21,11 +22,14 @@ class AutoCommitProcessor:
     """自动提交 DONE stage 的变更并补锚点。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
-        self._auto_commit_done_stages(ctx, state)
-        self._ensure_anchors_for_done_stages(ctx, state)
-        return ProcessorResult()
+        side_effects: list[SideEffect] = []
+        self._auto_commit_done_stages(ctx, state, side_effects)
+        self._ensure_anchors_for_done_stages(ctx, state, side_effects)
+        return ProcessorResult(side_effects=side_effects)
 
-    def _auto_commit_done_stages(self, ctx: ExecutionContext, state: InstanceState) -> None:
+    def _auto_commit_done_stages(
+        self, ctx: ExecutionContext, state: InstanceState, side_effects: list[SideEffect],
+    ) -> None:
         import json
 
         for stage_inst_id in state.cycle_meta.newly_done_stage_instance_ids:
@@ -72,13 +76,23 @@ class AutoCommitProcessor:
             if rc != 0:
                 raise GitError(f"auto-commit failed for stage {st.stage_id}: {stderr}")
 
-            anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{stage_inst_id}"
-            try:
-                tag_anchor(ctx.instance_id, anchor, worktree=worktree)
-            except Exception:
-                pass
+            side_effects.append(SideEffect(
+                kind="git_commit",
+                description=f"Auto-commit {stage_inst_id}",
+                execute=None,
+            ))
 
-    def _ensure_anchors_for_done_stages(self, ctx: ExecutionContext, state: InstanceState) -> None:
+            # 独立副作用：tag_anchor 延迟到 orchestrator 执行
+            anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{stage_inst_id}"
+            side_effects.append(SideEffect(
+                kind="git_tag",
+                description=f"Anchor {stage_inst_id}",
+                execute=lambda iid=ctx.instance_id, a=anchor, w=worktree: tag_anchor(iid, a, worktree=w),
+            ))
+
+    def _ensure_anchors_for_done_stages(
+        self, ctx: ExecutionContext, state: InstanceState, side_effects: list[SideEffect],
+    ) -> None:
         root = find_root()
         for st in state.stages:
             if st.status != StageStatus.DONE:
@@ -117,7 +131,15 @@ class AutoCommitProcessor:
                 if rc_commit != 0:
                     continue
 
-            try:
-                tag_anchor(ctx.instance_id, anchor_name, worktree=worktree)
-            except Exception:
-                pass
+                side_effects.append(SideEffect(
+                    kind="git_commit",
+                    description=f"Anchor commit {stage_inst}",
+                    execute=None,
+                ))
+
+            # 独立副作用：tag_anchor 延迟到 orchestrator 执行
+            side_effects.append(SideEffect(
+                kind="git_tag",
+                description=f"Ensure anchor {stage_inst}",
+                execute=lambda iid=ctx.instance_id, a=anchor_name, w=worktree: tag_anchor(iid, a, worktree=w),
+            ))

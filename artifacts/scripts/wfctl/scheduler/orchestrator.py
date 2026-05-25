@@ -44,7 +44,7 @@ class SchedulerOrchestrator:
         StateTransitionProcessor,     # 03 - 单一状态变更点
         AutoCommitProcessor,          # 04 - 读 cycle_meta.newly_done
         MergeWorktreesProcessor,      # 05 - 读 cycle_meta.newly_done
-        VirtualStagesProcessor,       # 06 - 虚拟 stage 直通
+        VirtualStagesProcessor,       # 06 - 虚拟 stage 无 worktree，不需 AutoCommit/Merge，放其后执行
         ChildWorkflowProcessor,       # 07 - 递归调度
         ParallelSplitProcessor,       # 08 - parallel 拆分
         ErrorRecoveryProcessor,       # 09 - 基于 TransitionPolicy
@@ -59,18 +59,29 @@ class SchedulerOrchestrator:
         """执行完整调度流程。
 
         Returns:
-            {"status": "ok", "actions": [...], "_state": InstanceState}
+            {"status": "ok", "actions": [...], "_state": InstanceState, "_side_effects": [...]}
         """
         state = initial_state
         all_actions: list[dict] = []
+        all_side_effects: list[dict] = []
 
         for proc_cls in self.PROCESSORS:
             proc = proc_cls()
             result = proc.process(ctx, state)
             state = state.apply_delta(result.state_delta)
             all_actions.extend(result.actions)
+            # 统一执行独立副作用（execute 非 None），收集所有副作用记录
+            for se in result.side_effects:
+                if se.execute is not None:
+                    se.execute()
+                all_side_effects.append({
+                    "kind": se.kind,
+                    "description": se.description,
+                    "metadata": se.metadata,
+                    "deferred": se.execute is not None,
+                })
 
         if not all_actions:
             all_actions.append({"action": "await", "reason": "no ready stages"})
 
-        return {"status": "ok", "actions": all_actions, "_state": state}
+        return {"status": "ok", "actions": all_actions, "_state": state, "_side_effects": all_side_effects}

@@ -55,7 +55,7 @@ def _run_scanner(test_file: Path) -> dict:
             sys.executable,
             str(SCANNER_PATH),
             str(test_file),
-            "--sut-module", "core,services,cli,domain,state,runtime",
+            "--sut-module", "core,services,cli,domain,state,runtime,infrastructure,compat,scheduler",
         ],
         cwd=str(wfctl_root),
         capture_output=True,

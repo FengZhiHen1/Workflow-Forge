@@ -22,7 +22,7 @@ from state.model import (
     StateDelta,
     InstanceStatus,
 )
-from scheduler.processors.base import ProcessorResult
+from scheduler.processors.base import ProcessorResult, SideEffect
 from services.state_manager import append_deviation
 
 
@@ -38,6 +38,7 @@ class ErrorRecoveryProcessor:
         delta = StateDelta()
         cycle_meta = state.cycle_meta
         actions: list[dict] = []
+        side_effects: list[SideEffect] = []
 
         stage_specs = {s.stage_id: s for s in ctx.spec.stages}
 
@@ -102,7 +103,7 @@ class ErrorRecoveryProcessor:
                 })
 
         # 2. 超时检测
-        timeout_delta, timeout_cycle = self._check_timeouts(ctx, state, stage_specs)
+        timeout_delta, timeout_cycle = self._check_timeouts(ctx, state, stage_specs, side_effects)
         if timeout_delta:
             delta = delta.merge(timeout_delta)
         if timeout_cycle:
@@ -115,12 +116,13 @@ class ErrorRecoveryProcessor:
             remove_stage_instance_ids=delta.remove_stage_instance_ids,
             cycle_meta=cycle_meta,
         )
-        return ProcessorResult(state_delta=final_delta, actions=actions)
+        return ProcessorResult(state_delta=final_delta, actions=actions, side_effects=side_effects)
 
     def _check_timeouts(
-        self, ctx: ExecutionContext, state: InstanceState, stage_specs: dict
+        self, ctx: ExecutionContext, state: InstanceState, stage_specs: dict,
+        side_effects: list[SideEffect],
     ) -> tuple[StateDelta | None, CycleMeta | None]:
-        """检测 RUNNING stage 超时，写入合成 ERROR 消息。"""
+        """检测 RUNNING stage 超时，生成合成 ERROR 消息的独立副作用。"""
         root = find_root()
         delta = StateDelta()
         cycle_meta: CycleMeta | None = None
@@ -140,10 +142,11 @@ class ErrorRecoveryProcessor:
             if elapsed > stage_spec.timeout_seconds:
                 delta.stage_updates[st.stage_instance_id] = {"started_at": None}
 
-                # 合成超时 ERROR 消息
+                # 合成超时 ERROR 消息 → 独立副作用
                 messages_dir = root / ".agent" / "instances" / ctx.instance_id / "messages"
                 messages_dir.mkdir(parents=True, exist_ok=True)
                 msg_id = f"msg-{uuid.uuid4().hex[:8]}"
+                msg_path = messages_dir / f"{msg_id}.json"
                 msg = {
                     "schema_version": CURRENT.value,
                     "message_id": msg_id,
@@ -158,18 +161,26 @@ class ErrorRecoveryProcessor:
                     "modified_files": [],
                     "timestamp": iso_timestamp(),
                 }
-                atomic_write_json(messages_dir / f"{msg_id}.json", msg)
+                side_effects.append(SideEffect(
+                    kind="file_write",
+                    description=f"Timeout error message {msg_id}",
+                    execute=lambda p=msg_path, m=msg: atomic_write_json(p, m),
+                ))
 
                 if cycle_meta is None:
                     cycle_meta = state.cycle_meta
                 cycle_meta = cycle_meta.with_error(st.stage_instance_id)
 
-                append_deviation(
-                    ctx.instance_id,
-                    "STAGE_TIMEOUT",
-                    f"Stage {st.stage_id} timed out after {elapsed:.0f}s",
-                    stage_id=st.stage_id,
-                )
+                # deviation 写入 → 独立副作用
+                side_effects.append(SideEffect(
+                    kind="deviation_write",
+                    description=f"Timeout deviation for {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, e=elapsed, sid=st.stage_id: append_deviation(
+                        iid, "STAGE_TIMEOUT",
+                        f"Stage {sid} timed out after {e:.0f}s",
+                        stage_id=sid,
+                    ),
+                ))
 
         return (delta if not delta.is_empty() else None), cycle_meta
 

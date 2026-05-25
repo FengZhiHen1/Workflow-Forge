@@ -15,7 +15,7 @@ from domain.workflow.spec import StageSpec, StageTargetType
 from infrastructure.timestamp import iso_timestamp
 from scheduler.context import ExecutionContext
 from state.model import InstanceState, StageState, StateDelta, StageStatus
-from scheduler.processors.base import ProcessorResult
+from scheduler.processors.base import ProcessorResult, SideEffect
 from runtime.worktree.manager import (
     create_parallel_worktree,
     create_stage_worktree,
@@ -37,6 +37,7 @@ class AllocateSpawnProcessor:
         agent_mgr = RunningAgentManager(ctx.root)
         running_agents = agent_mgr.load()
         actions: list[dict] = []
+        side_effects: list[SideEffect] = []
         delta = StateDelta()
         multi_ready = len(ready) > 1
 
@@ -63,13 +64,23 @@ class AllocateSpawnProcessor:
             if not is_parallel:
                 matched_agent = agent_mgr.lookup(skill_id)
 
-            # worktree 分配
+            # worktree 分配（链式副作用：路径被后续 action 使用）
             if multi_ready or is_parallel:
                 if self._is_parallel_instance(stage_inst_id):
                     base_id, idx_str = stage_inst_id.rsplit("_", 1)
                     worktree = create_parallel_worktree(ctx.instance_id, base_id, int(idx_str))
+                    side_effects.append(SideEffect(
+                        kind="worktree_create",
+                        description=f"Parallel worktree {stage_inst_id}",
+                        execute=None,
+                    ))
                 else:
                     worktree = create_stage_worktree(ctx.instance_id, stage_inst_id)
+                    side_effects.append(SideEffect(
+                        kind="worktree_create",
+                        description=f"Stage worktree {stage_inst_id}",
+                        execute=None,
+                    ))
             else:
                 worktree = ctx.root / ".tmp" / "worktrees" / f"instance-{ctx.instance_id}"
 
@@ -125,6 +136,11 @@ class AllocateSpawnProcessor:
                     "stage_id": st.stage_id,
                     "instance_id": ctx.instance_id,
                 })
+                side_effects.append(SideEffect(
+                    kind="json_write",
+                    description="Updated running_agents.json (register)",
+                    execute=None,
+                ))
 
                 actions.append({
                     "action": "continue",
@@ -152,7 +168,7 @@ class AllocateSpawnProcessor:
                     "context": context,
                 })
 
-        return ProcessorResult(state_delta=delta, actions=actions)
+        return ProcessorResult(state_delta=delta, actions=actions, side_effects=side_effects)
 
     def _is_parallel_instance(self, stage_inst_id: str) -> bool:
         parts = stage_inst_id.rsplit("_", 1)
