@@ -16,7 +16,7 @@
   "worktree": ".tmp/worktrees/instance-20260517-001/",
   "model": "standard",
   "requires_parallel_targets": false,
-  "confirmation_point": false,
+  
   "valid_routing_choices": ["full_design", "code_only", "both_exist"],
   "context": {
     "goal": "为 M01-M05 模块编写落地规范",
@@ -57,7 +57,7 @@
   "worktree": ".tmp/worktrees/instance-20260517-001/",
   "system_agent_id": "agent-001",
   "requires_parallel_targets": false,
-  "confirmation_point": false,
+  
   "valid_routing_choices": [],
   "context": {
     "goal": "为 M01-M05 模块编写落地规范",
@@ -104,7 +104,7 @@
 
 **一级实例（`parent_instance_id` 为空）**：全部 stage DONE 后，wfctl 不会直接合入——先注入虚拟确认 stage `__merge__`，通过 `confirm` action 由编排器向用户确认。确认后下次 `next` 才执行合入。
 
-**子实例**：全部 stage DONE 后直接合入父实例 worktree，不设确认点。
+**子实例**：全部 stage DONE 后直接合入父实例 worktree，不设确认环节。
 
 有冲突时 wfctl 返回 `conflict` action，按冲突处理流程消解。
 

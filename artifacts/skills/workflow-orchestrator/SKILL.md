@@ -3,7 +3,7 @@ name: workflow-orchestrator
 description: >
   通用工作流编排器（v3）。教导主 Agent 如何通过 wfctl 机械调度程序驱动工作流循环。
   当用户提到"工作流"、"workflow"、"流水线"、"多阶段任务"、"启动 workflow"、
-  "按流程执行"、"编排"、"stage"、"确认点"、"回退到上一步"、"/workflow"时，
+  "按流程执行"、"编排"、"stage"、"确认"、"回退到上一步"、"/workflow"时，
   **必须优先使用本 skill**。
   注意：用户说"你自己按步骤做"不属于工作流调度——编排器只在用户需要显式 stage 管理、
   确认门控、回退能力时介入。
@@ -105,7 +105,7 @@ wfctl resolve
 **选定后（或单一匹配时）**：在同一个 `AskUserQuestion` 中呈现：
 - 工作流名称和版本
 - Stage 总数
-- 确认点位置（哪些 stage 需要用户确认）
+- 需要用户交互的 stage（Skill 中使用 AskUserQuestion 的 stage）
 - 并发上限
 
 确认后调用：
@@ -208,8 +208,7 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
     {
       "stage_id": "s02",
       "instance_id": "20260519-003",
-      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"],
-      "valid_choices": ["full_design", "code_only", "both_exist", "放弃模块"]
+      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"]
     }
   ]
 }
@@ -217,28 +216,27 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 - `instance_id`：需要确认的实例 ID。**与当前父实例不同时，确认目标为子工作流实例**
 - `parent_stage_id`：仅子实例 confirm 出现，标识对应父工作流的哪个 stage
-- `valid_choices`：该 stage 所有 `confirmed` + `rejected` 边的 `choice` 值——**这是选项的权威来源**。可能为 `null`（子实例尚未加载其工作流 spec）
-- `questions`：SubAgent 上报的原始选项文本，仅用于提供 `description`
+- `questions`：SubAgent 上报的原始选项文本——**这是选项的权威来源**
 
 执行步骤：
 0. **确认时机判断**：读取每条 pending 的 questions 内容，判断是前置对齐还是终审验收（详见「确认时机判断」章节）
-1. **以 `valid_choices` 为权威构造 AskUserQuestion**：
+1. **以 `questions` 为权威构造 AskUserQuestion**：
 
-   a. 若 `valid_choices` 非空：用它作为选项列表，从 `questions` 中匹配描述文本
-   b. 解析 `questions`：对每条 question 找**第一个中文全角冒号 `：`**，之前为 `choice_key`，之后为 `description`
-   c. 将 `valid_choices` 逐条映射：choice 匹配到 question → 用其 description；未匹配 → description 为 `"（未提供描述）"`
-   d. 若 `valid_choices` 为 `null`（子实例）：降级为直接从 `questions` 解析（旧逻辑）
+   a. 解析 `questions`：对每条 question 找**第一个中文全角冒号 `：`**，之前为 `choice_key`，之后为 `description`
+   b. 没有 `：` 的 question：整条作为 choice_key，description 为空
+   c. 选项呈现：`<choice_key> —— <description>`（如有描述）
+   d. 子实例：`questions` 直接从 SubAgent 上报解析
 
    构造 `AskUserQuestion`：
    - `header`: `"确认 {stage_id} 阶段"`
    - `options`: `[{label: "<choice>", description: "<映射到的描述>"}, ...]`
 
-   用户选择后，答案即为 `label`（即 `valid_choices` 中的原始 choice 值），直接用作 `--choice`。
+   用户选择后，答案即为 `label`（即 questions 中 `：` 前的 `choice_key`），直接用作 `--choice`。
 
 2. 若判断为前置对齐，在 description 中按「确认时机判断」的呈现方式追加警告
 3. 用户选择后，**使用 `pending` 条目中的 `instance_id`**（不是父实例 ID）调用：
    ```
-   wfctl confirm --instance <pending条目.instance_id> --stage <stage_id> --choice "<label>" [--feedback "..."]
+   wfctl confirm --instance <pending条目.instance_id> --stage <stage_id> --choice "<choice_key>" [--feedback "..."]
    ```
 4. 父实例自身的确认 → 确认后调 `wfctl next --instance <父实例>`。子实例确认 → 确认后**对父实例**调 `wfctl next`，父 `next` 会感知到子实例状态变化并聚合下一轮 confirm
 5. **关键**：`confirm` action 是当前时刻的快照。你选取 stage 逐个呈现，而不是一次性全部展示。确认的 `--instance` 始终取 pending 条目中的 `instance_id`
@@ -251,23 +249,21 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITING_CONFIRM` 的 stage 列表。你按以下协议处理：
 
-1. 对 `pending` 中的**每个**条目，按上方「以 valid_choices 为权威」步骤构造对应的 question（含 options）。多条 pending → 多个 question
+1. 对 `pending` 中的**每个**条目，按上方「以 questions 为权威」步骤构造对应的 question（含 options）。多条 pending → 多个 question
 2. **一次性**通过 `AskUserQuestion` 呈现所有 question（`questions` 数组，`multiSelect: false`）
    - 每个 question 的 `header` 使用 `stage_id`，方便用户区分
    - 若某条 question 判断为前置对齐，在其 `description` 中追加警告
 3. 用户一次性回答所有问题后，按 question 逐一映射回 `(instance_id, stage_id, choice)`：
    ```
    对每条回答：
-     wfctl confirm --instance <对应instance_id> --stage <对应stage_id> --choice "<label>"
+     wfctl confirm --instance <对应instance_id> --stage <对应stage_id> --choice "<choice_key>"
    ```
 4. 全部 confirm 完成后，调用一次 `wfctl next`——级联效应产生的新 pending 自然出现在下一轮
 5. 重复，直到 `next` 不再返回 `confirm` action
 
-**`--choice` 的值**：取用户选择的 `label` 值（即 `valid_choices` 中的原始 choice），直接传给 `wfctl confirm`。不修改、不自生成。
+**`--choice` 的值**：取用户选择的 `choice_key` 值（即 questions 中 `：` 前的部分），直接传给 `wfctl confirm`。不修改、不自生成。
 
-**拒绝处理**：用户选择 `rejected` 选项时：
-- 有 `rejected` edge → stage → PENDING（重做），SubAgent 重新 spawn 时注入 `--feedback`
-- 无 `rejected` edge → Instance → FAILED，报告用户
+**confirm 行为**：`confirm` 命令永远返回 PENDING + continue，将用户选择 `pending_choice` 注入 SubAgent 的 continue prompt。SubAgent 收到后自行决定后续（继续工作或 DONE + routing_choice）。不再有 CONFIRMED/REJECTED 边路由。
 
 ---
 
@@ -279,8 +275,8 @@ wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITIN
 
 | 类型 | SubAgent 在问 | 工作状态 | 正确动作 |
 |------|-------------|---------|---------|
-| **前置对齐** | "怎么做"——范围、格式、粒度、约束、方案选择 | 尚未开始或仅完成准备 | 引导用户选「拒绝」+ 反馈 → stage → PENDING → 重 spawn，SubAgent 拿到反馈后完成实际工作 |
-| **终审验收** | "做得对不对"——正确性、完整性、满意度 | 已完成交付物 | 正常呈现 → 用户选「通过」→ stage DONE |
+| **前置对齐** | "怎么做"——范围、格式、粒度、约束、方案选择 | 尚未开始或仅完成准备 | confirm → PENDING + continue → SubAgent 拿到选择后完成实际工作 |
+| **终审验收** | "做得对不对"——正确性、完整性、满意度 | 已完成交付物 | 用户选择 → confirm → continue → SubAgent 收到选择 → DONE + routing_choice |
 
 ### 判断方法
 
@@ -342,7 +338,7 @@ wfctl 在每次 `next` 时自动同步。编排器无需额外操作。
 
 `wfctl next --instance <root>` 已递归处理整棵实例树（父→子→孙），子工作流实例对编排器**完全透明**：
 - 子实例的 spawn/continue action 直接出现在父级 action 列表中（含 `instance_id` 字段，用于写入 `running_agents.json`）
-- 子实例的确认点自动聚合到父级 `confirm` action 的 `pending` 数组中（含正确的 `instance_id` 用于调 `wfctl confirm`）
+- 子实例的 AWAITING_CONFIRM 自动聚合到父级 `confirm` action 的 `pending` 数组中（含正确的 `instance_id` 用于调 `wfctl confirm`）
 - 编排器**不需要**单独调 `wfctl next --instance <child_id>`，也不需要处理 `child_next` action（已移除）
 
 当 `wfctl status` 显示某 stage 有 `child_instance` 字段时，子工作流正在执行——你无需额外操作。

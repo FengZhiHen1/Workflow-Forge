@@ -55,10 +55,10 @@ wfctl resolve --workflow <id>@<ver>
   "version": "2.1.0",
   "max_parallel_agents": 6,
   "stages": [
-    {"stage_id": "s01", "name": "选题分析", "skill_id": "topic-analyst", "confirmation_point": true, "mandatory": true, "retry": 2, "model": "standard"}
+    {"stage_id": "s01", "name": "选题分析", "skill_id": "topic-analyst",  "mandatory": true, "retry": 2, "model": "standard"}
   ],
   "edges": [
-    {"from": "s01", "to": "s02", "condition": "confirmed", "choice": "通过"}
+    {"from": "s01", "to": "s02", "condition": "success", "choice": "通过"}
   ]
 }
 ```
@@ -115,7 +115,7 @@ wfctl create --workflow <id>@<ver> --fast-forward-to <stage_id> [--goal "..."]
 ```
 行为：
 1. 反向 BFS 沿 `incoming` edges 收集目标 stage 的所有拓扑前驱
-2. 排除 `failure` / `rejected` / `loop_exceeded` 边（非常规到达路径）
+2. 排除 `failure` / `loop_exceeded` 边（非常规到达路径）
 3. 将收集到的祖先 stage 全部标记为 DONE，目标 stage 保持 PENDING
 4. 创建后首个 `next` 直接进入目标 stage
 
@@ -155,7 +155,7 @@ wfctl next --instance <id>
       "skill_id": "topic-analyst",
       "worktree": ".tmp/worktrees/instance-20260517-001/",
       "requires_parallel_targets": false,
-      "confirmation_point": false,
+      
       "valid_routing_choices": [],
       "context": {
         "goal": "为 M01-M05 模块编写规范",
@@ -195,7 +195,7 @@ spawn / retry：
   "worktree": ".tmp/worktrees/instance-<id>/",
   "model": "standard",
   "requires_parallel_targets": false,
-  "confirmation_point": true,
+  
   "context": {
     "goal": "实例目标",
     "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成..."}],
@@ -214,7 +214,7 @@ continue：
   "worktree": ".tmp/worktrees/instance-<id>/",
   "system_agent_id": "agent-001",
   "requires_parallel_targets": false,
-  "confirmation_point": true,
+  
   "context": {
     "goal": "实例目标",
     "upstream_summaries": [{"stage_id": "s01", "checkpoint": "已完成需求收集，用户确认方案A"}]
@@ -237,16 +237,15 @@ confirm：
     {
       "stage_id": "s02",
       "instance_id": "20260517-001",
-      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"],
-      "valid_choices": ["full_design", "code_only", "both_exist", "放弃模块"]
+      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"]
     },
-    {"stage_id": "s01-scheme-design", "instance_id": "child-001", "parent_stage_id": "p2-question-solution", "questions": ["确认方案设计？"], "valid_choices": null}
+    {"stage_id": "s01-scheme-design", "instance_id": "child-001", "parent_stage_id": "p2-question-solution", "questions": ["确认方案设计？"]}
   ]
 }
 ```
 - `instance_id`：确认目标实例。与当前父实例不同时，编排器应对子实例调用 `wfctl confirm --instance <instance_id>`
 - `parent_stage_id`：仅子实例条目出现，标记父工作流中对应的 stage
-- `valid_choices`：该 stage 所有 confirmed + rejected 边的 choice 值（权威选项来源）。为 `null` 时编排器降级解析 questions
+- `questions`：SubAgent 上报的原始选项（权威选项来源）。为 `null` 时编排器降级解析 questions
 
 conflict：
 ```json
@@ -294,23 +293,13 @@ wfctl confirm --instance <id> --stage <stage_id> --choice "<选项值>" [--feedb
 | `--instance` | 是 | 实例 ID |
 | `--stage` | 是 | 目标 stage_id，必须是 AWAITING_CONFIRM。特殊值 `__merge__` 处理合入确认 |
 | `--choice` | 是 | 选项值，须与 YAML edges 中对应 choice 严格一致。`__merge__` 时：`yes` 允许合入，`no` 推迟 |
-| `--feedback` | 否 | rejected 时建议填写，注入重做 SubAgent 的 prompt |
+| `--feedback` | 否 | confirm 时可选填写，注入 continue prompt |
 
 **`__merge__` 伪 stage**：一级实例全部 stage DONE 后，wfctl 自动在 `next` 中注入确认请求。编排器按标准 confirm 流程处理——调 `wfctl confirm --stage __merge__ --choice yes`。确认后下次 `next` 执行合入。
 
-返回（confirmed）：
+返回（confirm 永远返回 PENDING + continue）：
 ```json
-{"status": "ok", "stage_id": "s03", "new_status": "DONE", "matched": "方案A-微服务"}
-```
-
-返回（rejected，有 rejected edge）：
-```json
-{"status": "ok", "stage_id": "s03", "new_status": "PENDING"}
-```
-
-返回（rejected，无 rejected edge）：
-```json
-{"status": "instance_failed", "instance_id": "20260517-001", "reason": "no rejected edge for choice: 放弃"}
+{"status": "ok", "stage_id": "s03", "new_status": "PENDING", "matched": "方案A-微服务", "loop": 1}
 ```
 
 **`--choice` 值来源**：SubAgent 在 `confirm_questions` 中预设选项值，编排器原样传入，不做修改。
