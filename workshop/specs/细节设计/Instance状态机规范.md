@@ -82,12 +82,12 @@ PAUSED → ACTIVE     用户或主 Agent 调用 resume 命令
 ```
 PENDING → RUNNING → DONE
               ↓
-         AWAITING_CONFIRM ── confirmed(to≠self) ──→ DONE
-              ↓              confirmed(to=self) ──→ PENDING（loop_counter++，loop_counter ≥ max_loop 时走 loop_exceeded）
+         AWAITING_CONFIRM ── confirm → PENDING + continue
+              ↓              confirm ──→ PENDING + continue（loop_counter++，loop_counter ≥ max_loop 时走 loop_exceeded）
               ↓
-         rejected（有 rejected edge）→ PENDING
+         (已废弃) rejected → PENDING
               ↓
-         rejected（无 rejected edge）→ Instance FAILED
+         (已废弃) rejected 无匹配 → Instance FAILED
               ↓
             ERROR → PENDING（retry）/ DONE（耗尽）
               ↓
@@ -118,15 +118,15 @@ PENDING → RUNNING → DONE
 | `agent_id` | `string` | 否 | wfctl 生成的逻辑 Agent ID，启动前写入 |
 | `system_agent_id` | `string` | 否 | 平台原生 Agent ID，启动后主 Agent 回填 |
 | `output_message_id` | `string` | 否 | 该 stage 产出的消息 ID |
-| `loop_counter` | `integer` | 是 | stage 级回跳计数，默认 0。中继确认（confirmed 自循环边）或 failure edge 重定向时递增 |
+| `loop_counter` | `integer` | 是 | stage 级回跳计数，默认 0。confirm 循环或 failure edge 重定向时递增 |
 | `attempt_count` | `integer` | 是 | stage 级重试计数，默认 0 |
 | `model` | `string` | 否 | 模型档位，由主 Agent 查平台模型映射表解析为具体模型名后写入 |
 | `child_instance_id` | `string` | 否 | 子工作流实例 ID |
 | `fan_out_target` | `object` | 否 | parallel 拆分目标 `{id, label, context}` |
 | `system_agent_id` | `string` | 否 | 平台原生 Agent ID。同 skill 跨 Stage 延续时，此字段直接复制到下游 Stage，不生成新 ID |
-| `continued_to` | `string` | 否 | 实例被保留并延续到的下游 stage_id。仅 `AWAITING_CONFIRM → confirmed(same skill_id)` 时写入 |
+| `continued_to` | `string` | 否 | 实例被保留并延续到的下游 stage_id。仅 `AWAITING_CONFIRM → confirm → continue` 时写入 |
 | `requires_parallel_targets` | `boolean` | 否 | `true` 时该 stage 的 Skill 需要产出 `parallel_targets`。`next` 在 spawn action 中标注 `requires_parallel_targets: true`，由主 Agent 注入提示词要求。`confirm` 前校验该 stage 是否已产出 `parallel_targets`（通过 `output_message_id` 关联的消息检查），未产出则置 ERROR |
-| `confirmed_choice` | `string` | 否 | 用户确认时选择的 choice 值。`confirm` 命令由 `TransitionPolicy.on_confirm()` 写入，用于后续 CONFIRMED edge 的 choice 匹配 |
+| `pending_choice` | `string` | 否 | 最近一次 confirm 的用户选择，供 continue prompt 注入。`confirm` 命令由 `TransitionPolicy.on_confirm()` 写入，通过 continue prompt 传递给 SubAgent |
 | `routing_choice` | `string` | 否 | SubAgent 上报 DONE 时携带的选择值。`MessageConsumerProcessor` 从消息提取并写入，用于 SUCCESS edge 的 choice 匹配。多条 SUCCESS edge 且设置了 `choice` 时必填 |
 | `confirmed` | ~~`boolean`~~ | — | ~~已移除~~。旧 legacy 字段，新架构不再使用。`StageState` dataclass 中不存在该字段， instance.json 中如有出现将被忽略 |
 
@@ -178,7 +178,7 @@ PENDING → RUNNING → DONE
 | 条件 | 行为 |
 |------|------|
 | `parallel` 拆分出的多个 stage 实例 | 各有独立 SubAgent，不参与映射表 |
-| `confirmed(to=self)` 中继确认 | 同一 Stage 内循环回跳，重新 spawn，不参与映射表 |
+| confirm + continue 循环 | 同一 Stage 内循环，SubAgent 继续执行，不参与映射表 |
 | SubAgent 崩溃/超时 | 主 Agent 从映射表移除，`next` 中未命中 → 正常 `spawn` 重建 |
 | 下游为 `workflow`（子工作流） | 子工作流有独立实例，不参与父级映射表 |
 | 用户 rollback | 级联清理受影响 stage 的 `system_agent_id`，映射表自然失效 |

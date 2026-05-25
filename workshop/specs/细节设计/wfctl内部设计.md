@@ -89,8 +89,8 @@
 │       ├── 05_auto_commit.py
 │       ├── 06_merge_worktrees.py
 │       ├── 07_parallel_split.py
-│       ├── 08_child_workflow.py         # 取代 check_children.py
-│       ├── 09_error_recovery.py         # 取代 error_handler.py
+│       ├── 08_child_workflow.py         # 递归调度子工作流
+│       ├── 09_error_recovery.py         # 基于 TransitionPolicy 的错误恢复
 │       ├── 10_conflict_handler.py
 │       ├── 11_ready_compute.py
 │       ├── 12_allocate_spawn.py
@@ -233,8 +233,6 @@ class EdgeCondition(Enum):
     ALWAYS = "always"
     SUCCESS = "success"
     FAILURE = "failure"
-    CONFIRMED = "confirmed"
-    REJECTED = "rejected"
     LOOP_EXCEEDED = "loop_exceeded"
 
 class StageTargetType(Enum):
@@ -254,7 +252,6 @@ class StageSpec:
     target_type: StageTargetType
     target: Optional[str]        # skill_id 或 workflow 引用
     mandatory: bool
-    confirmation_point: bool
     retry: int                   # 默认 0
     timeout_seconds: Optional[int]
     model: Optional[str]
@@ -367,14 +364,6 @@ def _all_satisfied(
                     return True
                 continue
             return True
-        if edge.condition == EdgeCondition.CONFIRMED:
-            if exit_cond not in ("confirmed", ""):
-                continue
-            if edge.choice:
-                if upstream.confirmed_choice == edge.choice:
-                    return True
-                continue
-            return True
     return False
 ```
 
@@ -415,16 +404,16 @@ def collect_downstream(adj: AdjacencyList, stage_id: str,
 
 | # | 检查项 | 说明 | 严重度 |
 |---|--------|------|--------|
-| 1 | 自环无 `max_loop` | 自环（`from == to`）的 FAILURE / CONFIRMED 边必须设置 `max_loop > 0` | ERROR |
+| 1 | 自环无 `max_loop` | 自环（`from == to`）的 FAILURE 边必须设置 `max_loop > 0` | ERROR |
 | 2 | 多节点环无 `max_loop` | 多节点环上至少有一条边设置 `max_loop > 0` | ERROR |
 | 3 | 回边无 `max_loop` | 回边（from 拓扑序 > to 拓扑序）必须设置 `max_loop > 0` | ERROR |
 | 4 | `failure_edge` 指向不存在 stage | FAILURE 边的 `to_stage` 必须在 `stages` 中存在 | ERROR |
 | 5 | `cascade_reset_until` 指向不存在 stage 或非祖先 | `cascade_reset_until` 必须存在且是 `from_stage` 的祖先（或自身） | ERROR |
-| 6 | `confirmation_point=true` 但无 `REJECTED` 边 | 设置了 confirmation_point 的 stage 必须至少有一条 REJECTED 边，否则用户无法拒绝 | WARNING |
+| 6 | (已废弃) `confirmation_point` 字段残留 | confirmation_point 字段不再使用，确认是 Skill 内部 AskUserQuestion 行为 | ERROR |
 | 7 | SUCCESS 边 choice 不完备 | 多条 SUCCESS 边时，要么全部设置 `choice`，要么全部不设置 | ERROR |
 | 8 | SUCCESS 边 choice 重复 | 同一 stage 的多条 SUCCESS 边 `choice` 值必须互斥 | ERROR |
-| 9 | CONFIRMED 边 choice 混用 | 多条 CONFIRMED 边时，不允许部分有 `choice`、部分无 `choice` | ERROR |
-| 10 | REJECTED 边 choice 混用 | 多条 REJECTED 边时，不允许部分有 `choice`、部分无 `choice` | ERROR |
+| 9 | SUCCESS 边 choice 混用 | 多条 SUCCESS 边时，不允许部分有 `choice`、部分无 `choice` | ERROR |
+| 10 | (合并到 #9) | 同 #9 | - |
 | 11 | `failure_edge` 但 `retry=0` | 有 FAILURE 边但 `StageSpec.retry == 0`，failure_edge 永远不会触发 | WARNING |
 | 12 | `loop_exceeded_edge` 但无 `failure_edge` | LOOP_EXCEEDED 边存在但无 FAILURE 边，逻辑不连贯 | WARNING |
 | 13 | parallel fan-in 一致性 | parallel 拆分的多个实例必须能正确 fan-in 到同一下游 stage | ERROR |
@@ -604,11 +593,12 @@ if rc != 0:
 
 | 模式 | 触发条件 | 状态转换 | 关键行为 |
 |------|----------|----------|----------|
-| **Confirmation Point** | `confirmation_point: true` + confirmed edge 指向下游 | `AWAITING_CONFIRM → PENDING` | `confirmed_choice = choice`，同 SubAgent 继续（不重新 spawn） |
-| **Relay（中继确认）** | confirmed 自循环边（`to_stage == from_stage`） | `AWAITING_CONFIRM → PENDING` | `loop_counter++`，`system_agent_id = None`，重新 spawn |
-| **终局确认** | confirmed edge 指向下游且非 confirmation_point | `AWAITING_CONFIRM → DONE` | `confirmed_choice = choice`，`exit_condition = confirmed`，解锁下游 |
+| (已废弃) Confirmation Point | 确认现在是 Skill 内部 AskUserQuestion 行为 | - | 工作流定义不再区分确认类型 |
+| **confirm + continue** | SubAgent 上报 AWAITING_CONFIRM，用户确认 | `AWAITING_CONFIRM → PENDING` | `loop_counter++`，`pending_choice=choice`，SubAgent 通过 continue action 继续 |
+| **DONE + routing_choice** | SubAgent 完成工作后上报 DONE + routing_choice | `RUNNING → DONE` | 匹配 SUCCESS 边，解锁下游 |
+| **loop_exceeded** | confirm 循环次数达到 `loop_exceeded_edge.max_loop` | `AWAITING_CONFIRM → DONE` | 强制退出循环，激活 loop_exceeded 目标 stage |
 
-三种模式可以**叠加使用**：一个 stage 既设置 `confirmation_point: true`，又配置自循环 confirmed 边，实现"多轮确认 + 每轮重新 spawn"。
+(已废弃) 确认现在是 Skill 内部行为：SubAgent 直接 AskUserQuestion → AWAITING_CONFIRM → confirm → continue，多轮确认由 Skill 内部控制，不需工作流定义参与。
 
 #### 选择边统一接口
 
@@ -618,11 +608,11 @@ class TransitionPolicy:
         """根据 SubAgent 上报的 routing_choice 匹配 SUCCESS 边。
         精确匹配 choice → 无匹配时返回无 choice 的兜底 edge → 无兜底返回 None。"""
 
-    def match_confirmed_edge(self, choice: str) -> EdgeSpec | None:
-        """根据用户 choice 匹配 CONFIRMED 边。"""
+    # match_confirmed_edge 已删除——确认不再匹配边
+        
 
-    def match_rejected_edge(self, choice: str) -> EdgeSpec | None:
-        """根据用户 choice 匹配 REJECTED 边。"""
+    # match_rejected_edge 已删除——确认不再匹配边
+        
 
     def validate_routing_choice(self, routing_choice: str | None) -> tuple[bool, str]:
         """校验 SubAgent 上报的 routing_choice 是否合法。
@@ -675,7 +665,7 @@ class TransitionPolicy:
 10. ConflictResolveProcessor        # 冲突处理
 11. ReadyComputeProcessor           # 就绪计算，写入 cycle_meta.ready_candidates
 12. AllocateSpawnProcessor          # 读 ready_candidates，分配 worktree
-13. ConfirmAggregateProcessor       # 确认点聚合
+13. ConfirmAggregateProcessor       # AWAITING_CONFIRM 聚合
 14. FinalizeProcessor               # 收尾：终态检测、merge_to_main、清理
 ```
 
@@ -923,7 +913,7 @@ def log(level: str, message: str, **kwargs):
 | `domain/dag/graph.py` | 邻接表构建正确性、单链/多分支/parallel 的就绪判断、下游 BFS 遍历、aggregation=any 行为 |
 | `domain/dag/topology.py` | Tarjan SCC、自环检测、回边识别 |
 | `domain/dag/validator.py` | 15+ 检查项覆盖 |
-| `domain/transition/policy.py` | 决策表覆盖（ALWAYS/SUCCESS/CONFIRMED/FAILURE/LOOP_EXCEEDED）、on_confirm / on_rollback / on_skip |
+| `domain/transition/policy.py` | 决策表覆盖（ALWAYS/SUCCESS/FAILURE/LOOP_EXCEEDED/SUCCESS + choice）、on_confirm / on_rollback / on_skip |
 | `domain/workflow/parser.py` | 正常 YAML 解析、必填字段缺失报错、完整示例文件 |
 | `state/model.py` | CycleMeta 不序列化、StateDelta apply、查询接口 |
 | `state/persistence.py` | v2 实例加载迁移、v3 加载/保存、迁移后旧文件删除 |

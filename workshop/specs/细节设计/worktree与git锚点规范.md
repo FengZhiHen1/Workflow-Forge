@@ -231,7 +231,7 @@ wf-message: <message_id>
 2. **无冲突**：静默合并，打最终锚点，完成
 3. **有冲突**：wfctl 返回 `{action: "conflict", conflict_files: [...], worktree: "<主仓库路径>"}`。主 Agent 启动 conflict-resolver SubAgent 在**主仓库**中消解冲突（同 stage 级冲突处理流程）。消解后 wfctl 完成合并，打最终锚点
 
-不使用确认点。只有 git 冲突时才需要人工介入，且通过 conflict-resolver 的 AWAITING_CONFIRM 机制呈现。
+只有 git 冲突时才需要人工介入，且通过 conflict-resolver 的 AWAITING_CONFIRM 机制呈现。
 
 ---
 

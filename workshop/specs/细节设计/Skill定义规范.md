@@ -138,15 +138,12 @@ WORKFLOW.yaml 把这段连续叙事**切割为多个 Stage**，以便在关键�
 ```yaml
 - stage_id: s01-collect-requirements  # 锚定 Step 1
   skill_id: design-tech-stack
-  confirmation_point: true
 
 - stage_id: s02-architecture-selection  # 锚定 Step 2
   skill_id: design-tech-stack
-  confirmation_point: true
 
 - stage_id: s03-tech-stack-output  # 锚定 Step 3
   skill_id: design-tech-stack
-  confirmation_point: true
 ```
 
 但 **Skill 不感知这些 Stage 划分**。它只知道"我有一个三步流程，每步结束时会请用户确认"。
@@ -185,7 +182,7 @@ s03(design-tech-stack) → next 命中映射表 → continue agent-001
 | 就绪 stage 的 skill_id 未命中 | `spawn` action，创建新实例 |
 | SubAgent 崩溃/超时 | 主 Agent 从映射表移除，下次命中时走 `spawn` 重建 |
 | `parallel` 拆分 | 每个拆分实例独立，不参与映射表 |
-| `confirmed(to=self)` 中继确认 | 同一 Stage 循环，重新 spawn |
+| confirm + continue 循环 | 同一 Stage 循环，SubAgent 继续执行 |
 | 用户 rollback | 级联清理 `system_agent_id`，映射表自然失效 |
 
 ### 跨 Stage 状态传递

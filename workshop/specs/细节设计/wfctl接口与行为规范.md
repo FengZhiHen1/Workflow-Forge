@@ -18,7 +18,7 @@ wfctl 不接触用户，不启动 SubAgent，不做语义判断，不持有内�
 
 | 命令 | 职责 | 调用时机 |
 |------|------|---------|
-| `resolve` | 无参数时扫描可用工作流（ID、版本、描述、标签）；`--workflow <id>@<ver>` 时解析单个 WORKFLOW.yaml（stage 列表、并发声明、确认点位置、输入 schema） | 主 Agent 需了解工作流选项或锁定目标后查看详情 |
+| `resolve` | 无参数时扫描可用工作流（ID、版本、描述、标签）；`--workflow <id>@<ver>` 时解析单个 WORKFLOW.yaml（stage 列表、并发声明、条件路由、输入 schema） | 主 Agent 需了解工作流选项或锁定目标后查看详情 |
 | `create` | 生成 Instance JSON，分配实例 worktree，写入身份元数据，打初始锚点 | 主 Agent 确认工作流后 |
 | `next` | **调度核心**：读 instance 状态，消费消息池，更新 stage 状态，处理 ERROR 分支，计算并返回下一步批量 actions | 每次循环的默认调用 |
 | `sync` | 仅消费消息池、更新 stage 状态，**不计算 next**（诊断用） | 开发者查询进度或主 Agent 轻量查看时 |
@@ -147,7 +147,7 @@ next --instance <id>
   ├─ 10. 冲突处理：CONFLICT stage 自愈或上报
   ├─ 11. 计算就绪 stage（BFS + 边条件判断）
   ├─ 12. 同 Skill 延续检测 + worktree 分配
-  ├─ 13. 确认点聚合
+  ├─ 13. AWAITING_CONFIRM 聚合
   ├─ 14. 检测实例终态（COMPLETED / FAILED）→ 自动清理全部 worktree
   └─ 返回批量 action 数组
 ```
@@ -199,15 +199,14 @@ Stage 进入 ERROR 的两种路径：
 
 ### 选择边（choice routing）
 
-选择边通过 `SUCCESS` / `CONFIRMED` / `REJECTED` 边 + `choice` 属性实现，将 stage 导向不同下游。
+选择边通过 `SUCCESS 边 + `choice` 属性实现，将 stage 导向不同下游。
 
 #### 分类
 
 | 类型 | 边条件 | choice 来源 | 决策时机 | 处理接口 |
 |------|--------|------------|----------|---------|
-| **运行时选择** | `SUCCESS` | SubAgent 上报 `routing_choice` | `next` 消费消息时 | `TransitionPolicy.match_success_edge()` |
-| **确认选择** | `CONFIRMED` | 用户 `wfctl confirm --choice` | CLI 命令时 | `TransitionPolicy.match_confirmed_edge()` |
-| **拒绝选择** | `REJECTED` | 用户 `wfctl confirm --choice` | CLI 命令时 | `TransitionPolicy.match_rejected_edge()` |
+| **运行时路由** | `SUCCESS` + `choice` | SubAgent 上报 `routing_choice` | `next` 消费消息时 | `TransitionPolicy.match_success_edge()` |
+| **用户确认** | Skill 内部 AskUserQuestion | 用户 `wfctl confirm --choice` | CLI 命令时 | `TransitionPolicy.on_confirm()` → PENDING + `pending_choice` |
 
 #### 运行时选择（SUCCESS choice）
 
@@ -221,15 +220,16 @@ SubAgent 上报 DONE 时，消息中可携带 `routing_choice`。`MessageConsume
 - 无匹配但存在无 choice 的兜底 edge → 返回兜底 edge
 - 无匹配且无兜底 → stage → ERROR
 
-#### 确认选择（CONFIRMED / REJECTED choice）
+#### 条件路由（SUCCESS + choice）
 
-用户调用 `confirm --choice <value>` 时，`TransitionPolicy.on_confirm()` 内部按以下顺序匹配：
+`confirm` 命令不再匹配边。`TransitionPolicy.on_confirm()` 统一返回 PENDING + continue，
+将用户选择的 `choice` 写入 `pending_choice`，由 `AllocateSpawnProcessor` 注入 continue prompt 回传 SubAgent。
 
-1. 在 `confirmed_edges` 中精确匹配 choice → 命中则按 confirmed 逻辑处理
-2. 在 `rejected_edges` 中精确匹配 choice → 命中则按 rejected 逻辑处理
-3. 均无匹配 → 报错（unknown choice）
+SubAgent 收到用户选择后，自行决定后续行为：
+- 继续工作（多轮确认）
+- 上报 DONE + routing_choice（选择下游路径）
 
-每条 choice 边组（同 condition）中，允许存在一条无 choice 的兜底 edge。精确匹配优先，兜底 edge 作为默认分支。
+如 `loop_counter >= loop_exceeded_edge.max_loop`，`on_confirm()` 返回 DONE + `exit_condition=loop_exceeded`，触发逃生路径。
 
 #### 与独立使用的兼容性
 
@@ -271,7 +271,7 @@ Skill 单独使用时（非工作流环境），其 `AskUserQuestion` 正常触�
 - `requires_parallel_targets: true` 时，主 Agent 在 SubAgent 的 prompt 中注入"请产出 `parallel_targets`"。Skill 不感知工作流协议，仅响应注入要求。
 - `context`：传递给 SubAgent 的结构化上下文（上游摘要、平行拆分目标等），由主 Agent 拼入 prompt。
 
-### 确认点聚合
+### AWAITING_CONFIRM 聚合
 
 `next` 发现多个 stage 处于 `AWAITING_CONFIRM` 时，合并为一个 `confirm` action：
 
@@ -293,9 +293,9 @@ wfctl 不做聚合决策——返回当前时刻的 pending 快照。主 Agent �
 - 多个就绪 stage 中含 exclusive → 正常 FIFO，不特殊照顾。exclusive 完成后，下一轮 `next` 自然捡起等待的 stage。
 - 不需要 `deferred` action——等待的 stage 依然是 `PENDING`。
 
-### rejected 默认行为
+### 确认默认行为（已废弃）
 
-`confirmation_point: true` 被用户拒绝，且 YAML 中无对应 `rejected` edge → Instance → `FAILED`，原因记录 deviation 日志。不静默终止。
+(已废弃) 用户拒绝，且 YAML 中无对应 `rejected` edge → Instance → `FAILED`，原因记录 deviation 日志。不静默终止。
 
 ### 子工作流父感知
 
@@ -329,7 +329,7 @@ confirm --instance <id> --stage <stage_id> --choice <string> [--feedback "..."]
 
 `confirm` 是 CLI stage 操作命令之一，遵循统一模式：调用 `TransitionPolicy` 做纯决策 → 生成 `StateDelta` → `apply_delta()` → 执行副作用 → `save_instance_state()`。不直接 mutate dict。
 
-**choice 匹配到 confirmed edge**：
+**choice 匹配到 success edge**：
 1. 加载 `InstanceState`，校验 stage 当前状态为 `AWAITING_CONFIRM`
 2. `TransitionPolicy.from_adjacency(adj, stage_id).on_confirm(stage, choice)` 做决策
 3. 决策结果转换为 `StateDelta`，应用到实例状态
@@ -338,10 +338,10 @@ confirm --instance <id> --stage <stage_id> --choice <string> [--feedback "..."]
 6. 保存状态，写入 timeline
 7. 返回 `{status: "ok", stage_id: "s03", new_status: "DONE", matched: "方案A-微服务"}`
 
-**choice 匹配到 rejected edge 或无 edge 的兜底**：
-1. `TransitionPolicy.on_confirm()` 内部匹配 rejected edges
-2. **有匹配的 rejected edge**：`StateDelta` 将 stage 置 `PENDING`，`attempt_count` 归零
-3. **无匹配的 rejected edge**：`StateDelta` 将 instance 置 `FAILED`
+**(已废弃) 确认现在是 Skill 内部行为**：
+1. (已废弃) `TransitionPolicy.on_confirm()` 简化为单一路径
+2. (已废弃)：`StateDelta` 将 stage 置 `PENDING`，`attempt_count` 归零
+3. (已废弃)：`StateDelta` 将 instance 置 `FAILED`
 4. `--feedback` 文本写入 Message 关联字段，供 SubAgent 重做时参考
 5. 保存状态，写入 timeline
 6. 返回 `{status: "ok", stage_id: "s03", new_status: "PENDING"}` 或 `{status: "instance_failed", ...}`

@@ -25,7 +25,7 @@
 | `stage_id` | `string` | 是 | 全局唯一，kebab-case |
 | `name` | `string` | 是 | 展示用名称 |
 | `mandatory` | `boolean` | 是 | `true` 时用户不可跳过 |
-| `confirmation_point` | `boolean` | 是 | `true` 时该 stage 完成后触发 AskUserQuestion |
+| (已废弃) | - | - | 确认现在是 Skill 内部 AskUserQuestion 行为，工作流定义不再声明 |
 | `retry` | `integer` | 否 | 失败后重试次数，`0` 不重试（默认），`2` 失败后再执行 2 次
 | `timeout_seconds` | `integer` | 否 | stage 超时秒数。YAML 为默认值，主 Agent 可在运行时根据上下文动态调整。超时后由宿主平台终止 SubAgent，主 Agent 收到通知后调用 `next`，wfctl 将 stage 置为 ERROR 走 retry 分支 |
 | `model` | `string` | 否 | 模型档位（`light` / `standard` / `heavy`），主 Agent 根据平台模型映射表解析为具体模型名 |
@@ -39,7 +39,7 @@
 | `skill_id` | `string` | 指向 `artifacts/skills/<id>/` 或本工作流 `skills/` 下的 Skill。可钉住版本（`<id>@<ver>`），不写版本则浮动最新 |
 | `workflow` | `string` | 指向 `artifacts/workflows/<id>@<ver>/`，声明子工作流 |
 
-**虚拟 stage**（`s00-workflow-start`、`s99-workflow-end`）：两者均不写，`name` 取固定值。虚拟 stage 豁免 `mandatory` / `confirmation_point` / `retry` 字段校验，wfctl 内部处理。
+**虚拟 stage**（`s00-workflow-start`、`s99-workflow-end`）：两者均不写，`name` 取固定值。虚拟 stage 豁免 `mandatory` / `retry` 字段校验，wfctl 内部处理。
 
 ### 2.3 并发
 
@@ -64,9 +64,9 @@
 | `from` | `string` | 是 | 上游 stage_id |
 | `to` | `string` | 是 | 下游 stage_id |
 | `condition` | `string` | 是 | 枚举见 3.1 |
-| `max_loop` | `integer` | 条件必填 | `condition=failure` 或 `condition=confirmed`（且 `from == to`，即中继确认回指自身）时必填。循环次数达到上限后走 `loop_exceeded` edge |
-| `choice` | `string` | 否 | `condition=confirmed` 或 `condition=rejected` 时可选。值须与 SubAgent `confirm_questions` 中标注的选项值严格一致。wfctl 通过字符串匹配选择对应 edge。同 `from` 下的多条同 condition edge 当 `choice` 互斥；无 `choice` 的 edge 作为兜底 |
-| `cascade_reset_until` | `string` | 否 | 级联重置的上限 stage_id。仅用于回边（`to` 在拓扑序上位于 `from` 之前或自身）。当 confirmed/rejected edge 触发回跳时，`rollback` 命令或 `TransitionPolicy.compute_cascade_reset()` 只重置到该 stage 为止（含），不继续向上游扩散。该 stage 必须是从 `from` 可达的祖先或 `from` 自身 |
+| `max_loop` | `integer` | 条件必填 | `condition=failure` 或 `condition=loop_exceeded` 时必填。循环次数达到上限后走 `loop_exceeded` edge |
+| `choice` | `string` | 否 | `condition=success` 时可选。wfctl 通过字符串匹配 `routing_choice` 选择对应 edge。同 `from` 下的多条 success edge 当 `choice` 互斥；无 `choice` 的 edge 作为兜底 |
+| `cascade_reset_until` | `string` | 否 | 级联重置的上限 stage_id。仅用于回边（`to` 在拓扑序上位于 `from` 之前或自身）。当 SUCCESS 回边触发级联重置时，`rollback` 命令或 `TransitionPolicy.compute_cascade_reset()` 只重置到该 stage 为止（含），不继续向上游扩散。该 stage 必须是从 `from` 可达的祖先或 `from` 自身 |
 | `aggregation` | `string` | 否 | `all`（默认）/ `any`。多实例时解锁下游的条件。`any` 解锁下游时自动取消其余未完成实例。仅适用于互斥替代方案（如多方案评估，任一通过即可），不适用于互补拆分 |
 
 ### 3.1 condition 枚举
@@ -74,10 +74,8 @@
 | 值 | 触发场景 |
 |----|---------|
 | `always` | stage 完成后无条件流转 |
-| `success` | SubAgent 上报 DONE |
-| `failure` | SubAgent 上报 ERROR |
-| `confirmed` | confirmation_point 被用户确认。有 `choice` 值时按字符串匹配选择对应 edge，无 `choice` 时匹配所有未标 `choice` 的 confirmed edge |
-| `rejected` | confirmation_point 被用户拒绝 |
+| `success` | SubAgent 上报 DONE。有 `choice` 值时按 `routing_choice` 匹配对应 edge，无 `choice` 时作为兜底 |
+| `failure` | SubAgent 上报 ERROR 且重试耗尽 |
 | `loop_exceeded` | 循环次数达到 `max_loop` |
 
 ---
@@ -101,7 +99,6 @@ stages:
     name: "选题分析"
     skill_id: topic-analyst
     mandatory: true
-    confirmation_point: true
     retry: 2
     model: standard
 
@@ -109,7 +106,6 @@ stages:
     name: "模块拆解"
     skill_id: module-breakdown
     mandatory: true
-    confirmation_point: false
 
   - stage_id: s03
     name: "逐模块设计"
@@ -129,18 +125,18 @@ edges:
 
   - from: s01
     to: s02
-    condition: confirmed
+    condition: success
     choice: "通过"
 
   - from: s01
     to: s01
-    condition: rejected
+    condition: success
     choice: "重做"
     max_loop: 3
 
   - from: s01
     to: s99-workflow-end
-    condition: rejected
+    condition: success
     choice: "放弃"
 
   - from: s01
@@ -172,7 +168,6 @@ stages:
     name: "方案设计"
     skill_id: design-architect
     mandatory: true
-    confirmation_point: true
 
   - stage_id: s03
     name: "代码实现"
@@ -186,20 +181,20 @@ edges:
   # 中继确认：回指自身，继续设计
   - from: s02
     to: s02
-    condition: confirmed
+    condition: success
     choice: "继续完善"
     max_loop: 5
 
   # 终局确认：指向下游
   - from: s02
     to: s03
-    condition: confirmed
+    condition: success
     choice: "通过"
 
   # 放弃
   - from: s02
     to: s99-workflow-end
-    condition: rejected
+    condition: success
     choice: "放弃"
 
   # 循环超限
