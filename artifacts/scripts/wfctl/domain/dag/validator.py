@@ -67,7 +67,6 @@ def validate_workflow(spec: WorkflowSpec) -> ValidationResult:
     issues.extend(_check_cycles(adj, topo))
     issues.extend(_check_back_edges(topo))
     issues.extend(_check_edge_completeness(spec, adj))
-    issues.extend(_check_confirmation_coverage(spec, adj))
     issues.extend(_check_choice_consistency(adj))
     issues.extend(_check_failure_chain(adj))
     issues.extend(_check_parallel_consistency(spec, adj))
@@ -169,42 +168,10 @@ def _check_edge_completeness(
     return issues
 
 
-# ── 确认点覆盖 ──
-
-def _check_confirmation_coverage(
-    spec: WorkflowSpec, adj: AdjacencyList
-) -> list[ValidationIssue]:
-    """检测 confirmation_point 是否有 confirmed/rejected 边覆盖。"""
-    issues: list[ValidationIssue] = []
-
-    for stage in spec.stages:
-        if not stage.confirmation_point:
-            continue
-        edges = adj.outgoing.get(stage.stage_id, [])
-        has_confirmed = any(e.condition == EdgeCondition.CONFIRMED for e in edges)
-        has_rejected = any(e.condition == EdgeCondition.REJECTED for e in edges)
-
-        if not has_confirmed:
-            issues.append(ValidationIssue(
-                "CONFIRMATION_GAP",
-                f"Stage '{stage.stage_id}' 设置了 confirmation_point 但无 CONFIRMED 出边",
-                stage_id=stage.stage_id,
-            ))
-        if not has_rejected:
-            issues.append(ValidationIssue(
-                "CONFIRMATION_GAP",
-                f"Stage '{stage.stage_id}' 设置了 confirmation_point 但无 REJECTED 出边",
-                stage_id=stage.stage_id,
-                severity="WARNING",
-            ))
-
-    return issues
-
-
 # ── choice 一致性 ──
 
 def _check_choice_consistency(adj: AdjacencyList) -> list[ValidationIssue]:
-    """检测 SUCCESS/CONFIRMED/REJECTED 边的 choice 一致性和歧义路由。"""
+    """检测 SUCCESS 边的 choice 一致性和歧义路由。"""
     issues: list[ValidationIssue] = []
 
     for stage_id, edges in adj.outgoing.items():
@@ -212,7 +179,7 @@ def _check_choice_consistency(adj: AdjacencyList) -> list[ValidationIssue]:
         for e in edges:
             by_cond.setdefault(e.condition, []).append(e)
 
-        for cond in (EdgeCondition.SUCCESS, EdgeCondition.CONFIRMED, EdgeCondition.REJECTED):
+        for cond in (EdgeCondition.SUCCESS,):
             cond_edges = by_cond.get(cond, [])
             if len(cond_edges) <= 1:
                 continue

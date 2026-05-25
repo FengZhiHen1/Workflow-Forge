@@ -41,13 +41,13 @@ def _write_workflow_yaml(root: Path, workflow_id: str):
         f'max_parallel_agents: 4\nanchor_prefix: "wf"\n'
         f'stages:\n'
         f'  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        f'  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n    confirmation_point: false\n'
-        f'  - stage_id: s02\n    name: "B"\n    skill_id: skill-b\n    mandatory: true\n    confirmation_point: true\n'
+        f'  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n\n'
+        f'  - stage_id: s02\n    name: "B"\n    skill_id: skill-b\n    mandatory: true\n\n'
         f'  - stage_id: s99-workflow-end\n    name: "结束"\n'
         f'edges:\n'
         f'  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
         f'  - from: s01\n    to: s02\n    condition: success\n'
-        f'  - from: s02\n    to: s99-workflow-end\n    condition: confirmed\n',
+        f'  - from: s02\n    to: s99-workflow-end\n    condition: success\n',
         encoding="utf-8",
     )
 

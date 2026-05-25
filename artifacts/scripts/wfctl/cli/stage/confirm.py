@@ -1,25 +1,20 @@
-"""confirm 命令——处理用户确认/拒绝 AWAITING_CONFIRM 的 stage。
+"""confirm 命令——处理用户确认 AWAITING_CONFIRM 的 stage。
 
-所有决策委托给 TransitionPolicy，CLI handler 只负责：
-1. 加载/保存状态
-2. 调用 TransitionPolicy 纯决策
-3. 执行副作用（文件写入、running_agents 清理）
+confirm 永远返回 PENDING + continue，将用户选择传回 SubAgent。
+DONE 由 SubAgent 通过 routing_choice 上报驱动流转。
 """
-
-import json
 
 from domain.dag.graph import build_adjacency
 from infrastructure.errors import InputError
-from infrastructure.project import find_root
 from compat.workflow.registry import load_workflow
 from domain.transition.policy import TransitionPolicy
 from compat.instance.registry import load_instance_state, save_instance_state
-from state.model import InstanceStatus, StageState, StageStatus, StateDelta
+from state.model import StageStatus, StateDelta
 from state.timeline import append_timeline
 
 
 def register_confirm(subparsers):
-    p = subparsers.add_parser("confirm", help="确认/拒绝 AWAITING_CONFIRM 的 stage")
+    p = subparsers.add_parser("confirm", help="确认 AWAITING_CONFIRM 的 stage")
     p.add_argument("--instance", required=True, help="实例 ID")
     p.add_argument("--stage", required=True, help="目标 stage_id")
     p.add_argument("--choice", required=True, help="用户选择的选项值")
@@ -36,7 +31,6 @@ def _handle_confirm(args) -> dict:
     wf_dir = find_workflow_dir(state.workflow_id, version if version else None)
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")
     adj = build_adjacency(spec)
-    stage_order = [s.stage_id for s in spec.stages]
 
     # __merge__ 伪 stage
     if args.stage == "__merge__":
@@ -56,27 +50,12 @@ def _handle_confirm(args) -> dict:
             code="INVALID_ARGUMENT",
         )
 
-    # 纯决策
+    # 纯决策：永远返回 PENDING + continue
     policy = TransitionPolicy.from_adjacency(adj, args.stage)
-    result = policy.on_confirm(stage, args.choice, bool(args.feedback), stage_order)
+    result = policy.on_confirm(stage, args.choice, bool(args.feedback))
 
-    if result.instance_failed:
-        delta = StateDelta(instance_updates={"status": InstanceStatus.FAILED})
-        new_state = state.apply_delta(delta)
-        save_instance_state(args.instance, new_state)
-        return {"status": "instance_failed", "stage_id": args.stage, "reason": result.reason}
-
-    # 构建 StateDelta（委托给 TransitionPolicy）
-    delta = TransitionPolicy.build_confirm_delta(result, stage, state, spec.stages)
-
-    # 级联重置
-    cascade = None
-    if result.cascade_reset_target is not None:
-        cascade = TransitionPolicy.compute_cascade_reset(
-            state, args.stage, result.cascade_reset_target, stage_order,
-        )
-        if cascade.removed_stage_instance_ids or cascade.reset_stage_instance_ids:
-            delta = delta.merge(cascade.to_state_delta(spec.stages))
+    # 构建 StateDelta（传入 state 以便 loop_exceeded 时激活目标 stage）
+    delta = TransitionPolicy.build_confirm_delta(result, stage, state)
 
     # 应用状态变更
     new_state = state.apply_delta(delta)
@@ -85,13 +64,6 @@ def _handle_confirm(args) -> dict:
     if result.requires_feedback and args.feedback:
         _write_feedback_message(args.instance, args.stage, stage, args.choice, args.feedback)
 
-    if result.is_relay and stage.requires_parallel_targets:
-        from runtime.message.handler import validate_parallel_targets
-        validate_parallel_targets(args.instance, args.stage, stage.output_message_id)
-
-    if cascade and cascade.cleanup_running_agent_stage_ids:
-        _cleanup_running_agents_for_reset(args.instance, cascade.cleanup_running_agent_stage_ids)
-
     append_timeline(args.instance, args.stage, result.timeline_event_label, {
         "choice": args.choice,
         "reason": result.reason,
@@ -99,16 +71,13 @@ def _handle_confirm(args) -> dict:
 
     save_instance_state(args.instance, new_state)
 
-    response: dict = {"status": "ok", "stage_id": args.stage}
-    if result.is_relay:
-        response.update({"new_status": "PENDING", "matched": args.choice, "loop": stage.loop_counter + 1})
-    elif result.is_rejected:
-        response.update({"new_status": "DONE", "rejected": True, "target": result.target_stage_id})
-    elif result.exit_condition == "confirmed":
-        response.update({"new_status": "DONE", "matched": args.choice})
-    elif result.exit_condition == "loop_exceeded":
-        response.update({"new_status": "DONE", "reason": "loop_exceeded", "target": result.target_stage_id})
-    return response
+    return {
+        "status": "ok",
+        "stage_id": args.stage,
+        "new_status": "PENDING",
+        "matched": args.choice,
+        "loop": stage.loop_counter + 1,
+    }
 
 
 def _handle_merge_confirm(args, state) -> dict:
@@ -123,8 +92,7 @@ def _handle_merge_confirm(args, state) -> dict:
     return {"status": "ok", "stage_id": "__merge__", "merge_confirmed": result.merge_confirmed}
 
 
-def _write_feedback_message(instance_id: str, stage_id: str, stage: StageState,
-                            choice: str, feedback: str):
+def _write_feedback_message(instance_id: str, stage_id: str, stage, choice: str, feedback: str):
     from runtime.message.handler import write_message
     write_message(
         instance_id=instance_id,
@@ -134,23 +102,3 @@ def _write_feedback_message(instance_id: str, stage_id: str, stage: StageState,
         report=feedback,
         checkpoint_summary=f"用户反馈（选项 {choice}）：{feedback}",
     )
-
-
-def _cleanup_running_agents_for_reset(instance_id: str, reset_stage_ids: list[str]) -> None:
-    root = find_root()
-    path = root / ".agent" / "running_agents.json"
-    if not path.exists():
-        return
-    try:
-        agents = json.loads(path.read_text(encoding="utf-8"))
-        before = len(agents)
-        agents = [
-            a for a in agents
-            if not (a.get("instance_id") == instance_id
-                    and a.get("stage_id") in reset_stage_ids)
-        ]
-        if len(agents) != before:
-            path.write_text(json.dumps(agents, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
-    except Exception:
-        pass

@@ -20,7 +20,7 @@ def test_create_instance_success(monkeypatch, tmp_path: Path):
     wf_dir = repo / ".claude" / "workflows" / "test-flow"
     wf_dir.mkdir(parents=True)
     (wf_dir / "WORKFLOW.yaml").write_text(
-        'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 2\nanchor_prefix: "wf"\nstages:\n  - stage_id: s00-workflow-start\n    name: "开始"\n  - stage_id: s01\n    name: "分析"\n    skill_id: analyst\n    mandatory: true\n    confirmation_point: false\nedges:\n  - from: s00-workflow-start\n    to: s01\n    condition: always',
+        'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 2\nanchor_prefix: "wf"\nstages:\n  - stage_id: s00-workflow-start\n    name: "开始"\n  - stage_id: s01\n    name: "分析"\n    skill_id: analyst\n    mandatory: true\n\nedges:\n  - from: s00-workflow-start\n    to: s01\n    condition: always',
         encoding="utf-8",
     )
 

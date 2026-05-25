@@ -56,7 +56,7 @@ python .claude/scripts/wfctl/main.py <command> [options]
 
 ## 四、变更与降级说明
 
-SubAgent 不自行判定是否需要用户确认——该决策由 WORKFLOW.yaml 的 `confirmation_point` 字段控制，编排器通过 `wfctl next` 感知后负责呈现确认。
+SubAgent 在需要用户确认时上报 AWAITING_CONFIRM，编排器通过 `wfctl next` 感知后负责呈现确认。
 
 ### 方案级降级（禁止自主执行，必须上报 AWAITING_CONFIRM）
 

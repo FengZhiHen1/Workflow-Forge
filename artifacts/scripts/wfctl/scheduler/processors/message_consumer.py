@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from domain.dag.graph import get_confirmed_edges
+from domain.dag.graph import is_backward_edge
+from domain.transition.policy import TransitionPolicy
 from infrastructure.project import find_root
 from runtime.message.handler import scan_messages
 from scheduler.context import ExecutionContext
@@ -167,30 +168,39 @@ class ConsumeMessagesProcessor:
 
             new_consumed.add(msg_id)
 
-        # 1.5 AWAITING_CONFIRM 合法性校验
-        for sid in list(cycle_meta.newly_awaiting_confirm_ids):
+        # 1.5 Cascade reset：DONE + routing_choice 匹配回边时触发级联重置
+        stage_order = [s.stage_id for s in ctx.spec.stages]
+        for sid in list(cycle_meta.newly_done_stage_instance_ids):
             st = stage_index.get(sid)
-            if st is None:
+            if st is None or not st.routing_choice:
                 continue
-            if not get_confirmed_edges(ctx.adj, st.stage_id):
-                # 从 cycle_meta 移除，标记为 error
-                cycle_meta = CycleMeta(
-                    newly_done_stage_instance_ids=cycle_meta.newly_done_stage_instance_ids,
-                    newly_error_stage_instance_ids=cycle_meta.newly_error_stage_instance_ids | {sid},
-                    newly_awaiting_confirm_ids=cycle_meta.newly_awaiting_confirm_ids - {sid},
-                    ready_candidates=cycle_meta.ready_candidates,
-                )
-                # 清除已写入的元数据
-                delta.stage_updates.pop(sid, None)
-                side_effects.append(SideEffect(
-                    kind="deviation_write",
-                    description=f"Invalid AWAITING_CONFIRM for {st.stage_id}",
-                    execute=lambda iid=ctx.instance_id, sid=st.stage_id: _append_deviation(
-                        iid, "INVALID_AWAITING_CONFIRM",
-                        f"Stage {sid} 无 confirmed 边但上报了 AWAITING_CONFIRM，已转为 ERROR",
-                        stage_id=sid,
-                    ),
-                ))
+            policy = TransitionPolicy.from_adjacency(ctx.adj, st.stage_id)
+            matched = policy.match_success_edge(st.routing_choice)
+            if matched is None:
+                continue
+            if not is_backward_edge(stage_order, st.stage_id, matched.to_stage):
+                continue
+            cascade = TransitionPolicy.compute_cascade_reset(
+                state, st.stage_id, matched.to_stage, stage_order,
+            )
+            if cascade.removed_stage_instance_ids or cascade.reset_stage_instance_ids:
+                delta.remove_stage_instance_ids.extend(cascade.removed_stage_instance_ids)
+                spec_stage_map = {s.stage_id: s for s in ctx.spec.stages}
+                for reset_sid in cascade.reset_stage_instance_ids:
+                    stage_spec = spec_stage_map.get(reset_sid)
+                    delta.append_stages.append(StageState(
+                        stage_id=reset_sid,
+                        stage_instance_id=reset_sid,
+                        status=StageStatus.PENDING,
+                        model=stage_spec.model if stage_spec else None,
+                    ))
+                if cascade.cleanup_running_agent_stage_ids:
+                    side_effects.append(SideEffect(
+                        kind="json_write",
+                        description=f"Cascade reset cleanup running_agents for {cascade.cleanup_running_agent_stage_ids}",
+                        execute=lambda iid=ctx.instance_id, rids=list(cascade.cleanup_running_agent_stage_ids):
+                            _cleanup_running_agents_for_reset(iid, rids),
+                    ))
 
         # 更新 consumed_message_ids
         delta.instance_updates["consumed_message_ids"] = frozenset(new_consumed)
@@ -223,3 +233,22 @@ class ConsumeMessagesProcessor:
             if s.status in (StageStatus.RUNNING, StageStatus.PENDING, StageStatus.ERROR, StageStatus.AWAITING_CONFIRM):
                 return s
         return candidates[0] if candidates else None
+
+
+def _cleanup_running_agents_for_reset(instance_id: str, reset_stage_ids: list[str]) -> None:
+    """从 running_agents.json 中移除被级联重置的 stage 条目。"""
+    import json
+    root = find_root()
+    path = root / ".agent" / "running_agents.json"
+    if not path.exists():
+        return
+    try:
+        agents = json.loads(path.read_text(encoding="utf-8"))
+        agents = [
+            a for a in agents
+            if not (a.get("instance_id") == instance_id
+                    and a.get("stage_id") in reset_stage_ids)
+        ]
+        path.write_text(json.dumps(agents, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass

@@ -127,7 +127,6 @@ def collect_ancestors(
     if exclude_conditions is None:
         exclude_conditions = {
             EdgeCondition.FAILURE,
-            EdgeCondition.REJECTED,
             EdgeCondition.LOOP_EXCEEDED,
         }
 
@@ -167,11 +166,9 @@ def get_loop_exceeded_edge(adj: AdjacencyList, stage_id: str) -> EdgeSpec | None
     return None
 
 
-def get_confirmed_edges(adj: AdjacencyList, stage_id: str) -> list[EdgeSpec]:
-    """获取指定 stage 的所有 confirmed edges。"""
-    return [e for e in adj.outgoing.get(stage_id, []) if e.condition == EdgeCondition.CONFIRMED]
-
-
-def get_rejected_edges(adj: AdjacencyList, stage_id: str) -> list[EdgeSpec]:
-    """获取指定 stage 的所有 rejected edges。"""
-    return [e for e in adj.outgoing.get(stage_id, []) if e.condition == EdgeCondition.REJECTED]
+def is_backward_edge(stage_order: list[str], from_stage: str, to_stage: str) -> bool:
+    """检测边是否回指拓扑序中更前的 stage（用于 cascade reset 判断）。"""
+    try:
+        return stage_order.index(to_stage) < stage_order.index(from_stage)
+    except ValueError:
+        return False

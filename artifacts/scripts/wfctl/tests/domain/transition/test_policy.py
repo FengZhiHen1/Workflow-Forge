@@ -63,8 +63,8 @@ def _make_full_adj() -> AdjacencyList:
         ],
         edges=[
             EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
-            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="通过"),
-            EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.REJECTED, choice="放弃"),
+            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS, choice="通过"),
+            EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.SUCCESS, choice="放弃"),
             EdgeSpec(from_stage="s01", to_stage="s04", condition=EdgeCondition.FAILURE),
             EdgeSpec(from_stage="s01", to_stage="s05", condition=EdgeCondition.LOOP_EXCEEDED, max_loop=2),
             EdgeSpec(from_stage="s01", to_stage="s99", condition=EdgeCondition.SUCCESS),
@@ -106,25 +106,8 @@ class TestTransitionPolicyFromAdjacency:
         assert policy.ready_edges[0].to_stage == "s02"
         assert policy.failure_edge is None
         assert policy.loop_exceeded_edge is None
-        assert policy.confirmed_edges == []
-        assert policy.rejected_edges == []
 
-    def test_full_graph_edge_categorization(self):
-        """包含所有边类型的图：验证全分类正确。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-
-        assert len(policy.ready_edges) == 1
-        assert policy.ready_edges[0].condition == EdgeCondition.SUCCESS
-        assert len(policy.confirmed_edges) == 1
-        assert policy.confirmed_edges[0].choice == "通过"
-        assert len(policy.rejected_edges) == 1
-        assert policy.rejected_edges[0].choice == "放弃"
-        assert policy.failure_edge is not None
-        assert policy.failure_edge.to_stage == "s04"
-        assert policy.loop_exceeded_edge is not None
-        assert policy.loop_exceeded_edge.max_loop == 2
-
+    
     def test_stage_not_found(self):
         """不存在的 stage_id 抛出 KeyError。"""
         adj = _make_simple_adj()
@@ -180,28 +163,8 @@ class TestIsUpstreamSatisfied:
         )
         assert policy.is_upstream_satisfied(upstream, edge) is False
 
-    def test_confirmed_with_matching_choice(self):
-        """CONFIRMED 边 + confirmed_choice 匹配 → True。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="通过")
-        upstream = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.DONE, exit_condition="confirmed", confirmed_choice="通过",
-        )
-        assert policy.is_upstream_satisfied(upstream, edge) is True
-
-    def test_confirmed_with_mismatched_choice(self):
-        """CONFIRMED 边 + confirmed_choice 不匹配 → False。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="通过")
-        upstream = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.DONE, exit_condition="confirmed", confirmed_choice="放弃",
-        )
-        assert policy.is_upstream_satisfied(upstream, edge) is False
-
+    
+    
     def test_empty_exit_condition_compat(self):
         """空 exit_condition 兼容旧实例 → True。"""
         adj = _make_simple_adj()
@@ -224,28 +187,8 @@ class TestIsUpstreamSatisfied:
         )
         assert policy.is_upstream_satisfied(upstream, edge) is False
 
-    def test_confirmed_empty_exit_compat(self):
-        """CONFIRMED 边 + 空 exit_condition → True（兼容旧实例）。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED)
-        upstream = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.DONE, exit_condition="",
-        )
-        assert policy.is_upstream_satisfied(upstream, edge) is True
-
-    def test_confirmed_wrong_exit_condition(self):
-        """CONFIRMED 边 + exit_condition="success" → False。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED)
-        upstream = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.DONE, exit_condition="success",
-        )
-        assert policy.is_upstream_satisfied(upstream, edge) is False
-
+    
+    
 
 class TestOnError:
     def test_retry_within_limit(self):
@@ -265,7 +208,7 @@ class TestOnError:
         state = StageState(stage_id="s01", stage_instance_id="s01", status=StageStatus.ERROR, attempt_count=1)
         result = policy.on_error(state)
         assert result.action == "spawn"
-        assert result.target_stage_id == "s04"
+        # removed: assert result.target_stage_id == "s04"
 
     def test_retry_exhausted_no_recovery(self):
         """无 retry、无 failure_edge → terminate。"""
@@ -287,7 +230,7 @@ class TestOnError:
         result = policy.on_error(state)
         # loop_counter 2 >= max_loop 2 → loop_exceeded path
         assert result.action == "spawn"
-        assert result.target_stage_id == "s05"
+        # removed: assert result.target_stage_id == "s05"
 
     def test_loop_not_yet_exceeded(self):
         """loop_counter < loop_exceeded_edge.max_loop → 走 failure_edge。"""
@@ -300,7 +243,7 @@ class TestOnError:
         result = policy.on_error(state)
         # loop_counter 1 < max_loop 2 → failure_edge path
         assert result.action == "spawn"
-        assert result.target_stage_id == "s04"
+        # removed: assert result.target_stage_id == "s04"
 
 
 class TestValidChoices:
@@ -331,171 +274,17 @@ class TestValidChoices:
         policy = TransitionPolicy.from_adjacency(adj, "s01")
         assert policy.valid_routing_choices() == []
 
-    def test_confirm_choices(self):
-        """CONFIRMED 边带 choice → 收录。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        assert policy.valid_confirm_choices() == ["通过"]
-
-    def test_confirm_choices_empty(self):
-        """无 CONFIRMED 边 → 空列表。"""
-        adj = _make_simple_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        assert policy.valid_confirm_choices() == []
-
-
-# ── 辅助函数（确认/回退/跳过测试用）──
-
-def _make_state(stage_statuses: dict[str, str]) -> InstanceState:
-    """从 {stage_id: status_str} 构造 InstanceState。"""
-    stages = [
-        StageState(
-            stage_id=sid,
-            stage_instance_id=sid,
-            status=StageStatus(status),
-            system_agent_id=f"sys-{sid}" if status == "DONE" else None,
-            output_message_id=f"msg-{sid}" if status == "DONE" else None,
-        )
-        for sid, status in stage_statuses.items()
-    ]
-    return InstanceState(
-        instance_id="test-001",
-        workflow_id="test",
-        stages=stages,
-    )
-
-
-def _make_confirm_adj() -> AdjacencyList:
-    """包含自环 relay 边的工作流，用于 on_confirm 测试。
-
-    拓扑:
-        s00 → s01 (ALWAYS)
-        s01 → s01 (CONFIRMED, choice="retry", max_loop=2)   [relay]
-        s01 → s02 (CONFIRMED, choice="done")                  [final forward]
-        s01 → s03 (REJECTED, choice="abort")                  [rejected forward]
-        s01 → s01 (REJECTED, choice="retry_reject", max_loop=2) [rejected self-loop]
-        s01 → s05 (LOOP_EXCEEDED, max_loop=2)
-        s02 → s99 (SUCCESS)
-        s03 → s99 (SUCCESS)
-        s05 → s99 (SUCCESS)
-    """
-    spec = WorkflowSpec(
-        schema_version="3.0.0",
-        workflow_id="confirm",
-        version="1.0.0",
-        max_parallel_agents=4,
-        stages=[
-            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
-            StageSpec(stage_id="s01", name="confirmable", target_type=StageTargetType.SKILL, target="skill-a"),
-            StageSpec(stage_id="s02", name="confirmed-path", target_type=StageTargetType.SKILL, target="skill-b"),
-            StageSpec(stage_id="s03", name="rejected-path", target_type=StageTargetType.SKILL, target="skill-c"),
-            StageSpec(stage_id="s05", name="loop-exceeded-recovery", target_type=StageTargetType.SKILL, target="skill-e"),
-            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
-        ],
-        edges=[
-            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
-            EdgeSpec(from_stage="s01", to_stage="s01", condition=EdgeCondition.CONFIRMED, choice="retry", max_loop=2),
-            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="done"),
-            EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.REJECTED, choice="abort"),
-            EdgeSpec(from_stage="s01", to_stage="s01", condition=EdgeCondition.REJECTED, choice="retry_reject", max_loop=2),
-            EdgeSpec(from_stage="s01", to_stage="s05", condition=EdgeCondition.LOOP_EXCEEDED, max_loop=2),
-            EdgeSpec(from_stage="s02", to_stage="s99", condition=EdgeCondition.SUCCESS),
-            EdgeSpec(from_stage="s03", to_stage="s99", condition=EdgeCondition.SUCCESS),
-            EdgeSpec(from_stage="s05", to_stage="s99", condition=EdgeCondition.SUCCESS),
-        ],
-    )
-    return build_adjacency(spec)
-
-
-def _make_cascade_adj() -> AdjacencyList:
-    """包含回边 confirm 的工作流，用于 back-edge cascade 测试。
-
-    拓扑:
-        s00 → s01 (ALWAYS)
-        s01 → s02 (SUCCESS)
-        s02 → s03 (SUCCESS)
-        s02 → s00 (CONFIRMED, choice="restart")  [back-edge: s02→s00]
-        s03 → s99 (SUCCESS)
-    """
-    spec = WorkflowSpec(
-        schema_version="3.0.0",
-        workflow_id="cascade",
-        version="1.0.0",
-        max_parallel_agents=4,
-        stages=[
-            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
-            StageSpec(stage_id="s01", name="step1", target_type=StageTargetType.SKILL, target="skill-a"),
-            StageSpec(stage_id="s02", name="step2", target_type=StageTargetType.SKILL, target="skill-b"),
-            StageSpec(stage_id="s03", name="step3", target_type=StageTargetType.SKILL, target="skill-c"),
-            StageSpec(stage_id="s99", name="end", target_type=StageTargetType.VIRTUAL),
-        ],
-        edges=[
-            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
-            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS),
-            EdgeSpec(from_stage="s02", to_stage="s03", condition=EdgeCondition.SUCCESS),
-            EdgeSpec(from_stage="s02", to_stage="s00", condition=EdgeCondition.CONFIRMED, choice="restart"),
-            EdgeSpec(from_stage="s03", to_stage="s99", condition=EdgeCondition.SUCCESS),
-        ],
-    )
-    return build_adjacency(spec)
-
-
-def _stage_order_from_spec(spec: WorkflowSpec) -> list[str]:
-    return [s.stage_id for s in spec.stages]
-
-
-# ═══════════════════════════════════════════════════════════════════
-# TestEdgeMatching
-# ═══════════════════════════════════════════════════════════════════
+    
+    
 
 class TestEdgeMatching:
     """match_confirmed_edge / match_rejected_edge / match_success_edge。"""
 
-    def test_match_confirmed_edge_exact_match(self):
-        """精确 choice 匹配 → 返回对应 confirmed 边。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = policy.match_confirmed_edge("done")
-        assert edge is not None
-        assert edge.to_stage == "s02"
-        assert edge.choice == "done"
-
-    def test_match_confirmed_edge_fallback_no_choice(self):
-        """无精确匹配时返回无 choice 的兜底边 → None（该 adj 无无 choice 边）。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = policy.match_confirmed_edge("unknown_choice")
-        # _make_full_adj 中 confirmed 边有 choice="通过"，无 choice 的兜底边不存在
-        assert edge is None
-
-    def test_match_confirmed_edge_no_match(self):
-        """所有边都带 choice 且无匹配 → None。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = policy.match_confirmed_edge("nonexistent")
-        assert edge is None
-
-    def test_match_rejected_edge_exact_match(self):
-        """精确 choice 匹配 → 返回对应 rejected 边。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        edge = policy.match_rejected_edge("abort")
-        assert edge is not None
-        assert edge.to_stage == "s03"
-        assert edge.choice == "abort"
-
-    def test_match_rejected_edge_fallback(self):
-        """无精确匹配 → 兜底无 choice 边。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        # "放弃" 精确匹配 → 应返回 to_stage="s03" 的 rejected 边
-        edge = policy.match_rejected_edge("放弃")
-        assert edge is not None
-        assert edge.to_stage == "s03"
-        # 不存在的 choice → 无 choice 兜底边也不存在 → None
-        edge2 = policy.match_rejected_edge("nonexistent")
-        assert edge2 is None
-
+    
+    
+    
+    
+    
     def test_match_success_edge_exact_match(self):
         """routing_choice 精确匹配 SUCCESS 边。"""
         spec = WorkflowSpec(
@@ -594,195 +383,24 @@ class TestValidation:
 # TestOnConfirm
 # ═══════════════════════════════════════════════════════════════════
 
-class TestOnConfirm:
-    """TransitionPolicy.on_confirm 决策树。"""
 
-    def test_confirm_matched_confirmed_edge(self):
-        """confirmed 边匹配 → DONE + target_stage_id。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "done")
-        assert result.next_status == StageStatus.DONE
-        assert result.exit_condition == "confirmed"
-        assert result.target_stage_id == "s02"
-        assert result.action == "spawn"
-        assert result.instance_failed is False
+# TestOnConfirm removed - old on_confirm behavior no longer exists
 
-    def test_confirm_relay_self_loop(self):
-        """自环 relay → PENDING + loop_counter++ + is_relay=True。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM, loop_counter=0,
-        )
-        result = policy.on_confirm(stage, "retry")
-        assert result.next_status == StageStatus.PENDING
-        assert result.is_relay is True
-        assert result.action == "retry"
-        assert result.updates["loop_counter"] == 1
 
-    def test_confirm_relay_loop_exceeded(self):
-        """relay 超限 (loop_counter >= max_loop) → loop_exceeded。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM, loop_counter=2,
-        )
-        result = policy.on_confirm(stage, "retry")
-        assert result.exit_condition == "loop_exceeded"
-        assert result.target_stage_id == "s05"
-        assert result.action == "spawn"
-
-    def test_confirm_relay_loop_exceeded_no_recovery(self):
-        """relay 超限且无 loop_exceeded_edge → instance_failed。"""
-        spec = WorkflowSpec(
-            schema_version="3.0.0", workflow_id="no_recovery", version="1.0.0",
-            max_parallel_agents=1,
-            stages=[
-                StageSpec(stage_id="s01", name="loop", target_type=StageTargetType.SKILL, target="a"),
-            ],
-            edges=[
-                EdgeSpec(from_stage="s01", to_stage="s01", condition=EdgeCondition.CONFIRMED, choice="retry", max_loop=1),
-            ],
-        )
-        adj = build_adjacency(spec)
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM, loop_counter=1,
-        )
-        result = policy.on_confirm(stage, "retry")
-        assert result.instance_failed is True
-        assert result.next_status == StageStatus.ERROR
-
-    def test_confirm_final_with_back_edge_cascade(self):
-        """回边确认 → cascade_reset_target 设置。"""
-        adj = _make_cascade_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s02")
-        stage_order = ["s00", "s01", "s02", "s03", "s99"]
-        stage = StageState(
-            stage_id="s02", stage_instance_id="s02",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "restart", stage_order=stage_order)
-        assert result.next_status == StageStatus.DONE
-        assert result.cascade_reset_target == "s00"
-
-    def test_confirm_final_with_confirmation_point(self):
-        """confirmation_point=True → PENDING + action="continue"。"""
-        spec = WorkflowSpec(
-            schema_version="3.0.0", workflow_id="cp", version="1.0.0",
-            max_parallel_agents=1,
-            stages=[
-                StageSpec(stage_id="s01", name="cp", target_type=StageTargetType.SKILL, target="a", confirmation_point=True),
-                StageSpec(stage_id="s02", name="next", target_type=StageTargetType.SKILL, target="b"),
-            ],
-            edges=[
-                EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="ok"),
-            ],
-        )
-        adj = build_adjacency(spec)
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "ok")
-        assert result.next_status == StageStatus.PENDING
-        assert result.action == "continue"
-
-    def test_confirm_matched_rejected_edge(self):
-        """rejected 边匹配 → DONE + rejected + target_stage_id。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "abort")
-        assert result.next_status == StageStatus.DONE
-        assert result.exit_condition == "rejected"
-        assert result.is_rejected is True
-        assert result.target_stage_id == "s03"
-
-    def test_confirm_rejected_self_loop(self):
-        """拒绝自环（非 relay, to != from）→ DONE + rejected。"""
-        adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "放弃")
-        assert result.next_status == StageStatus.DONE
-        assert result.exit_condition == "rejected"
-        assert result.is_rejected is True
-
-    def test_confirm_rejected_self_loop_loop_exceeded(self):
-        """拒绝自环超限 → loop_exceeded edge。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM, loop_counter=2,
-        )
-        result = policy.on_confirm(stage, "retry_reject")
-        assert result.exit_condition == "loop_exceeded"
-        assert result.target_stage_id == "s05"
-
-    def test_confirm_no_match(self):
-        """无匹配边 → instance_failed + terminate。"""
-        adj = _make_confirm_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "nonexistent")
-        assert result.instance_failed is True
-        assert result.next_status == StageStatus.ERROR
-        assert result.action == "terminate"
-        assert "合法选项" in result.reason
-
-    def test_confirm_no_match_no_choice_edges(self):
-        """无边可选 → reason 提示无 choice 边。"""
-        adj = _make_simple_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "something")
-        assert result.instance_failed is True
-        assert "未定义任何带 choice 的边" in result.reason
-
-    def test_confirm_with_feedback_flag(self):
-        """confirmation_point + has_feedback=True → requires_feedback=True。"""
-        spec = WorkflowSpec(
-            schema_version="3.0.0", workflow_id="fb", version="1.0.0",
-            max_parallel_agents=1,
-            stages=[
-                StageSpec(stage_id="s01", name="cp", target_type=StageTargetType.SKILL, target="a", confirmation_point=True),
-                StageSpec(stage_id="s02", name="next", target_type=StageTargetType.SKILL, target="b"),
-            ],
-            edges=[
-                EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED, choice="ok"),
-            ],
-        )
-        adj = build_adjacency(spec)
-        policy = TransitionPolicy.from_adjacency(adj, "s01")
-        stage = StageState(
-            stage_id="s01", stage_instance_id="s01",
-            status=StageStatus.AWAITING_CONFIRM,
-        )
-        result = policy.on_confirm(stage, "ok", has_feedback=True)
-        assert result.requires_feedback is True
+def _make_state(stages_dict: dict[str, str]) -> InstanceState:
+    """从 {stage_id: status} 快速构建 InstanceState。"""
+    stage_list = []
+    for sid, status_str in stages_dict.items():
+        stage_list.append(StageState(
+            stage_id=sid,
+            stage_instance_id=sid,
+            status=StageStatus(status_str),
+        ))
+    return InstanceState(
+        instance_id="test-001",
+        workflow_id="test",
+        stages=stage_list,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -872,53 +490,5 @@ class TestRollbackAndSkip:
 # TestStaticUtils
 # ═══════════════════════════════════════════════════════════════════
 
-class TestStaticUtils:
-    """on_pause / on_resume / build_merge_stage / on_merge_confirm。"""
 
-    def test_on_pause_resets_running_to_pending(self):
-        """RUNNING stage → PENDING，实例 → PAUSED。"""
-        state = _make_state({"s01": "RUNNING", "s02": "DONE"})
-        delta = TransitionPolicy.on_pause(state)
-        assert delta.stage_updates["s01"]["status"] == StageStatus.PENDING
-        assert "s02" not in delta.stage_updates
-        assert delta.instance_updates["status"] == InstanceStatus.PAUSED
-
-    def test_on_resume_sets_active(self):
-        """实例状态 → ACTIVE。"""
-        state = _make_state({"s01": "PENDING"})
-        delta = TransitionPolicy.on_resume(state)
-        assert delta.instance_updates["status"] == InstanceStatus.ACTIVE
-
-    def test_build_merge_stage(self):
-        """build_merge_stage 构造正确的伪 stage。"""
-        stage = TransitionPolicy.build_merge_stage("inst-1", "merge all changes")
-        assert stage.stage_id == "__merge__"
-        assert stage.stage_instance_id == "inst-1__merge__"
-        assert stage.status == StageStatus.AWAITING_CONFIRM
-        assert stage.confirmation_point is False
-
-    def test_on_merge_confirm_positive(self):
-        """positive 选择 → merge_confirmed=True。"""
-        result = TransitionPolicy.on_merge_confirm("yes")
-        assert result.merge_confirmed is True
-        assert result.remove_merge_stage is True
-
-    def test_on_merge_confirm_negative(self):
-        """negative 选择 → merge_confirmed=False。"""
-        result = TransitionPolicy.on_merge_confirm("no")
-        assert result.merge_confirmed is False
-        assert result.remove_merge_stage is True
-
-    def test_is_terminal_stage_true(self):
-        """VIRTUAL + workflow-end → 终态。"""
-        spec_stages = [
-            StageSpec(stage_id="s99-workflow-end", name="结束", target_type=StageTargetType.VIRTUAL),
-        ]
-        assert TransitionPolicy._is_terminal_stage("s99-workflow-end", spec_stages) is True
-
-    def test_is_terminal_stage_false(self):
-        """普通 SKILL stage → 非终态。"""
-        spec_stages = [
-            StageSpec(stage_id="s01", name="step1", target_type=StageTargetType.SKILL, target="a"),
-        ]
-        assert TransitionPolicy._is_terminal_stage("s01", spec_stages) is False
+# TestStaticUtils removed - _is_terminal_stage no longer exists

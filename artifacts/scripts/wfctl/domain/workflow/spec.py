@@ -25,8 +25,6 @@ class EdgeCondition(Enum):
     ALWAYS = "always"
     SUCCESS = "success"
     FAILURE = "failure"
-    CONFIRMED = "confirmed"
-    REJECTED = "rejected"
     LOOP_EXCEEDED = "loop_exceeded"
 
 
@@ -49,7 +47,6 @@ class StageSpec:
     target_type: StageTargetType
     target: Optional[str] = None       # skill_id 或 workflow 引用
     mandatory: bool = True
-    confirmation_point: bool = False
     retry: int = 0                     # 默认 0
     timeout_seconds: Optional[int] = None
     model: Optional[str] = None

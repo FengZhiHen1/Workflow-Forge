@@ -56,7 +56,6 @@ class V3WorkflowAdapter:
                 target_type=StageTargetType.VIRTUAL,
                 target=None,
                 mandatory=False,
-                confirmation_point=False,
             )
 
         target_type: StageTargetType
@@ -86,7 +85,6 @@ class V3WorkflowAdapter:
             target_type=target_type,
             target=target,
             mandatory=bool(raw.get("mandatory", True)),
-            confirmation_point=bool(raw.get("confirmation_point", False)),
             retry=int(raw.get("retry", 0)),
             timeout_seconds=int(raw["timeout_seconds"]) if "timeout_seconds" in raw else None,
             model=str(raw["model"]) if "model" in raw else None,
@@ -108,11 +106,16 @@ class V3WorkflowAdapter:
 
         from_stage = str(raw["from"])
         to_stage = str(raw["to"])
-        is_self_loop = from_stage == to_stage
+
+        # CONFIRMED/REJECTED 边条件已移除，改用 SUCCESS + choice
+        if condition_str in ("confirmed", "rejected"):
+            raise SchemaError(
+                f"Edge {idx}: condition '{condition_str}' is no longer supported. "
+                f"Use SUCCESS + choice instead.",
+                code="SCHEMA_VALIDATION_ERROR",
+            )
 
         if condition in (EdgeCondition.FAILURE, EdgeCondition.LOOP_EXCEEDED):
-            max_loop = int(raw["max_loop"]) if "max_loop" in raw else None
-        elif condition == EdgeCondition.CONFIRMED and is_self_loop:
             max_loop = int(raw["max_loop"]) if "max_loop" in raw else None
         else:
             max_loop = None

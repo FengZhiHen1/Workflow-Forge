@@ -32,14 +32,13 @@ class StageState:
     fan_out_target: dict | None = None
     exit_condition: str = ""
     routing_choice: str = ""
-    confirmed_choice: str = ""
+    pending_choice: str = ""  # 最近一次 confirm 的用户选择，供 continue prompt 注入
     valid_routing_choices: list[str] = field(default_factory=list)
     requires_parallel_targets: bool = False
     conflict_files: list[str] = field(default_factory=list)
     continued_to: str | None = None
     parallel_retry_count: int = 0
     confirm_questions: list[str] = field(default_factory=list)
-    confirmation_point: bool = False  # 运行时动态添加的字段
 
     def replace(self, **changes: Any) -> StageState:
         """返回应用变更后的新 StageState。"""
@@ -62,6 +61,8 @@ class StageState:
         raw = dict(data)
         # 跳过已废弃的字段
         raw.pop("confirmed", None)
+        raw.pop("confirmed_choice", None)
+        raw.pop("confirmation_point", None)
 
         status_str = raw.pop("status", "PENDING")
         raw["status"] = StageStatus(status_str) if isinstance(status_str, str) else status_str

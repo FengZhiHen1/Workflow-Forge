@@ -101,6 +101,7 @@ class AllocateSpawnProcessor:
 
             routing_choices = self._collect_success_choices(ctx.adj, stage_id)
             updates["valid_routing_choices"] = routing_choices
+            updates["pending_choice"] = ""  # 清空（已注入到 action）
 
             if matched_agent:
                 # Level 2 同步
@@ -150,8 +151,8 @@ class AllocateSpawnProcessor:
                     "worktree": str(worktree.relative_to(ctx.root)),
                     "system_agent_id": sys_id,
                     "requires_parallel_targets": needs_targets,
-                    "confirmation_point": stage_spec.confirmation_point,
                     "valid_routing_choices": routing_choices,
+                    "pending_choice": st.pending_choice,
                     "context": context,
                 })
             else:
@@ -163,8 +164,8 @@ class AllocateSpawnProcessor:
                     "skill_id": skill_id,
                     "worktree": str(worktree.relative_to(ctx.root)),
                     "requires_parallel_targets": needs_targets,
-                    "confirmation_point": stage_spec.confirmation_point,
                     "valid_routing_choices": routing_choices,
+                    "pending_choice": st.pending_choice,
                     "context": context,
                 })
 

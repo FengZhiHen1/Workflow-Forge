@@ -35,7 +35,7 @@ def _make_workflow_spec() -> WorkflowSpec:
             EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s02", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS),
-            EdgeSpec(from_stage="s02", to_stage="s99-workflow-end", condition=EdgeCondition.CONFIRMED, choice="确认继续?"),
+            EdgeSpec(from_stage="s02", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS, choice="确认继续?"),
             EdgeSpec(from_stage="s03", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.FAILURE, max_loop=2),
         ],
@@ -92,16 +92,16 @@ def setup_repo(tmp_path: Path):
     (wf_dir / "WORKFLOW.yaml").write_text(
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n    confirmation_point: false\n    retry: 1\n'
-        '  - stage_id: s02\n    name: "B"\n    skill_id: skill-b\n    mandatory: true\n    confirmation_point: false\n'
-        '  - stage_id: s03\n    name: "C"\n    skill_id: skill-c\n    mandatory: true\n    confirmation_point: false\n    exclusive: true\n'
+        '  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n\n    retry: 1\n'
+        '  - stage_id: s02\n    name: "B"\n    skill_id: skill-b\n    mandatory: true\n\n'
+        '  - stage_id: s03\n    name: "C"\n    skill_id: skill-c\n    mandatory: true\n\n    exclusive: true\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
         '  - from: s01\n    to: s02\n    condition: success\n'
         '  - from: s01\n    to: s03\n    condition: success\n'
         '  - from: s02\n    to: s99-workflow-end\n    condition: success\n'
-        '  - from: s02\n    to: s99-workflow-end\n    condition: confirmed\n    choice: "确认继续?"\n'
+        '  - from: s02\n    to: s99-workflow-end\n    condition: success\n    choice: "确认继续?"\n'
         '  - from: s03\n    to: s99-workflow-end\n    condition: success\n'
         '  - from: s01\n    to: s02\n    condition: failure\n    max_loop: 2\n',
         encoding="utf-8",
@@ -292,13 +292,13 @@ def test_next_continue_action_same_skill(setup_instance_worktree, monkeypatch):
     (wf_dir / "WORKFLOW.yaml").write_text(
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "需求收集"\n    skill_id: design-tech-stack\n    mandatory: true\n    confirmation_point: true\n'
-        '  - stage_id: s02\n    name: "架构选型"\n    skill_id: design-tech-stack\n    mandatory: true\n    confirmation_point: true\n'
+        '  - stage_id: s01\n    name: "需求收集"\n    skill_id: design-tech-stack\n    mandatory: true\n\n'
+        '  - stage_id: s02\n    name: "架构选型"\n    skill_id: design-tech-stack\n    mandatory: true\n\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
-        '  - from: s01\n    to: s02\n    condition: confirmed\n    choice: "通过"\n'
-        '  - from: s02\n    to: s99-workflow-end\n    condition: confirmed\n    choice: "通过"\n',
+        '  - from: s01\n    to: s02\n    condition: success\n    choice: "通过"\n'
+        '  - from: s02\n    to: s99-workflow-end\n    condition: success\n    choice: "通过"\n',
         encoding="utf-8",
     )
 
@@ -313,7 +313,8 @@ def test_next_continue_action_same_skill(setup_instance_worktree, monkeypatch):
         {"stage_id": "s01", "stage_instance_id": "s01", "status": "DONE",
          "attempt_count": 0, "loop_counter": 0, "output_message_id": None,
          "child_instance_id": None, "fan_out_target": None,
-         "system_agent_id": "agent-001"},
+         "system_agent_id": "agent-001",
+         "exit_condition": "success", "routing_choice": "通过"},
         {"stage_id": "s02", "stage_instance_id": "s02", "status": "PENDING",
          "attempt_count": 0, "loop_counter": 0, "output_message_id": None,
          "child_instance_id": None, "fan_out_target": None},
@@ -353,12 +354,12 @@ def test_next_spawn_action_different_skill(setup_instance_worktree, monkeypatch)
     (wf_dir / "WORKFLOW.yaml").write_text(
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "需求收集"\n    skill_id: design-tech-stack\n    mandatory: true\n    confirmation_point: true\n'
-        '  - stage_id: s02\n    name: "审查"\n    skill_id: compliance-reviewer\n    mandatory: true\n    confirmation_point: false\n'
+        '  - stage_id: s01\n    name: "需求收集"\n    skill_id: design-tech-stack\n    mandatory: true\n\n'
+        '  - stage_id: s02\n    name: "审查"\n    skill_id: compliance-reviewer\n    mandatory: true\n\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
-        '  - from: s01\n    to: s02\n    condition: confirmed\n    choice: "通过"\n'
+        '  - from: s01\n    to: s02\n    condition: success\n    choice: "通过"\n'
         '  - from: s02\n    to: s99-workflow-end\n    condition: success\n',
         encoding="utf-8",
     )
@@ -372,7 +373,8 @@ def test_next_spawn_action_different_skill(setup_instance_worktree, monkeypatch)
         {"stage_id": "s01", "stage_instance_id": "s01", "status": "DONE",
          "attempt_count": 0, "loop_counter": 0, "output_message_id": None,
          "child_instance_id": None, "fan_out_target": None,
-         "system_agent_id": "agent-001"},
+         "system_agent_id": "agent-001",
+         "exit_condition": "success", "routing_choice": "通过"},
         {"stage_id": "s02", "stage_instance_id": "s02", "status": "PENDING",
          "attempt_count": 0, "loop_counter": 0, "output_message_id": None,
          "child_instance_id": None, "fan_out_target": None},
@@ -411,13 +413,13 @@ def test_next_continue_writes_continued_to(setup_instance_worktree, monkeypatch)
     (wf_dir / "WORKFLOW.yaml").write_text(
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "A"\n    skill_id: shared-skill\n    mandatory: true\n    confirmation_point: true\n'
-        '  - stage_id: s02\n    name: "B"\n    skill_id: shared-skill\n    mandatory: true\n    confirmation_point: true\n'
+        '  - stage_id: s01\n    name: "A"\n    skill_id: shared-skill\n    mandatory: true\n\n'
+        '  - stage_id: s02\n    name: "B"\n    skill_id: shared-skill\n    mandatory: true\n\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
-        '  - from: s01\n    to: s02\n    condition: confirmed\n    choice: "通过"\n'
-        '  - from: s02\n    to: s99-workflow-end\n    condition: confirmed\n    choice: "通过"\n',
+        '  - from: s01\n    to: s02\n    condition: success\n    choice: "通过"\n'
+        '  - from: s02\n    to: s99-workflow-end\n    condition: success\n    choice: "通过"\n',
         encoding="utf-8",
     )
 
@@ -430,7 +432,8 @@ def test_next_continue_writes_continued_to(setup_instance_worktree, monkeypatch)
         {"stage_id": "s01", "stage_instance_id": "s01", "status": "DONE",
          "attempt_count": 0, "loop_counter": 0, "output_message_id": None,
          "child_instance_id": None, "fan_out_target": None,
-         "system_agent_id": "agent-002"},
+         "system_agent_id": "agent-002",
+         "exit_condition": "success", "routing_choice": "通过"},
         {"stage_id": "s02", "stage_instance_id": "s02", "status": "PENDING",
          "attempt_count": 0, "loop_counter": 0, "output_message_id": None,
          "child_instance_id": None, "fan_out_target": None},
@@ -513,17 +516,17 @@ def test_next_loop_exceeded_converges_to_report(tmp_path, monkeypatch):
     _write_wf_yaml(repo,
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "验证"\n    skill_id: validator\n    mandatory: true\n    confirmation_point: false\n    retry: 3\n'
-        '  - stage_id: s02\n    name: "下一阶段"\n    skill_id: next-step\n    mandatory: true\n    confirmation_point: false\n'
+        '  - stage_id: s01\n    name: "验证"\n    skill_id: validator\n    mandatory: true\n\n    retry: 3\n'
+        '  - stage_id: s02\n    name: "下一阶段"\n    skill_id: next-step\n    mandatory: true\n\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
-        '  - stage_id: s13-report\n    name: "报告"\n    skill_id: reporter\n    mandatory: true\n    confirmation_point: true\n'
+        '  - stage_id: s13-report\n    name: "报告"\n    skill_id: reporter\n    mandatory: true\n\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
         '  - from: s01\n    to: s02\n    condition: success\n'
         '  - from: s01\n    to: s02\n    condition: failure\n    max_loop: 3\n'
         '  - from: s01\n    to: s13-report\n    condition: loop_exceeded\n'
         '  - from: s02\n    to: s99-workflow-end\n    condition: success\n'
-        '  - from: s13-report\n    to: s99-workflow-end\n    condition: confirmed\n',
+        '  - from: s13-report\n    to: s99-workflow-end\n    condition: success\n',
     )
 
     inst_path = repo / ".agent" / "instances" / inst_id / "instance.json"
@@ -587,12 +590,12 @@ def test_next_loop_exceeded_converges_to_end(tmp_path, monkeypatch):
     _write_wf_yaml(repo,
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01-init\n    name: "初始化"\n    skill_id: init\n    mandatory: true\n    confirmation_point: true\n    retry: 1\n'
+        '  - stage_id: s01-init\n    name: "初始化"\n    skill_id: init\n    mandatory: true\n\n    retry: 1\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01-init\n    condition: always\n'
-        '  - from: s01-init\n    to: s99-workflow-end\n    condition: confirmed\n    choice: "确认"\n'
-        '  - from: s01-init\n    to: s99-workflow-end\n    condition: rejected\n    choice: "放弃"\n'
+        '  - from: s01-init\n    to: s99-workflow-end\n    condition: success\n    choice: "确认"\n'
+        '  - from: s01-init\n    to: s99-workflow-end\n    condition: success\n    choice: "放弃"\n'
         '  - from: s01-init\n    to: s99-workflow-end\n    condition: loop_exceeded\n',
     )
 
@@ -648,15 +651,15 @@ def test_next_max_loop_zero_boundary(tmp_path, monkeypatch):
     _write_wf_yaml(repo,
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n    confirmation_point: false\n    retry: 0\n'
-        '  - stage_id: s13-report\n    name: "报告"\n    skill_id: reporter\n    mandatory: true\n    confirmation_point: true\n'
+        '  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n\n    retry: 0\n'
+        '  - stage_id: s13-report\n    name: "报告"\n    skill_id: reporter\n    mandatory: true\n\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
         '  - from: s01\n    to: s99-workflow-end\n    condition: success\n'
         '  - from: s01\n    to: s99-workflow-end\n    condition: failure\n    max_loop: 0\n'
         '  - from: s01\n    to: s13-report\n    condition: loop_exceeded\n'
-        '  - from: s13-report\n    to: s99-workflow-end\n    condition: confirmed\n',
+        '  - from: s13-report\n    to: s99-workflow-end\n    condition: success\n',
     )
 
     inst_path = repo / ".agent" / "instances" / inst_id / "instance.json"
@@ -714,7 +717,7 @@ def test_next_error_without_retry_or_loop_edges(tmp_path, monkeypatch):
     _write_wf_yaml(repo,
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 4\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n    confirmation_point: false\n    retry: 0\n'
+        '  - stage_id: s01\n    name: "A"\n    skill_id: skill-a\n    mandatory: true\n\n    retry: 0\n'
         '  - stage_id: s99-workflow-end\n    name: "结束"\n'
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'

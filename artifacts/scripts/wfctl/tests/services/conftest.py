@@ -58,13 +58,11 @@ stages:
     name: "分析"
     skill_id: analyst
     mandatory: true
-    confirmation_point: false
 
   - stage_id: s02
     name: "设计"
     skill_id: designer
     mandatory: true
-    confirmation_point: true
 
   - stage_id: s99-workflow-end
     name: "结束"
@@ -80,7 +78,7 @@ edges:
 
   - from: s02
     to: s99-workflow-end
-    condition: confirmed
+    condition: success
 """
     yaml_path = wf_dir / "WORKFLOW.yaml"
     yaml_path.write_text(yaml_content, encoding="utf-8")

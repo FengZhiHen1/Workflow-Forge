@@ -20,7 +20,6 @@ SAMPLE_YAML_DICT = {
             "name": "分析",
             "skill_id": "analyst",
             "mandatory": True,
-            "confirmation_point": True,
             "retry": 2,
         },
         {
@@ -28,7 +27,6 @@ SAMPLE_YAML_DICT = {
             "name": "设计",
             "workflow": "design@1.0.0",
             "mandatory": True,
-            "confirmation_point": False,
             "parallel": {"source": "s01", "max_instances": 5},
             "exclusive": True,
         },
@@ -36,8 +34,8 @@ SAMPLE_YAML_DICT = {
     ],
     "edges": [
         {"from": "s00-workflow-start", "to": "s01", "condition": "always"},
-        {"from": "s01", "to": "s02", "condition": "confirmed", "choice": "通过"},
-        {"from": "s01", "to": "s01", "condition": "rejected", "max_loop": 3},
+        {"from": "s01", "to": "s02", "condition": "success", "choice": "通过"},
+        {"from": "s01", "to": "s01", "condition": "success", "max_loop": 3},
         {"from": "s02", "to": "s99-workflow-end", "condition": "success"},
     ],
 }
@@ -68,7 +66,6 @@ def test_skill_stage():
     assert s01.target_type == StageTargetType.SKILL
     assert s01.target == "analyst"
     assert s01.retry == 2
-    assert s01.confirmation_point is True
 
 
 def test_workflow_stage():
@@ -97,7 +94,7 @@ def test_stage_without_target():
         "workflow_id": "x",
         "version": "1.0.0",
         "max_parallel_agents": 1,
-        "stages": [{"stage_id": "s01", "name": "x", "mandatory": True, "confirmation_point": False}],
+        "stages": [{"stage_id": "s01", "name": "x", "mandatory": True, }],
         "edges": [],
     }
     with pytest.raises(SchemaError):

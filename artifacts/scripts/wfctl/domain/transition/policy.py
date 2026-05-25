@@ -30,9 +30,7 @@ class TransitionPolicy:
     字段:
         stage_id: 当前 stage 的 ID
         spec: 当前 stage 的配置
-        ready_edges: ALWAYS + SUCCESS 边（常规触发）
-        confirmed_edges: CONFIRMED 边（用户确认后触发）
-        rejected_edges: REJECTED 边（用户拒绝后触发）
+        ready_edges: ALWAYS + SUCCESS 边（常规触发，含原 CONFIRMED/REJECTED 转换来的 SUCCESS 边）
         failure_edge: FAILURE 边（出错时触发）
         loop_exceeded_edge: LOOP_EXCEEDED 边（循环超限时触发）
     """
@@ -40,8 +38,6 @@ class TransitionPolicy:
     stage_id: str
     spec: StageSpec
     ready_edges: list[EdgeSpec] = field(default_factory=list)
-    confirmed_edges: list[EdgeSpec] = field(default_factory=list)
-    rejected_edges: list[EdgeSpec] = field(default_factory=list)
     failure_edge: EdgeSpec | None = None
     loop_exceeded_edge: EdgeSpec | None = None
 
@@ -53,8 +49,6 @@ class TransitionPolicy:
             raise KeyError(f"Stage '{stage_id}' not found in adjacency list")
 
         ready: list[EdgeSpec] = []
-        confirmed: list[EdgeSpec] = []
-        rejected: list[EdgeSpec] = []
         failure: EdgeSpec | None = None
         loop_exceeded: EdgeSpec | None = None
 
@@ -64,10 +58,6 @@ class TransitionPolicy:
                 failure = edge
             elif cond == EdgeCondition.LOOP_EXCEEDED:
                 loop_exceeded = edge
-            elif cond == EdgeCondition.CONFIRMED:
-                confirmed.append(edge)
-            elif cond == EdgeCondition.REJECTED:
-                rejected.append(edge)
             else:  # ALWAYS, SUCCESS
                 ready.append(edge)
 
@@ -75,8 +65,6 @@ class TransitionPolicy:
             stage_id=stage_id,
             spec=spec,
             ready_edges=ready,
-            confirmed_edges=confirmed,
-            rejected_edges=rejected,
             failure_edge=failure,
             loop_exceeded_edge=loop_exceeded,
         )
@@ -105,15 +93,6 @@ class TransitionPolicy:
                 return False
             if edge.choice and upstream.routing_choice != edge.choice:
                 return False
-            return True
-
-        if cond == EdgeCondition.CONFIRMED:
-            if exit_cond not in ("confirmed", ""):
-                return False
-            if edge.choice:
-                upstream_choice = upstream.confirmed_choice
-                if upstream_choice and upstream_choice != edge.choice:
-                    return False
             return True
 
         return False
@@ -168,35 +147,7 @@ class TransitionPolicy:
                     choices.append(edge.choice)
         return choices
 
-    def valid_confirm_choices(self) -> list[str]:
-        """返回有效的确认选择项（来自带 choice 的 CONFIRMED 边）。"""
-        choices: list[str] = []
-        for edge in self.confirmed_edges:
-            if edge.choice and edge.choice not in choices:
-                choices.append(edge.choice)
-        return choices
-
     # ── 边匹配方法 ──
-
-    def match_confirmed_edge(self, choice: str) -> EdgeSpec | None:
-        """精确匹配 choice 的 confirmed 边，无匹配时返回无 choice 的兜底边。"""
-        for edge in self.confirmed_edges:
-            if edge.choice == choice:
-                return edge
-        for edge in self.confirmed_edges:
-            if not edge.choice:
-                return edge
-        return None
-
-    def match_rejected_edge(self, choice: str) -> EdgeSpec | None:
-        """精确匹配 choice 的 rejected 边，无匹配时返回无 choice 的兜底边。"""
-        for edge in self.rejected_edges:
-            if edge.choice == choice:
-                return edge
-        for edge in self.rejected_edges:
-            if not edge.choice:
-                return edge
-        return None
 
     def match_success_edge(self, routing_choice: str | None) -> EdgeSpec | None:
         """按 routing_choice 匹配 SUCCESS 边，无匹配时返回无 choice 的兜底边。"""
@@ -226,166 +177,43 @@ class TransitionPolicy:
         stage: StageState,
         choice: str,
         has_feedback: bool = False,
-        stage_order: list[str] | None = None,
     ) -> ConfirmResult:
-        """确认/拒绝操作的纯决策。
+        """确认操作的纯决策。
 
-        根据 choice 匹配 confirmed 或 rejected 边，返回 ConfirmResult。
-        不执行任何副作用（文件读写、Git 操作等）。
-
-        Args:
-            stage: 当前 AWAITING_CONFIRM 状态的 stage
-            choice: 用户选择的选项
-            has_feedback: 用户是否提供了反馈文本
-            stage_order: spec.stages 的顺序列表（用于回边检测）
+        正常返回 PENDING + continue，将用户选择传回 SubAgent。
+        唯一例外：loop_counter ≥ loop_exceeded_edge.max_loop 时返回 DONE，
+        触发 loop_exceeded 逃生路径。
         """
-        # 1. 尝试匹配 confirmed 边
-        matched = self.match_confirmed_edge(choice)
-        if matched is not None:
-            return self._handle_confirmed_match(stage, choice, matched, has_feedback, stage_order)
-
-        # 2. 尝试匹配 rejected 边
-        matched = self.match_rejected_edge(choice)
-        if matched is not None:
-            return self._handle_rejected_match(stage, choice, matched)
-
-        # 3. 无匹配 → instance FAILED
-        all_choices: list[str] = []
-        for e in self.confirmed_edges + self.rejected_edges:
-            if e.choice and e.choice not in all_choices:
-                all_choices.append(e.choice)
-        hint = f" 合法选项：{all_choices}" if all_choices else "（该 stage 未定义任何带 choice 的边）"
-        return ConfirmResult(
-            next_status=StageStatus.ERROR,
-            action="terminate",
-            reason=f"未知的选项：'{choice}'。{hint}",
-            instance_failed=True,
-        )
-
-    def _handle_confirmed_match(
-        self,
-        stage: StageState,
-        choice: str,
-        edge: EdgeSpec,
-        has_feedback: bool,
-        stage_order: list[str] | None,
-    ) -> ConfirmResult:
-        """处理 confirmed 边匹配。"""
-        if edge.to_stage == edge.from_stage:
-            return self._handle_relay_confirm(stage, choice, edge, has_feedback)
-        return self._handle_final_confirm(stage, choice, edge, has_feedback, stage_order)
-
-    def _handle_relay_confirm(
-        self, stage: StageState, choice: str, edge: EdgeSpec, has_feedback: bool
-    ) -> ConfirmResult:
-        """中继确认：edge 回指自身，stage 继续执行。"""
         loop_counter = stage.loop_counter
-        max_loop = edge.max_loop or 0
 
-        if max_loop and loop_counter >= max_loop:
-            exceeded = self.loop_exceeded_edge
-            if exceeded is not None:
+        # loop_exceeded 逃生检查
+        if self.loop_exceeded_edge is not None:
+            max_loop = self.loop_exceeded_edge.max_loop or 0
+            if max_loop > 0 and loop_counter >= max_loop:
                 return ConfirmResult(
                     next_status=StageStatus.DONE,
-                    exit_condition="loop_exceeded",
-                    target_stage_id=exceeded.to_stage,
-                    updates={"loop_counter": loop_counter},
+                    choice=choice,
+                    updates={
+                        "exit_condition": "loop_exceeded",
+                        "loop_counter": loop_counter,
+                    },
                     action="spawn",
-                    reason=f"循环超限 (choice={choice}, loop={loop_counter})",
+                    reason=f"Loop exceeded (choice={choice}, loop={loop_counter}, max={max_loop})",
+                    loop_exceeded_target=self.loop_exceeded_edge.to_stage,
                 )
-            return ConfirmResult(
-                next_status=StageStatus.ERROR,
-                action="terminate",
-                reason=f"loop exceeded for choice: {choice}",
-                instance_failed=True,
-            )
 
         return ConfirmResult(
             next_status=StageStatus.PENDING,
+            choice=choice,
             updates={
                 "loop_counter": loop_counter + 1,
                 "system_agent_id": None,
                 "continued_to": None,
+                "pending_choice": choice,
             },
             requires_feedback=has_feedback,
-            is_relay=True,
-            action="retry",
-            reason=f"中继确认 (choice={choice}, loop={loop_counter + 1})",
-        )
-
-    def _handle_final_confirm(
-        self,
-        stage: StageState,
-        choice: str,
-        edge: EdgeSpec,
-        has_feedback: bool,
-        stage_order: list[str] | None,
-    ) -> ConfirmResult:
-        """终局确认：edge 指向下游，stage 结束。"""
-        # confirmation_point：用户确认后 SubAgent 继续
-        if self.spec.confirmation_point:
-            return ConfirmResult(
-                next_status=StageStatus.PENDING,
-                updates={"confirmed_choice": choice},
-                requires_feedback=has_feedback,
-                action="continue",
-                reason="confirmation_point: 确认后继续执行",
-            )
-
-        # 回边检测
-        cascade_target = None
-        if stage_order is not None:
-            try:
-                from_idx = stage_order.index(self.stage_id)
-                to_idx = stage_order.index(edge.to_stage)
-                if to_idx < from_idx:
-                    cascade_target = edge.to_stage
-            except ValueError:
-                pass
-
-        return ConfirmResult(
-            next_status=StageStatus.DONE,
-            exit_condition="confirmed",
-            target_stage_id=edge.to_stage,
-            updates={"confirmed_choice": choice},
-            cascade_reset_target=cascade_target,
-            action="spawn" if edge.to_stage != self.stage_id else "",
-            reason=f"终局确认 (choice={choice}, target={edge.to_stage})",
-        )
-
-    def _handle_rejected_match(
-        self, stage: StageState, choice: str, edge: EdgeSpec
-    ) -> ConfirmResult:
-        """处理 rejected 边匹配。"""
-        if edge.to_stage == edge.from_stage:
-            loop_counter = stage.loop_counter
-            max_loop = edge.max_loop or 0
-            if max_loop and loop_counter >= max_loop:
-                exceeded = self.loop_exceeded_edge
-                if exceeded is not None:
-                    return ConfirmResult(
-                        next_status=StageStatus.DONE,
-                        exit_condition="loop_exceeded",
-                        target_stage_id=exceeded.to_stage,
-                        updates={"loop_counter": loop_counter},
-                        action="spawn",
-                        reason=f"rejected 循环超限 (choice={choice})",
-                    )
-                return ConfirmResult(
-                    next_status=StageStatus.ERROR,
-                    action="terminate",
-                    reason=f"loop exceeded for rejected choice: {choice}",
-                    instance_failed=True,
-                )
-
-        return ConfirmResult(
-            next_status=StageStatus.DONE,
-            exit_condition="rejected",
-            target_stage_id=edge.to_stage,
-            updates={"attempt_count": 0},
-            is_rejected=True,
-            action="spawn" if edge.to_stage != self.stage_id else "",
-            reason=f"拒绝 (choice={choice}, target={edge.to_stage})",
+            action="continue",
+            reason=f"User confirmed choice: {choice} (loop={loop_counter + 1})",
         )
 
     @staticmethod
@@ -548,7 +376,6 @@ class TransitionPolicy:
             stage_id="__merge__",
             stage_instance_id=f"{instance_id}__merge__",
             status=StageStatus.AWAITING_CONFIRM,
-            confirmation_point=False,
         )
 
     @staticmethod
@@ -563,44 +390,22 @@ class TransitionPolicy:
     def build_confirm_delta(
         result: ConfirmResult,
         stage: StageState,
-        state: InstanceState,
-        spec_stages: list[StageSpec],
+        state: InstanceState | None = None,
     ) -> StateDelta:
-        """纯决策：将 ConfirmResult 转换为 StateDelta。"""
-        stage_updates: dict[str, dict] = {}
-        instance_updates: dict = {}
+        """纯决策：将 ConfirmResult 转换为 StateDelta。
 
+        loop_exceeded 时还会激活目标 stage（设为 PENDING）。
+        """
         su = dict(result.updates)
         su["status"] = result.next_status
-        if result.exit_condition:
-            su["exit_condition"] = result.exit_condition
-        stage_updates[stage.stage_instance_id] = su
+        stage_updates: dict[str, dict] = {stage.stage_instance_id: su}
 
-        if result.is_rejected and result.target_stage_id:
-            target = state.first_stage_by_id(result.target_stage_id)
+        if result.loop_exceeded_target and state:
+            target = state.first_stage_by_id(result.loop_exceeded_target)
             if target:
                 target_updates = {"status": StageStatus.PENDING}
-                if result.target_stage_id == stage.stage_id:
-                    target_updates["loop_counter"] = stage.loop_counter + 1
-                stage_updates[target.stage_instance_id] = target_updates
-
-        if result.exit_condition == "loop_exceeded" and result.target_stage_id:
-            target = state.first_stage_by_id(result.target_stage_id)
-            if target:
-                target_updates = {"status": StageStatus.PENDING}
-                if result.target_stage_id != stage.stage_id:
+                if result.loop_exceeded_target != stage.stage_id:
                     target_updates["loop_counter"] = target.loop_counter + 1
                 stage_updates[target.stage_instance_id] = target_updates
-            if TransitionPolicy._is_terminal_stage(result.target_stage_id, spec_stages):
-                instance_updates["status"] = InstanceStatus.FAILED
 
-        return StateDelta(stage_updates=stage_updates, instance_updates=instance_updates)
-
-    @staticmethod
-    def _is_terminal_stage(stage_id: str, spec_stages: list[StageSpec]) -> bool:
-        """判断 stage 是否为终态 stage（被 rejected/loop_exceeded 指向时实例应 FAILED）。"""
-        for s in spec_stages:
-            if s.stage_id == stage_id and s.target_type == StageTargetType.VIRTUAL:
-                if "workflow-end" in stage_id or "终结" in s.name or "终止" in s.name:
-                    return True
-        return False
+        return StateDelta(stage_updates=stage_updates)

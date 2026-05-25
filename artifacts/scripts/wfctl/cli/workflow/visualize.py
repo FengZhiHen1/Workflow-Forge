@@ -68,8 +68,6 @@ def _get_shape(stage):
         return ("((", "))")
     if stage.target_type == StageTargetType.WORKFLOW:
         return ("[[", "]]")
-    if stage.confirmation_point:
-        return ("{", "}")
     return ("[", "]")
 
 
@@ -77,10 +75,6 @@ def _get_edge_style(edge):
     if edge.condition == EdgeCondition.ALWAYS:
         return "--"
     if edge.condition == EdgeCondition.FAILURE:
-        return "-."
-    if edge.condition == EdgeCondition.CONFIRMED:
-        return "-."
-    if edge.condition == EdgeCondition.REJECTED:
         return "-."
     if edge.condition == EdgeCondition.LOOP_EXCEEDED:
         return "-."
@@ -92,6 +86,4 @@ def _get_class(stage):
         return "virtual"
     if stage.target_type == StageTargetType.WORKFLOW:
         return "workflow"
-    if stage.confirmation_point:
-        return "confirm"
     return "skill"

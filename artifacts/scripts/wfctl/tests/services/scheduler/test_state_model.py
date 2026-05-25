@@ -122,8 +122,7 @@ class TestInstanceState:
                     stage_id="s02",
                     stage_instance_id="s02",
                     status=StageStatus.PENDING,
-                    confirmation_point=True,
-                ),
+                    ),
             ],
         )
         d = inst.to_dict()

@@ -29,32 +29,25 @@ class TransitionResult:
 
 @dataclass(frozen=True)
 class ConfirmResult:
-    """确认/拒绝操作的纯决策结果。
+    """确认操作的纯决策结果。
 
-    由 TransitionPolicy.on_confirm() 返回，不包含任何副作用。
+    正常情况返回 PENDING + continue，将用户选择传回 SubAgent。
+    唯一例外：loop_counter ≥ loop_exceeded_edge.max_loop 时返回 DONE + spawn，
+    触发 loop_exceeded 逃生路径。
     """
 
     next_status: StageStatus
-    exit_condition: str = ""
-    target_stage_id: str | None = None
+    choice: str = ""
     updates: dict[str, Any] = field(default_factory=dict)
     requires_feedback: bool = False
-    cascade_reset_target: str | None = None
     action: str = ""
     reason: str = ""
-    is_relay: bool = False
-    is_rejected: bool = False
-    instance_failed: bool = False
+    loop_exceeded_target: str | None = None
 
     @property
     def timeline_event_label(self) -> str:
-        """纯决策：根据确认结果选择 timeline 事件名称。"""
-        if self.exit_condition == "loop_exceeded":
+        if self.loop_exceeded_target is not None:
             return "loop_exceeded"
-        if self.is_rejected:
-            return "awaiting_confirm→done"
-        if self.exit_condition == "confirmed":
-            return "awaiting_confirm→done"
         return "awaiting_confirm→pending"
 
 

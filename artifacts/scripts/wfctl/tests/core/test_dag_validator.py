@@ -69,19 +69,6 @@ class TestValidateWorkflow:
         assert result.has_errors
         assert any(i.category == "DANGLING_EDGE" for i in result.issues)
 
-    def test_confirmation_gap(self):
-        spec = _make_spec(
-            stages=[
-                StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a", confirmation_point=True),
-            ],
-            edges=[
-                EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS),
-            ],
-        )
-        result = validate_workflow(spec)
-        assert result.has_errors
-        assert any(i.category == "CONFIRMATION_GAP" for i in result.issues)
-
     def test_unbounded_loop(self):
         spec = _make_spec(
             stages=[
@@ -210,18 +197,3 @@ class TestValidateWorkflow:
         result = validate_workflow(spec)
         assert any(i.category == "DUPLICATE_STAGE_ID" for i in result.issues)
 
-    def test_confirmation_point_missing_rejected(self):
-        """confirmation_point=true 但无 REJECTED 边 → WARNING。"""
-        spec = _make_spec(
-            stages=[
-                StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a",
-                          confirmation_point=True),
-                StageSpec(stage_id="s02", name="b", target_type=StageTargetType.SKILL, target="skill-b"),
-            ],
-            edges=[
-                EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.CONFIRMED),
-            ],
-        )
-        result = validate_workflow(spec)
-        warnings = [i for i in result.issues if i.category == "CONFIRMATION_GAP" and i.severity == "WARNING"]
-        assert len(warnings) >= 1

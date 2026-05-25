@@ -109,7 +109,6 @@ def resolve_workflow(workflow_id: str, version: str | None = None) -> dict:
                 "target_type": s.target_type.value,
                 "target": s.target,
                 "mandatory": s.mandatory,
-                "confirmation_point": s.confirmation_point,
                 "retry": s.retry,
                 "timeout_seconds": s.timeout_seconds,
                 "model": s.model,

@@ -46,7 +46,6 @@ SubAgent 启动后调用 `wfctl identity` 获取：
 
 | 标志 | 来源 | 注入内容 |
 |------|------|---------|
-| `confirmation_point: true` | WORKFLOW.yaml stage 定义 → 编排器感知 | 需要用户确认时，Message 中填入 `confirm_questions` |
 | `requires_parallel_targets: true` | spawn action 字段 | 上游产出需包含 `parallel_targets` 列表 |
 
 ---

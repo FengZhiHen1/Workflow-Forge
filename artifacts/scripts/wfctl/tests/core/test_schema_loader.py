@@ -20,7 +20,6 @@ stages:
     name: "分析"
     skill_id: analyst
     mandatory: true
-    confirmation_point: false
 edges:
   - from: s00-workflow-start
     to: s01

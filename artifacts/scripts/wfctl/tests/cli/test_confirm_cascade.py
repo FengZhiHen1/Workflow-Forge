@@ -22,8 +22,7 @@ def _make_spec(num_stages: int = 10):
             target_type=StageTargetType.VIRTUAL,
             target=None,
             mandatory=False,
-            confirmation_point=False,
-        ),
+            ),
     ]
     for i in range(1, num_stages):
         stages.append(
@@ -33,7 +32,6 @@ def _make_spec(num_stages: int = 10):
                 target_type=StageTargetType.SKILL,
                 target=f"skill-{i}",
                 mandatory=True,
-                confirmation_point=(i % 3 == 0),
                 model="standard",
             )
         )
@@ -44,8 +42,7 @@ def _make_spec(num_stages: int = 10):
             target_type=StageTargetType.VIRTUAL,
             target=None,
             mandatory=False,
-            confirmation_point=False,
-        )
+            )
     )
     return WorkflowSpec(
         schema_version="3.0.0",

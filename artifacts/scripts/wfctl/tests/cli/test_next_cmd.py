@@ -25,7 +25,7 @@ def test_next_cmd(monkeypatch, tmp_path: Path):
     (wf_dir / "WORKFLOW.yaml").write_text(
         'schema_version: "3.0.0"\nworkflow_id: test-flow\nversion: "1.0.0"\nmax_parallel_agents: 1\nanchor_prefix: "wf"\nstages:\n'
         '  - stage_id: s00-workflow-start\n    name: "开始"\n'
-        '  - stage_id: s01\n    name: "A"\n    skill_id: sk\n    mandatory: true\n    confirmation_point: false\n'
+        '  - stage_id: s01\n    name: "A"\n    skill_id: sk\n    mandatory: true\n\n'
         'edges:\n  - from: s00-workflow-start\n    to: s01\n    condition: always\n',
         encoding="utf-8",
     )
