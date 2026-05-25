@@ -75,5 +75,9 @@ def test_inject_modified_files(tmp_path: Path):
     msg = {"message_id": "msg-x"}
     result = inject_modified_files(msg, repo)
     assert "modified_files" in result
-    # file.txt 已 staged，porcelain 会显示
-    assert "file.txt" in result["modified_files"]
+    # file.txt 已 staged，porcelain 会显示；新格式为对象数组
+    paths = [f["path"] for f in result["modified_files"]]
+    assert "file.txt" in paths
+    # 验证对象包含 status 字段
+    if result["modified_files"]:
+        assert "status" in result["modified_files"][0]

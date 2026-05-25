@@ -6,7 +6,16 @@ from infrastructure.errors import ValidationError
 from infrastructure.project import find_root
 
 
-def validate_modified_files(worktree: Path, modified_files: list[str], stage_id: str) -> None:
+def _normalize_modified_files(raw: list) -> list[dict]:
+    """兼容旧格式（字符串列表）和新格式（对象列表）。"""
+    if not raw:
+        return []
+    if isinstance(raw[0], str):
+        return [{"path": p, "status": "M"} for p in raw]
+    return raw
+
+
+def validate_modified_files(worktree: Path, modified_files: list, stage_id: str) -> None:
     """校验变更文件列表是否触及保护区。
 
     保护区：
@@ -16,7 +25,9 @@ def validate_modified_files(worktree: Path, modified_files: list[str], stage_id:
     - 主仓库工作区（非 .tmp/ 下的所有路径）——实际上 SubAgent 在 worktree 内工作
     """
     root = find_root()
-    for f in modified_files:
+    entries = _normalize_modified_files(modified_files)
+    for entry in entries:
+        f = entry["path"]
         p = Path(f)
         parts = [part.lower() for part in p.parts]
 
@@ -48,7 +59,8 @@ def validate_modified_files(worktree: Path, modified_files: list[str], stage_id:
 
     # 额外：检查是否修改了其他 stage 的 worktree
     other_worktrees = [d for d in (root / ".tmp" / "worktrees").glob("stage-*") if d.resolve() != worktree.resolve()]
-    for f in modified_files:
+    for entry in entries:
+        f = entry["path"]
         p = (worktree / f).resolve()
         for other in other_worktrees:
             try:

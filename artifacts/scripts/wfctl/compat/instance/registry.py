@@ -69,3 +69,10 @@ def save_instance_state(instance_id: str, state: InstanceState) -> None:
     path = root / ".agent" / "instances" / instance_id / "instance.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, state.to_dict())
+
+    # 自动生成/刷新 Dashboard（延迟导入避免循环依赖）
+    try:
+        from services.dashboard_builder import update_dashboards
+        update_dashboards(instance_id)
+    except Exception:
+        pass

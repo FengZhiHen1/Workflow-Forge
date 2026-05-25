@@ -25,6 +25,7 @@ from cli.workflow.cleanup import register_cleanup
 from cli.workflow.restore import register_restore
 from cli.instance.terminate import register_terminate
 from cli.workflow.visualize import register_visualize
+from cli.instance.dashboard import register_dashboard
 
 
 def main():
@@ -48,6 +49,7 @@ def main():
     register_restore(subparsers)
     register_terminate(subparsers)
     register_visualize(subparsers)
+    register_dashboard(subparsers)
 
     args = parser.parse_args()
 

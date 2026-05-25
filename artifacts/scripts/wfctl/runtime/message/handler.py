@@ -42,17 +42,20 @@ def write_message(
     message_id = f"msg-{uuid.uuid4().hex[:8]}"
 
     # 注入 modified_files（通过 git status --porcelain）
-    modified_files: list[str] = []
+    modified_files: list[dict] = []
     if worktree and worktree.exists():
         rc, stdout, _ = git_status_porcelain(worktree)
         if rc == 0:
             for line in stdout.strip().splitlines():
-                if line:
-                    parts = line.split()
-                    if "->" in line:
-                        modified_files.append(parts[-1])
+                if line and len(line) >= 3:
+                    xy = line[:2]
+                    rest = line[3:]
+                    if " -> " in rest:
+                        filename = rest.split(" -> ")[-1]
                     else:
-                        modified_files.append(parts[-1] if len(parts) > 1 else parts[0])
+                        filename = rest
+                    status = _map_git_status_xy(xy)
+                    modified_files.append({"path": filename, "status": status})
 
     msg = {
         "schema_version": CURRENT.value,
@@ -139,16 +142,31 @@ def validate_parallel_targets(instance_id: str, stage_id: str, output_message_id
 def inject_modified_files(msg: dict, worktree: Path) -> dict:
     """通过 git status --porcelain 获取变更列表，注入 modified_files。"""
     rc, stdout, _ = git_status_porcelain(worktree)
-    modified_files: list[str] = []
+    modified_files: list[dict] = []
     if rc == 0:
         for line in stdout.strip().splitlines():
-            if line:
+            if line and len(line) >= 3:
                 # git status --porcelain 格式: XY filename 或 XY orig -> new
-                parts = line.split()
-                if "->" in line:
-                    modified_files.append(parts[-1])
+                xy = line[:2]
+                rest = line[3:]
+                if " -> " in rest:
+                    filename = rest.split(" -> ")[-1]
                 else:
-                    modified_files.append(parts[-1] if len(parts) > 1 else parts[0])
+                    filename = rest
+                status = _map_git_status_xy(xy)
+                modified_files.append({"path": filename, "status": status})
 
     msg["modified_files"] = modified_files
     return msg
+
+
+def _map_git_status_xy(xy: str) -> str:
+    """将 git status --porcelain 的 XY 位映射为简化状态。"""
+    if not xy or len(xy) < 2:
+        return "M"
+    for char in xy:
+        if char in "MADRC":
+            return char
+    if "?" in xy:
+        return "?"
+    return "M"
