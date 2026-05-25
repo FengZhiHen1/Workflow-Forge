@@ -55,7 +55,7 @@ def _run_scanner(test_file: Path) -> dict:
             sys.executable,
             str(SCANNER_PATH),
             str(test_file),
-            "--sut-module", "core,services,cli",
+            "--sut-module", "core,services,cli,domain,state,runtime",
         ],
         cwd=str(wfctl_root),
         capture_output=True,
@@ -89,7 +89,11 @@ def test_green_seeking_all_files():
 
     # 确保 __init__.py 非空
     test_dirs = [wfctl_root / "tests", wfctl_root / "tests" / "core",
-                 wfctl_root / "tests" / "services", wfctl_root / "tests" / "cli"]
+                 wfctl_root / "tests" / "services", wfctl_root / "tests" / "cli",
+                 wfctl_root / "tests" / "domain", wfctl_root / "tests" / "domain" / "dag",
+                 wfctl_root / "tests" / "domain" / "transition",
+                 wfctl_root / "tests" / "state", wfctl_root / "tests" / "runtime",
+                 wfctl_root / "tests" / "runtime" / "agent"]
     _ensure_init_py(test_dirs)
 
     test_files = _find_test_files()
@@ -130,7 +134,11 @@ def test_green_seeking_no_empty_tests():
     """G11: 不得有空测试函数（无 assert/raises/fail）。"""
     wfctl_root = Path(__file__).resolve().parents[2]
     test_dirs = [wfctl_root / "tests", wfctl_root / "tests" / "core",
-                 wfctl_root / "tests" / "services", wfctl_root / "tests" / "cli"]
+                 wfctl_root / "tests" / "services", wfctl_root / "tests" / "cli",
+                 wfctl_root / "tests" / "domain", wfctl_root / "tests" / "domain" / "dag",
+                 wfctl_root / "tests" / "domain" / "transition",
+                 wfctl_root / "tests" / "state", wfctl_root / "tests" / "runtime",
+                 wfctl_root / "tests" / "runtime" / "agent"]
     _ensure_init_py(test_dirs)
 
     test_files = _find_test_files()

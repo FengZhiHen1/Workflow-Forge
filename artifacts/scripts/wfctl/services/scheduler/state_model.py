@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field, asdict, replace
-from typing import Any
+from typing import Any, ClassVar
 
 from core.schema.interface import StageStatus, InstanceStatus
 
@@ -55,14 +55,59 @@ class StageState:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StageState:
         """从 instance.json stage 条目解析。"""
+        import dataclasses as dc
+
         raw = dict(data)
         status_str = raw.pop("status", "PENDING")
         raw["status"] = StageStatus(status_str) if isinstance(status_str, str) else status_str
-        # 填充缺失字段为默认值
         for f_name, f_def in cls.__dataclass_fields__.items():
             if f_name not in raw:
-                raw[f_name] = f_def.default
+                if f_def.default is not dc.MISSING:
+                    raw[f_name] = f_def.default
+                elif f_def.default_factory is not dc.MISSING:
+                    raw[f_name] = f_def.default_factory()
         return cls(**raw)
+
+
+@dataclass(frozen=True)
+class CycleMeta:
+    """单次调度循环的差分追踪（不持久化到 instance.json）。
+
+    由 Processor 流水线中的各个 Processor 填充，在循环结束时
+    由 StateTransitionProcessor 消费并应用到 stages。
+
+    字段:
+        newly_done_stage_instance_ids: 本轮新完成的 stage
+        newly_error_stage_instance_ids: 本轮新出错的 stage
+        newly_awaiting_confirm_ids: 本轮新进入等待确认的 stage
+        ready_candidates: (stage_id, stage_instance_id) 就绪候选列表
+    """
+
+    newly_done_stage_instance_ids: frozenset[str] = field(default_factory=frozenset)
+    newly_error_stage_instance_ids: frozenset[str] = field(default_factory=frozenset)
+    newly_awaiting_confirm_ids: frozenset[str] = field(default_factory=frozenset)
+    ready_candidates: list[tuple[str, str]] = field(default_factory=list)
+
+    def with_done(self, stage_instance_id: str) -> "CycleMeta":
+        """记录新增完成 stage，返回新 CycleMeta。"""
+        return replace(
+            self,
+            newly_done_stage_instance_ids=self.newly_done_stage_instance_ids | {stage_instance_id},
+        )
+
+    def with_error(self, stage_instance_id: str) -> "CycleMeta":
+        """记录新增错误 stage，返回新 CycleMeta。"""
+        return replace(
+            self,
+            newly_error_stage_instance_ids=self.newly_error_stage_instance_ids | {stage_instance_id},
+        )
+
+    def with_awaiting_confirm(self, stage_instance_id: str) -> "CycleMeta":
+        """记录新增等待确认 stage，返回新 CycleMeta。"""
+        return replace(
+            self,
+            newly_awaiting_confirm_ids=self.newly_awaiting_confirm_ids | {stage_instance_id},
+        )
 
 
 @dataclass(frozen=True)
@@ -111,6 +156,8 @@ class InstanceState:
     stages 用 list[StageState] 存储，以兼容 parallel 拆分产生的多条同 stage_id 记录。
     """
 
+    _TRANSIENT_FIELDS: ClassVar[frozenset[str]] = frozenset({"cycle_meta"})
+
     schema_version: str = "3.0.0"
     instance_id: str = ""
     workflow_id: str = ""
@@ -121,11 +168,25 @@ class InstanceState:
     merge_confirmed: bool = False
     consumed_message_ids: frozenset[str] = field(default_factory=frozenset)
     stages: list[StageState] = field(default_factory=list)
+    cycle_meta: CycleMeta = field(default_factory=lambda: CycleMeta())
 
     # ── 查询辅助 ──
 
     def stage_map(self) -> dict[str, StageState]:
-        """按 stage_id 构建查找表（同 stage_id 取最后一条，兼容旧行为）。"""
+        """按 stage_id 构建查找表（同 stage_id 取最后一条，兼容旧行为）。
+
+        .. deprecated::
+            使用 stages_by_id() 或 stage_by_instance_id() 替代。
+            将在 Phase 3 删除。
+        """
+        import warnings
+
+        warnings.warn(
+            "stage_map() is deprecated. Use stages_by_id() for multi-match "
+            "or stage_by_instance_id() for exact lookup.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         m: dict[str, StageState] = {}
         for s in self.stages:
             m[s.stage_id] = s
@@ -145,6 +206,20 @@ class InstanceState:
     def stages_with_id(self, stage_id: str) -> list[StageState]:
         """返回所有匹配 stage_id 的 stage（用于 parallel 场景）。"""
         return [s for s in self.stages if s.stage_id == stage_id]
+
+    def stages_by_id(self, stage_id: str) -> list[StageState]:
+        """返回所有匹配 stage_id 的 stage（用于 parallel 场景）。
+
+        这是 stages_with_id() 的推荐名称。
+        """
+        return self.stages_with_id(stage_id)
+
+    def first_stage_by_id(self, stage_id: str) -> StageState | None:
+        """返回第一个匹配 stage_id 的 stage（保持 stages 插入顺序）。"""
+        for s in self.stages:
+            if s.stage_id == stage_id:
+                return s
+        return None
 
     # ── 变更操作 ──
 
@@ -224,6 +299,9 @@ class InstanceState:
 
         stages_list = raw.pop("stages", [])
         stages = [StageState.from_dict(s) for s in stages_list]
+
+        # 安全防护：忽略任何意外持久化的 cycle_meta
+        raw.pop("cycle_meta", None)
 
         return cls(
             schema_version=raw.get("schema_version", "3.0.0"),

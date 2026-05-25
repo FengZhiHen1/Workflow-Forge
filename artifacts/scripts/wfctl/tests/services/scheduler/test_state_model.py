@@ -1,9 +1,11 @@
 """测试 state_model 的序列化/反序列化兼容性。"""
 
+import warnings
+
 import pytest
 
 from core.schema.interface import StageStatus, InstanceStatus
-from services.scheduler.state_model import InstanceState, StageState, StateDelta
+from services.scheduler.state_model import InstanceState, StageState, StateDelta, CycleMeta
 
 
 class TestStageState:
@@ -211,3 +213,124 @@ class TestInstanceState:
         # 序列化回去应保持三条
         back = inst.to_dict()
         assert len(back["stages"]) == 3
+
+
+class TestCycleMeta:
+    def test_default_construction(self):
+        cm = CycleMeta()
+        assert cm.newly_done_stage_instance_ids == frozenset()
+        assert cm.newly_error_stage_instance_ids == frozenset()
+        assert cm.newly_awaiting_confirm_ids == frozenset()
+        assert cm.ready_candidates == []
+
+    def test_with_done(self):
+        cm = CycleMeta()
+        cm2 = cm.with_done("s01")
+        assert "s01" in cm2.newly_done_stage_instance_ids
+        assert "s01" not in cm.newly_done_stage_instance_ids  # 原对象不变
+
+    def test_with_error(self):
+        cm = CycleMeta()
+        cm2 = cm.with_error("s01_0")
+        assert "s01_0" in cm2.newly_error_stage_instance_ids
+        assert len(cm.newly_error_stage_instance_ids) == 0
+
+    def test_with_awaiting_confirm(self):
+        cm = CycleMeta()
+        cm2 = cm.with_awaiting_confirm("s02")
+        assert "s02" in cm2.newly_awaiting_confirm_ids
+
+    def test_immutability(self):
+        cm = CycleMeta()
+        cm2 = cm.with_done("a").with_error("b").with_awaiting_confirm("c")
+        assert cm2.newly_done_stage_instance_ids == frozenset(["a"])
+        assert cm2.newly_error_stage_instance_ids == frozenset(["b"])
+        assert cm2.newly_awaiting_confirm_ids == frozenset(["c"])
+        # 原对象不受影响
+        assert len(cm.newly_done_stage_instance_ids) == 0
+
+
+class TestInstanceStateCycleMeta:
+    def test_cycle_meta_default(self):
+        """InstanceState 默认包含空 CycleMeta。"""
+        inst = InstanceState(instance_id="test")
+        assert isinstance(inst.cycle_meta, CycleMeta)
+        assert inst.cycle_meta.newly_done_stage_instance_ids == frozenset()
+
+    def test_cycle_meta_not_serialized(self):
+        """to_dict() 不包含 cycle_meta 字段。"""
+        inst = InstanceState(
+            instance_id="test",
+            cycle_meta=CycleMeta(
+                newly_done_stage_instance_ids=frozenset(["a", "b"]),
+            ),
+        )
+        d = inst.to_dict()
+        assert "cycle_meta" not in d
+
+    def test_cycle_meta_from_dict_initialized_empty(self):
+        """from_dict() 始终初始化为空 CycleMeta。"""
+        raw = {
+            "schema_version": "3.0.0",
+            "instance_id": "test",
+            "workflow_id": "wf",
+            "version": "1",
+            "goal": "",
+            "status": "ACTIVE",
+            "consumed_message_ids": [],
+            "stages": [],
+            "cycle_meta": {  # 意外持久化——应被忽略
+                "newly_done_stage_instance_ids": ["x"],
+            },
+        }
+        inst = InstanceState.from_dict(raw)
+        assert inst.cycle_meta == CycleMeta()
+
+    def test_cycle_meta_preserved_in_apply_delta(self):
+        """apply_delta 保留 cycle_meta（不重置）。"""
+        inst = InstanceState(
+            instance_id="test",
+            cycle_meta=CycleMeta(newly_done_stage_instance_ids=frozenset(["s01"])),
+        )
+        inst2 = inst.apply_delta(StateDelta())
+        assert "s01" in inst2.cycle_meta.newly_done_stage_instance_ids
+
+
+class TestNewQueryMethods:
+    def test_stages_by_id(self):
+        inst = InstanceState(
+            instance_id="test",
+            stages=[
+                StageState(stage_id="s01", stage_instance_id="s01"),
+                StageState(stage_id="s01", stage_instance_id="s01_0", fan_out_target={"id": "a"}),
+                StageState(stage_id="s02", stage_instance_id="s02"),
+            ],
+        )
+        assert len(inst.stages_by_id("s01")) == 2
+        assert len(inst.stages_by_id("s02")) == 1
+        assert inst.stages_by_id("nonexistent") == []
+
+    def test_first_stage_by_id(self):
+        inst = InstanceState(
+            instance_id="test",
+            stages=[
+                StageState(stage_id="s01", stage_instance_id="s01"),
+                StageState(stage_id="s01", stage_instance_id="s01_0"),
+            ],
+        )
+        found = inst.first_stage_by_id("s01")
+        assert found is not None
+        assert found.stage_instance_id == "s01"  # 第一条
+
+    def test_first_stage_by_id_none(self):
+        inst = InstanceState(instance_id="test")
+        assert inst.first_stage_by_id("nonexistent") is None
+
+    def test_stage_map_deprecation_warning(self):
+        """stage_map() 触发 DeprecationWarning。"""
+        inst = InstanceState(instance_id="test")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            inst.stage_map()
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)

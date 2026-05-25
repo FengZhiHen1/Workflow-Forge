@@ -127,7 +127,6 @@ def resolve_workflow(workflow_id: str, version: str | None = None) -> dict:
                 "to": e.to_stage,
                 "condition": e.condition.value,
                 "max_loop": e.max_loop,
-                "loop_counter_stage": e.loop_counter_stage,
                 "choice": e.choice,
                 "aggregation": e.aggregation,
             }
