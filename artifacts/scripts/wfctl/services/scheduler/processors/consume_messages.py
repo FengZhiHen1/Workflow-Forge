@@ -64,7 +64,7 @@ class ConsumeMessagesProcessor:
                     validate_modified_files(wt, msg["modified_files"], st.stage_id)
             except Exception as e:
                 import traceback
-                delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.ERROR}
+                delta.stage_updates[st.stage_instance_id] = {}
                 _append_timeline(ctx.instance_id, st.stage_id, "running→error", {
                     "reason": str(e),
                     "message_id": msg_id,
@@ -88,23 +88,20 @@ class ConsumeMessagesProcessor:
                 if routing_choice:
                     valid = st.valid_routing_choices
                     if valid and routing_choice not in valid:
-                        delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.ERROR}
+                        cycle_meta = cycle_meta.with_error(st.stage_instance_id)
                         _append_timeline(ctx.instance_id, st.stage_id, "running→error", {
                             "message_id": msg_id,
                             "reason": f"非法 routing_choice: '{routing_choice}'，合法值: {valid}",
                         })
-                        cycle_meta = cycle_meta.with_error(st.stage_instance_id)
                         new_consumed.add(msg_id)
                         continue
                     delta.stage_updates[st.stage_instance_id] = {
-                        "status": StageStatus.DONE,
                         "exit_condition": "success",
                         "output_message_id": msg_id,
                         "routing_choice": routing_choice,
                     }
                 else:
                     delta.stage_updates[st.stage_instance_id] = {
-                        "status": StageStatus.DONE,
                         "exit_condition": "success",
                         "output_message_id": msg_id,
                     }
@@ -113,7 +110,6 @@ class ConsumeMessagesProcessor:
 
             elif msg_status == "ERROR":
                 delta.stage_updates[st.stage_instance_id] = {
-                    "status": StageStatus.ERROR,
                     "output_message_id": msg_id,
                 }
                 _append_timeline(ctx.instance_id, st.stage_id, "running→error", {
@@ -123,7 +119,6 @@ class ConsumeMessagesProcessor:
 
             elif msg_status == "AWAITING_CONFIRM":
                 updates: dict = {
-                    "status": StageStatus.AWAITING_CONFIRM,
                     "output_message_id": msg_id,
                 }
                 if msg.get("confirm_questions"):
@@ -139,15 +134,20 @@ class ConsumeMessagesProcessor:
             new_consumed.add(msg_id)
 
         # 1.5 AWAITING_CONFIRM 合法性校验
-        for sid, updates in list(delta.stage_updates.items()):
-            if updates.get("status") != StageStatus.AWAITING_CONFIRM:
-                continue
+        for sid in list(cycle_meta.newly_awaiting_confirm_ids):
             st = stage_index.get(sid)
             if st is None:
                 continue
             if not get_confirmed_edges(ctx.adj, st.stage_id):
-                delta.stage_updates[sid] = {"status": StageStatus.ERROR}
-                cycle_meta = cycle_meta.with_error(sid)
+                # 从 cycle_meta 移除，标记为 error
+                cycle_meta = CycleMeta(
+                    newly_done_stage_instance_ids=cycle_meta.newly_done_stage_instance_ids,
+                    newly_error_stage_instance_ids=cycle_meta.newly_error_stage_instance_ids | {sid},
+                    newly_awaiting_confirm_ids=cycle_meta.newly_awaiting_confirm_ids - {sid},
+                    ready_candidates=cycle_meta.ready_candidates,
+                )
+                # 清除已写入的元数据
+                delta.stage_updates.pop(sid, None)
                 append_deviation(
                     ctx.instance_id, "INVALID_AWAITING_CONFIRM",
                     f"Stage {st.stage_id} 无 confirmed 边但上报了 AWAITING_CONFIRM，已转为 ERROR",

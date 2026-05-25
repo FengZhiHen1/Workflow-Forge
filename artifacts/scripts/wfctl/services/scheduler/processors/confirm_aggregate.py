@@ -19,7 +19,7 @@ class ConfirmAggregateProcessor:
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
         local_pending = self._collect_confirm_pending(state, ctx) or []
-        child_pending = ctx.extra.get("child_confirm_pending", [])
+        child_pending = state.cycle_meta.child_confirm_pending
         all_pending = local_pending + child_pending
         if all_pending:
             return ProcessorResult(actions=[{"action": "confirm", "pending": all_pending}])

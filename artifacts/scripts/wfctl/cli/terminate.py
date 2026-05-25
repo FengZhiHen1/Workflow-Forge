@@ -1,9 +1,14 @@
-"""terminate 命令——取消活跃实例，清理 worktree 和 anchor tag。"""
+"""terminate 命令——取消活跃实例，清理 worktree 和 anchor tag。
 
-from core.errors import InputError, StateError
+状态标记使用 StateDelta，副作用（备份、清理、rescue）保留在 handler。
+"""
+
+from core.errors import InputError
 from core.git_ops import _git, git_add_all, git_commit, git_rev_parse, git_status_porcelain
 from core.project import find_root
-from services.state_manager import load_instance, save_instance, append_deviation
+from state.persistence import load_instance_state, save_instance_state
+from services.scheduler.state_model import InstanceStatus, StateDelta
+from services.state_manager import append_deviation
 from services.worktree_manager import (
     backup_instance,
     cleanup_orphan_worktrees,
@@ -21,42 +26,44 @@ def register_terminate(subparsers):
 
 
 def _handle_terminate(args) -> dict:
-    instance = load_instance(args.instance)
+    state = load_instance_state(args.instance)
+    instance_id = args.instance
 
-    if instance.get("status") == "COMPLETED":
+    if state.status.value == "COMPLETED":
         raise InputError("Instance already completed", code="INVALID_ARGUMENT")
-    if instance.get("status") == "FAILED":
+    if state.status.value == "FAILED":
         raise InputError("Instance already terminated", code="INVALID_ARGUMENT")
 
     root = find_root()
-    instance_id = args.instance
 
-    # 安全检查：一级实例未合入 main，需 --force 或确认
-    is_root = not instance.get("parent_instance_id")
+    # 安全检查
+    is_root = not state.parent_instance_id
     if is_root and not args.force:
-        if not _is_merged_to_main(instance_id, instance):
+        if not _is_merged_to_main(state):
             return {
                 "status": "requires_confirmation",
                 "instance_id": instance_id,
                 "reason": "Root instance not merged to main. Use --force to terminate anyway.",
             }
 
-    # 0. 创建备份（保底恢复）
+    # 状态变更：标记 FAILED
+    delta = StateDelta(instance_updates={"status": InstanceStatus.FAILED})
+    new_state = state.apply_delta(delta)
+    save_instance_state(instance_id, new_state)
+
+    # ── 副作用区 ──
+    # 0. 备份
     backup_ok = False
     try:
         backup_ok = backup_instance(instance_id)
     except Exception:
         pass
 
-    # 1. 置为 FAILED
-    instance["status"] = "FAILED"
-    save_instance(instance_id, instance)
-
-    # 2. 清理该实例的所有 anchor tag（在删 worktree 之前）
+    # 1. 清理 anchor tags
     from services.resolver import find_workflow_dir
-    version = instance.get("version", "")
-    wf_dir = find_workflow_dir(instance["workflow_id"], version if version else None)
     from core.schema.loader import load_workflow
+    version = state.version
+    wf_dir = find_workflow_dir(state.workflow_id, version if version else None)
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")
     anchor_prefix = spec.anchor_prefix
 
@@ -67,7 +74,7 @@ def _handle_terminate(args) -> dict:
             if tag_name:
                 remove_anchor(instance_id, tag_name)
 
-    # 3. 抢救实例 worktree 中未提交的文件（正常流程外的直接写入）
+    # 2. 抢救未提交文件
     wt_path = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
     if wt_path.exists():
         try:
@@ -94,23 +101,22 @@ def _handle_terminate(args) -> dict:
         except Exception:
             pass
 
-    # 4. 移除实例 worktree
+    # 3. 移除 instance worktree
     try:
         remove_instance_worktree(instance_id)
     except Exception:
         pass
 
-    # 5. 清理孤儿 worktree（stage 级残留）
+    # 4. 清理孤儿 worktree
     try:
         cleanup_orphan_worktrees()
     except Exception:
         pass
 
-    # 6. 记录 deviation
+    # 5. 记录 deviation
     append_deviation(instance_id, "USER_TERMINATE", args.reason)
 
-    # 7. 清理残留实例目录（backup 后用 shutil.move 移走，但 save_instance
-    #    和 append_deviation 会通过 mkdir(parents=True) 重新创建）
+    # 6. 清理残留目录
     if backup_ok:
         import shutil
         inst_dir = root / ".agent" / "instances" / instance_id
@@ -124,10 +130,10 @@ def _handle_terminate(args) -> dict:
     }
 
 
-def _is_merged_to_main(instance_id: str, instance: dict) -> bool:
-    """检查实例是否已合入 main：status == COMPLETED 或 merge_confirmed 已设置。"""
-    if instance.get("status") == "COMPLETED":
+def _is_merged_to_main(state) -> bool:
+    """检查实例是否已合入 main。"""
+    if state.status.value == "COMPLETED":
         return True
-    if instance.get("merge_confirmed"):
+    if state.merge_confirmed:
         return True
     return False

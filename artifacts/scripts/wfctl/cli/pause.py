@@ -1,12 +1,12 @@
-"""pause 命令——暂停活跃实例，重置运行中 stage。"""
+"""pause 命令——暂停活跃实例，重置运行中 stage。
+
+决策委托给 TransitionPolicy.on_pause()。
+"""
 
 from core.errors import StateError
-from services.state_manager import (
-    _append_timeline,
-    append_deviation,
-    load_instance,
-    save_instance,
-)
+from domain.transition.policy import TransitionPolicy
+from state.persistence import load_instance_state, save_instance_state
+from services.state_manager import _append_timeline, append_deviation
 
 
 def register_pause(subparsers):
@@ -17,27 +17,37 @@ def register_pause(subparsers):
 
 
 def _handle_pause(args) -> dict:
-    instance = load_instance(args.instance)
+    state = load_instance_state(args.instance)
 
-    if instance.get("status") == "COMPLETED":
+    if state.status.value == "COMPLETED":
         raise StateError("Instance already completed")
-    if instance.get("status") == "FAILED":
+    if state.status.value == "FAILED":
         raise StateError("Instance already terminated")
-    if instance.get("status") == "PAUSED":
+    if state.status.value == "PAUSED":
         raise StateError("Instance already paused")
-    if instance.get("status") != "ACTIVE":
-        raise StateError(f"Cannot pause instance in status: {instance.get('status')}")
+    if state.status.value != "ACTIVE":
+        raise StateError(f"Cannot pause instance in status: {state.status.value}")
 
-    # 重置 RUNNING → PENDING
-    reset_stages: list[str] = []
-    for s in instance["stages"]:
-        if s.get("status") == "RUNNING":
-            s["status"] = "PENDING"
-            reset_stages.append(s["stage_id"])
+    # 纯决策
+    delta = TransitionPolicy.on_pause(state)
 
-    instance["status"] = "PAUSED"
-    _append_timeline(args.instance, "", "instance→paused", {"reason": args.reason, "reset_stages": reset_stages})
+    reset_stages = [sid for sid in delta.stage_updates]
+    reset_stage_ids = [
+        state.stage_by_instance_id(sid).stage_id
+        for sid in reset_stages
+        if state.stage_by_instance_id(sid)
+    ]
+
+    # 应用
+    new_state = state.apply_delta(delta)
+
+    # ── 副作用区 ──
+    _append_timeline(args.instance, "", "instance→paused", {
+        "reason": args.reason,
+        "reset_stages": reset_stage_ids,
+    })
     append_deviation(args.instance, "INSTANCE_PAUSED", args.reason)
-    save_instance(args.instance, instance)
 
-    return {"status": "ok", "instance_id": args.instance, "reset_stages": reset_stages}
+    save_instance_state(args.instance, new_state)
+
+    return {"status": "ok", "instance_id": args.instance, "reset_stages": reset_stage_ids}

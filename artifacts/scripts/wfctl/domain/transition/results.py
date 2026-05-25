@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.schema.interface import StageStatus
+
+if TYPE_CHECKING:
+    from services.scheduler.state_model import StateDelta
 
 
 @dataclass(frozen=True)
 class TransitionResult:
-    """单次状态转换结果。
+    """单次状态转换结果（on_error 用）。
 
     next_status: 转换后的目标状态
     target_stage_id: 若需路由到其他 stage，目标 stage_id
@@ -22,3 +25,73 @@ class TransitionResult:
     target_stage_id: str | None = None
     updates: dict[str, Any] = field(default_factory=dict)
     action: str = ""
+
+
+@dataclass(frozen=True)
+class ConfirmResult:
+    """确认/拒绝操作的纯决策结果。
+
+    由 TransitionPolicy.on_confirm() 返回，不包含任何副作用。
+    """
+
+    next_status: StageStatus
+    exit_condition: str = ""
+    target_stage_id: str | None = None
+    updates: dict[str, Any] = field(default_factory=dict)
+    requires_feedback: bool = False
+    cascade_reset_target: str | None = None
+    action: str = ""
+    reason: str = ""
+    is_relay: bool = False
+    is_rejected: bool = False
+    instance_failed: bool = False
+
+
+@dataclass(frozen=True)
+class CascadeResetResult:
+    """回边级联重置结果。
+
+    reset_stage_instance_ids: 需重置为 PENDING 的 stage_instance_id 列表
+    removed_stage_instance_ids: 需移除的 stage_instance_id（折叠为单条）
+    cleanup_running_agent_stage_ids: 需从 running_agents.json 清理的 stage_id 列表
+    """
+
+    reset_stage_instance_ids: list[str] = field(default_factory=list)
+    removed_stage_instance_ids: list[str] = field(default_factory=list)
+    cleanup_running_agent_stage_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RollbackResult:
+    """回退操作的纯决策结果。"""
+
+    reset_stage_ids: list[str] = field(default_factory=list)
+    delta: Any = None  # StateDelta (lazy import)
+
+    @property
+    def state_delta(self) -> StateDelta:
+        from services.scheduler.state_model import StateDelta
+        return self.delta if isinstance(self.delta, StateDelta) else StateDelta()
+
+
+@dataclass(frozen=True)
+class SkipResult:
+    """跳过操作的纯决策结果。"""
+
+    stage_instance_ids: list[str] = field(default_factory=list)
+    force_applied: bool = False
+    blocked_message_ids: list[str] = field(default_factory=list)
+    delta: Any = None  # StateDelta (lazy import)
+
+    @property
+    def state_delta(self) -> StateDelta:
+        from services.scheduler.state_model import StateDelta
+        return self.delta if isinstance(self.delta, StateDelta) else StateDelta()
+
+
+@dataclass(frozen=True)
+class MergeConfirmResult:
+    """__merge__ 伪 stage 确认结果。"""
+
+    merge_confirmed: bool = False
+    remove_merge_stage: bool = True

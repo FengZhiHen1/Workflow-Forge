@@ -1,12 +1,12 @@
-"""resume 命令——恢复暂停的实例。"""
+"""resume 命令——恢复暂停的实例。
+
+决策委托给 TransitionPolicy.on_resume()。
+"""
 
 from core.errors import StateError
-from services.state_manager import (
-    _append_timeline,
-    append_deviation,
-    load_instance,
-    save_instance,
-)
+from domain.transition.policy import TransitionPolicy
+from state.persistence import load_instance_state, save_instance_state
+from services.state_manager import _append_timeline, append_deviation
 
 
 def register_resume(subparsers):
@@ -16,20 +16,27 @@ def register_resume(subparsers):
 
 
 def _handle_resume(args) -> dict:
-    instance = load_instance(args.instance)
+    state = load_instance_state(args.instance)
 
-    if instance.get("status") == "COMPLETED":
+    if state.status.value == "COMPLETED":
         raise StateError("Instance already completed")
-    if instance.get("status") == "FAILED":
+    if state.status.value == "FAILED":
         raise StateError("Instance already terminated")
-    if instance.get("status") == "ACTIVE":
+    if state.status.value == "ACTIVE":
         raise StateError("Instance is already active")
-    if instance.get("status") != "PAUSED":
-        raise StateError(f"Cannot resume instance in status: {instance.get('status')}")
+    if state.status.value != "PAUSED":
+        raise StateError(f"Cannot resume instance in status: {state.status.value}")
 
-    instance["status"] = "ACTIVE"
+    # 纯决策
+    delta = TransitionPolicy.on_resume(state)
+
+    # 应用
+    new_state = state.apply_delta(delta)
+
+    # ── 副作用区 ──
     _append_timeline(args.instance, "", "instance→active (resumed)")
     append_deviation(args.instance, "INSTANCE_RESUMED", "User resumed instance")
-    save_instance(args.instance, instance)
+
+    save_instance_state(args.instance, new_state)
 
     return {"status": "ok", "instance_id": args.instance}

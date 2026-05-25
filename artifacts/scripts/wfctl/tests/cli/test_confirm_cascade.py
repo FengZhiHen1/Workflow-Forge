@@ -1,4 +1,4 @@
-"""confirm 回边级联重置单元测试。"""
+"""confirm 回边级联重置单元测试——TransitionPolicy.compute_cascade_reset。"""
 
 import pytest
 
@@ -9,7 +9,8 @@ from core.schema.interface import (
     StageTargetType,
     WorkflowSpec,
 )
-from cli.confirm import _cascade_reset_on_backward_edge
+from domain.transition.policy import TransitionPolicy
+from services.scheduler.state_model import InstanceState, StageState, StageStatus
 
 
 def _make_spec(num_stages: int = 10):
@@ -57,234 +58,132 @@ def _make_spec(num_stages: int = 10):
     )
 
 
-def _make_instance(stage_statuses: dict[str, str]) -> dict:
-    """构造一个包含指定 stage 状态的 instance。"""
+def _make_state(stage_statuses: dict[str, str]) -> InstanceState:
+    """构造 InstanceState。"""
     stages = [
-        {
-            "stage_id": sid,
-            "stage_instance_id": sid,
-            "status": status,
-            "agent_id": None,
-            "system_agent_id": f"sys-{sid}" if status == "DONE" else None,
-            "output_message_id": f"msg-{sid}" if status == "DONE" else None,
-            "loop_counter": 0,
-            "attempt_count": 0,
-            "started_at": None,
-            "model": "standard",
-            "child_instance_id": None,
-            "fan_out_target": None,
-        }
+        StageState(
+            stage_id=sid,
+            stage_instance_id=sid,
+            status=StageStatus(status),
+            system_agent_id=f"sys-{sid}" if status == "DONE" else None,
+            output_message_id=f"msg-{sid}" if status == "DONE" else None,
+        )
         for sid, status in stage_statuses.items()
     ]
-    return {
-        "instance_id": "test-001",
-        "status": "ACTIVE",
-        "stages": stages,
-    }
+    return InstanceState(
+        instance_id="test-001",
+        workflow_id="test",
+        stages=stages,
+    )
+
+
+def _stage_order(spec: WorkflowSpec) -> list[str]:
+    return [s.stage_id for s in spec.stages]
 
 
 class TestCascadeReset:
-    """_cascade_reset_on_backward_edge 单元测试。"""
+    """compute_cascade_reset 单元测试。"""
 
-    def test_forward_edge_no_reset(self, tmp_path):
+    def test_forward_edge_no_reset(self):
         """前向边（to 在 from 之后）：不应触发重置。"""
         spec = _make_spec(10)
-        instance = _make_instance({
-            "s00-workflow-start": "DONE",
-            "s01": "DONE",
-            "s02": "DONE",
-            "s03": "DONE",
-            "s04": "DONE",
-            "s05": "DONE",
-            "s06": "DONE",
-            "s07": "DONE",
-            "s08": "DONE",
-            "s09": "DONE",
-            "s99-workflow-end": "PENDING",
-        })
+        state = _make_state({f"s0{i}": "DONE" for i in range(1, 10)})
 
-        _cascade_reset_on_backward_edge(instance, spec, "s05", "s08", "test-001")
+        result = TransitionPolicy.compute_cascade_reset(
+            state, "s05", "s08", _stage_order(spec)
+        )
 
-        # s05 到 s08 之间的 stage 应保持 DONE（s08 > s05，是前向边）
-        statuses = {s["stage_id"]: s["status"] for s in instance["stages"]}
-        assert statuses["s05"] == "DONE"
-        assert statuses["s06"] == "DONE"
-        assert statuses["s07"] == "DONE"
-        assert statuses["s08"] == "DONE"
+        assert len(result.reset_stage_instance_ids) == 0
+        assert len(result.removed_stage_instance_ids) == 0
 
-    def test_self_loop_no_reset(self, tmp_path):
+    def test_self_loop_no_reset(self):
         """自循环边（from == to）：不应触发级联重置。"""
         spec = _make_spec(10)
-        instance = _make_instance({
-            "s00-workflow-start": "DONE",
-            "s01": "DONE",
-            "s02": "PENDING",
-            "s03": "PENDING",
-            "s99-workflow-end": "PENDING",
-        })
+        state = _make_state({"s01": "DONE", "s02": "PENDING", "s03": "PENDING"})
 
-        _cascade_reset_on_backward_edge(instance, spec, "s02", "s02", "test-001")
+        result = TransitionPolicy.compute_cascade_reset(
+            state, "s02", "s02", _stage_order(spec)
+        )
 
-        # 自循环不应改变任何东西
-        assert instance["stages"][2]["status"] == "PENDING"
+        assert len(result.reset_stage_instance_ids) == 0
 
-    def test_s08_to_s06_backward_cascade(self, tmp_path):
-        """s08→s06 回边：应重置 s06、s07、s08（含 from_stage），s02–s05 保持 DONE。"""
+    def test_s08_to_s06_backward_cascade(self):
+        """s08→s06 回边：应重置 s06、s07、s08（含 from_stage）。"""
         spec = _make_spec(10)
-        instance = _make_instance({
-            "s00-workflow-start": "DONE",
-            "s01": "DONE",
-            "s02": "DONE",
-            "s03": "DONE",
-            "s04": "DONE",
-            "s05": "DONE",
-            "s06": "DONE",
-            "s07": "DONE",
-            "s08": "DONE",
-            "s09": "DONE",
-            "s99-workflow-end": "PENDING",
-        })
+        state = _make_state({f"s0{i}": "DONE" for i in range(1, 10)})
 
-        _cascade_reset_on_backward_edge(instance, spec, "s08", "s06", "test-001")
+        result = TransitionPolicy.compute_cascade_reset(
+            state, "s08", "s06", _stage_order(spec)
+        )
 
-        statuses = {s["stage_id"]: s["status"] for s in instance["stages"]}
-        # s06–s08 应重置（含 from_stage——需重新执行才能产出新结果）
-        assert statuses["s06"] == "PENDING"
-        assert statuses["s07"] == "PENDING"
-        assert statuses["s08"] == "PENDING"
-        # s02–s05 在重置范围之前，保持 DONE
-        assert statuses["s02"] == "DONE"
-        assert statuses["s03"] == "DONE"
-        assert statuses["s04"] == "DONE"
-        assert statuses["s05"] == "DONE"
+        assert set(result.reset_stage_instance_ids) == {"s06", "s07", "s08"}
+        assert all(sid in result.cleanup_running_agent_stage_ids for sid in ["s06", "s07", "s08"])
 
-    def test_s08_to_s02_deep_backward_cascade(self, tmp_path):
+    def test_s08_to_s02_deep_backward_cascade(self):
         """s08→s02 深回边：应重置 s02–s08（含 from_stage）。"""
         spec = _make_spec(10)
-        instance = _make_instance({
-            "s00-workflow-start": "DONE",
-            "s01": "DONE",
-            "s02": "DONE",
-            "s03": "DONE",
-            "s04": "DONE",
-            "s05": "DONE",
-            "s06": "DONE",
-            "s07": "DONE",
-            "s08": "DONE",
-            "s09": "DONE",
-            "s99-workflow-end": "PENDING",
-        })
+        state = _make_state({f"s0{i}": "DONE" for i in range(1, 10)})
 
-        _cascade_reset_on_backward_edge(instance, spec, "s08", "s02", "test-001")
+        result = TransitionPolicy.compute_cascade_reset(
+            state, "s08", "s02", _stage_order(spec)
+        )
 
-        statuses = {s["stage_id"]: s["status"] for s in instance["stages"]}
-        # s02–s08 应重置（含 from_stage）
-        for sid in [f"s0{i}" for i in range(2, 9)]:
-            assert statuses[sid] == "PENDING", f"{sid} should be PENDING"
-        # s01 在范围之前，保持 DONE
-        assert statuses["s01"] == "DONE"
+        expected = {f"s0{i}" for i in range(2, 9)}
+        assert set(result.reset_stage_instance_ids) == expected
 
-    def test_backward_reset_clears_fields(self, tmp_path):
-        """回边重置应清除 system_agent_id、output_message_id 等字段。"""
+    def test_pending_stages_not_affected(self):
+        """PENDING stage 不应出现在重置列表中。"""
         spec = _make_spec(10)
-        instance = _make_instance({
-            "s00-workflow-start": "DONE",
-            "s01": "DONE",
-            "s02": "DONE",
-            "s03": "DONE",
-            "s04": "DONE",
-            "s05": "DONE",
-            "s06": "DONE",
-            "s07": "DONE",
-            "s08": "DONE",
-            "s99-workflow-end": "PENDING",
-        })
+        statuses = {f"s0{i}": "DONE" for i in range(1, 10)}
+        statuses["s05"] = "PENDING"
+        statuses["s06"] = "PENDING"
+        state = _make_state(statuses)
 
-        _cascade_reset_on_backward_edge(instance, spec, "s08", "s06", "test-001")
+        result = TransitionPolicy.compute_cascade_reset(
+            state, "s08", "s06", _stage_order(spec)
+        )
 
-        # 检查 s06 和 s08 的新条目（均应在重置范围内）
-        for sid in ("s06", "s08"):
-            entry = next(s for s in instance["stages"] if s["stage_id"] == sid)
-            assert entry["system_agent_id"] is None, f"{sid} system_agent_id should be None"
-            assert entry["output_message_id"] is None, f"{sid} output_message_id should be None"
-            assert entry["child_instance_id"] is None, f"{sid} child_instance_id should be None"
-            assert "fan_out_target" not in entry or entry["fan_out_target"] is None
-            assert entry["loop_counter"] == 0
-            assert entry["attempt_count"] == 0
+        # s07 和 s08 是 DONE，应重置；s05 和 s06 是 PENDING，不应重置
+        assert "s07" in result.reset_stage_instance_ids
+        assert "s08" in result.reset_stage_instance_ids
+        assert "s05" not in result.reset_stage_instance_ids
+        assert "s06" not in result.reset_stage_instance_ids
 
-    def test_backward_collapses_parallel_instances(self, tmp_path):
-        """回边重置应将 parallel 实例折叠为单一 PENDING 条目。"""
+    def test_backward_collapses_parallel_instances(self):
+        """回边重置应列出 parallel 实例的 removal。"""
         spec = _make_spec(10)
-        instance = _make_instance({
-            "s00-workflow-start": "DONE",
-            "s01": "DONE",
-            "s02": "DONE",
-            "s03": "DONE",
-            "s04": "DONE",
-            "s05": "DONE",
-            "s06": "DONE",
-            "s07": "DONE",
-            "s08": "DONE",
-            "s99-workflow-end": "PENDING",
-        })
+        state = _make_state({f"s0{i}": "DONE" for i in range(1, 10)})
 
-        # 模拟 s07 有 parallel 实例
-        instance["stages"].extend([
-            {
-                "stage_id": "s07",
-                "stage_instance_id": "s07_0",
-                "status": "DONE",
-                "system_agent_id": "sys-parallel-0",
-                "output_message_id": "msg-parallel-0",
-                "loop_counter": 0,
-                "attempt_count": 0,
-                "started_at": None,
-                "model": "standard",
-                "child_instance_id": None,
-                "fan_out_target": {"id": "M01", "label": "模块1"},
-            },
-            {
-                "stage_id": "s07",
-                "stage_instance_id": "s07_1",
-                "status": "DONE",
-                "system_agent_id": "sys-parallel-1",
-                "output_message_id": "msg-parallel-1",
-                "loop_counter": 0,
-                "attempt_count": 0,
-                "started_at": None,
-                "model": "standard",
-                "child_instance_id": None,
-                "fan_out_target": {"id": "M02", "label": "模块2"},
-            },
-        ])
+        # 添加 parallel s07 实例
+        parallel_stages = list(state.stages) + [
+            StageState(
+                stage_id="s07",
+                stage_instance_id="s07_0",
+                status=StageStatus.DONE,
+                system_agent_id="sys-parallel-0",
+                output_message_id="msg-parallel-0",
+                fan_out_target={"id": "M01", "label": "模块1"},
+            ),
+            StageState(
+                stage_id="s07",
+                stage_instance_id="s07_1",
+                status=StageStatus.DONE,
+                system_agent_id="sys-parallel-1",
+                output_message_id="msg-parallel-1",
+                fan_out_target={"id": "M02", "label": "模块2"},
+            ),
+        ]
+        state = InstanceState(
+            instance_id="test-001",
+            workflow_id="test",
+            stages=parallel_stages,
+        )
 
-        _cascade_reset_on_backward_edge(instance, spec, "s08", "s06", "test-001")
+        result = TransitionPolicy.compute_cascade_reset(
+            state, "s08", "s06", _stage_order(spec)
+        )
 
-        # s07 的所有 parallel 实例应折叠为一个 PENDING 条目
-        s07_entries = [s for s in instance["stages"] if s["stage_id"] == "s07"]
-        assert len(s07_entries) == 1, f"Expected 1 s07 entry, got {len(s07_entries)}"
-        assert s07_entries[0]["stage_instance_id"] == "s07"
-        assert s07_entries[0]["status"] == "PENDING"
-        assert "fan_out_target" not in s07_entries[0] or s07_entries[0]["fan_out_target"] is None
-
-    def test_pending_stages_not_affected(self, tmp_path):
-        """已处于 PENDING 的 Stage 应保持 PENDING，不被重复重置。"""
-        spec = _make_spec(10)
-        instance = _make_instance({
-            "s00-workflow-start": "DONE",
-            "s01": "DONE",
-            "s02": "DONE",
-            "s03": "DONE",
-            "s04": "DONE",
-            "s05": "PENDING",  # 已是 PENDING
-            "s06": "PENDING",  # 已是 PENDING
-            "s07": "DONE",
-            "s08": "DONE",
-            "s99-workflow-end": "PENDING",
-        })
-
-        _cascade_reset_on_backward_edge(instance, spec, "s08", "s06", "test-001")
-
-        # 已 PENDING 的 stage 数量不变（不重复创建条目）
-        pending_count = sum(1 for s in instance["stages"] if s["stage_id"] in ("s05", "s06") and s["status"] == "PENDING")
-        assert pending_count >= 2
+        # s07 的 3 个实例（原始 + 2 个 parallel）都应被移除
+        s07_removed = [sid for sid in result.removed_stage_instance_ids if sid.startswith("s07")]
+        assert len(s07_removed) == 3, f"Expected 3 s07 removals, got {len(s07_removed)}"
+        assert "s07" in result.reset_stage_instance_ids

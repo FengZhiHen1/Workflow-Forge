@@ -1,11 +1,15 @@
-"""rollback 命令。"""
+"""rollback 命令——回退到指定 stage 锚点。
 
-from core.dag import build_adjacency, collect_downstream
+决策委托给 TransitionPolicy.on_rollback()，副作用（Git 操作）保留在 handler。
+"""
+
+from core.dag import build_adjacency
 from core.errors import InputError
 from core.project import find_root
-from core.schema.interface import EdgeCondition
 from core.schema.loader import load_workflow
-from services.state_manager import load_instance, save_instance
+from domain.transition.policy import TransitionPolicy
+from state.persistence import load_instance_state, save_instance_state
+from services.state_manager import _append_timeline
 from services.worktree_manager import checkout_to_anchor, remove_anchor
 
 
@@ -17,72 +21,52 @@ def register_rollback(subparsers):
 
 
 def _handle_rollback(args) -> dict:
-    instance = load_instance(args.instance)
+    state = load_instance_state(args.instance)
     stage_id = args.stage
 
-    if instance.get("status") == "COMPLETED":
+    if state.status.value == "COMPLETED":
         raise InputError("Instance already merged to main", code="INVALID_ARGUMENT")
-    if instance.get("status") == "FAILED":
+    if state.status.value == "FAILED":
         raise InputError("Instance already terminated", code="INVALID_ARGUMENT")
 
-    root = find_root()
+    # 加载 spec 和邻接表
     from services.resolver import find_workflow_dir
-    version = instance.get("version", "")
-    wf_dir = find_workflow_dir(instance["workflow_id"], version if version else None)
+    version = state.version
+    wf_dir = find_workflow_dir(state.workflow_id, version if version else None)
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")
     adj = build_adjacency(spec)
 
-    anchor_prefix = spec.anchor_prefix
-    anchor_name = f"{anchor_prefix}-{args.instance}-{stage_id}"
-
     # 校验锚点存在
+    root = find_root()
     from core.git_ops import git_rev_parse
     inst_wt = root / ".tmp" / "worktrees" / f"instance-{args.instance}"
     if not inst_wt.exists():
         raise InputError("Instance worktree not found", code="INVALID_ARGUMENT")
+    anchor_name = f"{spec.anchor_prefix}-{args.instance}-{stage_id}"
     rc, _, _ = git_rev_parse(inst_wt, anchor_name)
     if rc != 0:
         raise InputError(f"No anchor for stage {stage_id}", code="STAGE_NOT_FOUND")
 
-    # 确定受影响下游
-    downstream = collect_downstream(adj, stage_id, {EdgeCondition.FAILURE, EdgeCondition.LOOP_EXCEEDED})
+    # 纯决策
+    policy = TransitionPolicy.from_adjacency(adj, stage_id)
+    result = policy.on_rollback(state, adj)
 
-    # 重建实例 worktree
+    # 应用状态变更
+    new_state = state.apply_delta(result.state_delta)
+
+    # ── 副作用区 ──
     checkout_to_anchor(args.instance, anchor_name)
 
-    # 移除受影响 stage 的锚点
-    reset_stages = list(downstream)
-    for s_id in reset_stages:
-        anchor = f"{anchor_prefix}-{args.instance}-{s_id}"
+    for s_id in result.reset_stage_ids:
+        anchor = f"{spec.anchor_prefix}-{args.instance}-{s_id}"
         remove_anchor(args.instance, anchor)
 
-    # 重置状态
-    stage_map = {s["stage_id"]: s for s in instance["stages"]}
-    for s_id in reset_stages:
-        s = stage_map.get(s_id)
-        if s:
-            s["status"] = "PENDING"
-            s["attempt_count"] = 0
-            s["loop_counter"] = 0
-            s["system_agent_id"] = None
-            s.pop("continued_to", None)
-            # 级联清理 consumed_message_ids：移除该 stage 产出的消息 ID
-            if s.get("output_message_id"):
-                msg_id = s["output_message_id"]
-                consumed = instance.get("consumed_message_ids", [])
-                if msg_id in consumed:
-                    consumed.remove(msg_id)
-                    instance["consumed_message_ids"] = consumed
-            s["output_message_id"] = None
+    _append_timeline(args.instance, stage_id, "rollback", {"reset_stages": result.reset_stage_ids})
 
-    # 写入 timeline
-    from services.state_manager import _append_timeline
-    _append_timeline(args.instance, stage_id, "rollback", {"reset_stages": reset_stages})
-
-    save_instance(args.instance, instance)
+    save_instance_state(args.instance, new_state)
 
     return {
         "status": "ok",
-        "reset_stages": reset_stages,
+        "reset_stages": result.reset_stage_ids,
         "worktree": str(inst_wt.relative_to(root)),
     }

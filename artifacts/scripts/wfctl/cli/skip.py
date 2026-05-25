@@ -1,16 +1,15 @@
-"""skip 命令——跳过指定 stage，直接标记为 DONE。"""
+"""skip 命令——跳过指定 stage，直接标记为 DONE。
 
-from core.errors import StateError
+决策委托给 TransitionPolicy.on_skip()，副作用（锚点、deviation）保留在 handler。
+"""
+
+from core.dag import build_adjacency
+from core.errors import InputError, StateError
 from core.schema.loader import load_workflow
-from services.state_manager import (
-    _append_timeline,
-    append_deviation,
-    load_instance,
-    save_instance,
-)
+from domain.transition.policy import TransitionPolicy
+from state.persistence import load_instance_state, save_instance_state
+from services.state_manager import _append_timeline, append_deviation
 from services.worktree_manager import tag_anchor
-
-FORCEABLE_STATES = {"PENDING", "RUNNING", "AWAITING_CONFIRM", "ERROR"}
 
 
 def register_skip(subparsers):
@@ -27,79 +26,66 @@ def register_skip(subparsers):
 
 
 def _handle_skip(args) -> dict:
-    instance = load_instance(args.instance)
-    stage_id = args.stage
+    state = load_instance_state(args.instance)
 
-    if instance.get("status") == "COMPLETED":
+    if state.status.value == "COMPLETED":
         raise StateError("Instance already completed")
-    if instance.get("status") == "FAILED":
+    if state.status.value == "FAILED":
         raise StateError("Instance already terminated")
 
-    # 查找所有匹配的 stage 实例（parallel fan-out 会产生多个同 stage_id 的条目）
-    targets = [s for s in instance["stages"] if s["stage_id"] == stage_id]
-    if not targets:
-        raise StateError(f"Stage not found: {stage_id}")
+    stage_id = args.stage
 
-    # 校验：全部已 DONE → 拒绝；任一不在可跳过集合 → 拒绝；任一非 PENDING 且未 --force → 拒绝
-    if all(s.get("status") == "DONE" for s in targets):
-        raise StateError(f"All instances of stage {stage_id} are already DONE")
-
-    for s in targets:
-        status = s.get("status", "PENDING")
-        if status not in FORCEABLE_STATES:
-            raise StateError(
-                f"Stage {stage_id} ({s.get('stage_instance_id')}) is {status}, "
-                f"only {sorted(FORCEABLE_STATES)} stages can be skipped"
-            )
-        if status != "PENDING" and not args.force:
-            raise StateError(
-                f"Stage {stage_id} ({s.get('stage_instance_id')}) is {status}, not PENDING. "
-                f"Use --force to skip non-PENDING stages."
-            )
-
-    # 加载 workflow spec 获取 anchor_prefix
+    # 加载 spec（获取 anchor_prefix）
     from services.resolver import find_workflow_dir
-    version = instance.get("version", "")
-    wf_dir = find_workflow_dir(instance["workflow_id"], version if version else None)
+    version = state.version
+    wf_dir = find_workflow_dir(state.workflow_id, version if version else None)
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")
 
-    # 逐个标记 DONE + 打锚点（按 stage_instance_id）
-    old_statuses: dict[str, str] = {}
-    for s in targets:
-        s_inst_id = s.get("stage_instance_id", stage_id)
-        old_statuses[s_inst_id] = s.get("status", "PENDING")
-        s["status"] = "DONE"
-        s["started_at"] = None
-        anchor = f"{spec.anchor_prefix}-{args.instance}-{s_inst_id}"
-        tag_anchor(args.instance, anchor)
+    # 纯决策
+    policy = TransitionPolicy.from_adjacency(build_adjacency(spec), stage_id)
+    result = policy.on_skip(state, args.force)
+
+    # 隔离未消费消息
+    from services.message_handler import scan_messages
+    consumed = set(state.consumed_message_ids) | set(result.blocked_message_ids)
+    pending_msgs = scan_messages(args.instance, consumed)
+    blocked_ids = {m["message_id"] for m in pending_msgs if m.get("stage_id") == stage_id}
+    if blocked_ids:
+        consumed.update(blocked_ids)
+
+    # 合并 delta：跳过 + 消息隔离
+    from services.scheduler.state_model import StateDelta
+    combined = result.state_delta
+    if blocked_ids:
+        combined = combined.merge(StateDelta(
+            instance_updates={"consumed_message_ids": frozenset(consumed)},
+        ))
+
+    # 应用状态变更
+    new_state = state.apply_delta(combined)
+
+    # ── 副作用区 ──
+    for s_inst_id in result.stage_instance_ids:
+        tag_anchor(args.instance, f"{spec.anchor_prefix}-{args.instance}-{s_inst_id}")
         _append_timeline(
             args.instance, stage_id,
-            f"{old_statuses[s_inst_id]}→done (skipped{' force' if args.force else ''})",
+            f"skipped{' force' if result.force_applied else ''}",
             {"reason": args.reason, "stage_instance_id": s_inst_id},
         )
 
-    # 隔离未消费消息：将本 stage 所有未消费消息标记为已消费，防止下轮 next 重放
-    consumed_ids = set(instance.get("consumed_message_ids", []))
-    from services.message_handler import scan_messages
-    pending_msgs = scan_messages(args.instance, consumed_ids)
-    blocked_ids = {m["message_id"] for m in pending_msgs if m.get("stage_id") == stage_id}
-    if blocked_ids:
-        consumed_ids.update(blocked_ids)
-        instance["consumed_message_ids"] = list(consumed_ids)
-
     append_deviation(
         args.instance,
-        "STAGE_SKIPPED_FORCE" if args.force else "STAGE_SKIPPED",
+        "STAGE_SKIPPED_FORCE" if result.force_applied else "STAGE_SKIPPED",
         args.reason,
         stage_id=stage_id,
     )
-    save_instance(args.instance, instance)
+
+    save_instance_state(args.instance, new_state)
 
     return {
         "status": "ok",
         "stage_id": stage_id,
-        "instances_skipped": len(targets),
-        "old_statuses": old_statuses,
-        "forced": args.force,
+        "instances_skipped": len(result.stage_instance_ids),
+        "forced": result.force_applied,
         "reason": args.reason,
     }

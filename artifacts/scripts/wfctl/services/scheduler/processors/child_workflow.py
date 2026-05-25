@@ -1,57 +1,54 @@
-"""CheckChildrenProcessor：子工作流完成检查 + 创建 + 递归调度。
+"""ChildWorkflowProcessor：子工作流完成检查 + 创建 + 递归调度。
 
-步骤 4, 5.5, 5.6：检查子实例状态、创建新子实例、递归调度。
+替代 check_children.py。递归调度使用 SchedulerOrchestrator.run()。
+子 confirm 挂起项通过 CycleMeta.child_confirm_pending 传递。
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from core.dag import _any_upstream_satisfied
 from core.lock import FileLock
 from core.project import find_root
 from core.schema.interface import StageTargetType
 from core.timestamp import iso_timestamp
+from state.persistence import load_instance_state
 from services.scheduler.context import ExecutionContext
-from services.scheduler.state_model import InstanceState, StageState, StateDelta, StageStatus
+from services.scheduler.state_model import (
+    CycleMeta,
+    InstanceState,
+    StageState,
+    StageStatus,
+    StateDelta,
+    InstanceStatus,
+)
 from services.scheduler.processors.base import ProcessorResult
-from services.state_manager import append_deviation, load_instance
-from services.worktree_manager import tag_anchor
+from services.state_manager import append_deviation
 
 
 @dataclass
-class CheckChildrenProcessor:
-    """处理子工作流。"""
+class ChildWorkflowProcessor:
+    """处理子工作流：检查完成、创建子实例、递归调度。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
         delta = StateDelta()
-        child_results = {
-            "spawn_continue": [],
-            "retry": [],
-            "reinforce": [],
-            "confirm_pending": [],
-            "error": [],
-            "conflict": [],
-            "merge_conflict": [],
-            "terminate": [],
-        }
+        cycle_meta = state.cycle_meta
+        actions: list[dict] = []
 
-        # 步骤 4：检查子工作流完成状态
+        # 1. 检查子工作流完成状态
         self._check_child_workflows(state, ctx, delta)
 
-        # 步骤 5.5：子工作流实例创建
+        # 2. 创建子工作流实例
         self._spawn_child_workflows(state, ctx, delta)
 
-        # 步骤 5.6：递归处理所有活跃子实例
+        # 3. 递归调度活跃子实例
         child_results = self._recurse_child_instances(state, ctx)
 
-        # 步骤 5.6.1：子实例递归后重新检查完成状态
+        # 4. 递归后二次检查
         self._check_child_workflows(state, ctx, delta)
 
-        # 将 child_results 转换为 actions
-        actions: list[dict] = []
+        # 5. 组装 actions 和 cycle_meta
         actions.extend(child_results.get("spawn_continue", []))
         actions.extend(child_results.get("retry", []))
         actions.extend(child_results.get("reinforce", []))
@@ -60,35 +57,38 @@ class CheckChildrenProcessor:
         actions.extend(child_results.get("merge_conflict", []))
         actions.extend(child_results.get("terminate", []))
 
-        # confirm_pending 由 ConfirmAggregateProcessor 统一处理
-        ctx.extra["child_confirm_pending"] = child_results.get("confirm_pending", [])
+        cycle_meta = CycleMeta(
+            newly_done_stage_instance_ids=cycle_meta.newly_done_stage_instance_ids,
+            newly_error_stage_instance_ids=cycle_meta.newly_error_stage_instance_ids,
+            newly_awaiting_confirm_ids=cycle_meta.newly_awaiting_confirm_ids,
+            ready_candidates=cycle_meta.ready_candidates,
+            child_confirm_pending=child_results.get("confirm_pending", []),
+        )
 
+        delta.cycle_meta = cycle_meta
         return ProcessorResult(state_delta=delta, actions=actions)
 
     def _check_child_workflows(
         self, state: InstanceState, ctx: ExecutionContext, delta: StateDelta
     ) -> None:
         """检查 RUNNING WORKFLOW stage 的子实例状态。"""
-        root = find_root()
         for st in state.stages:
             if st.status != StageStatus.RUNNING:
                 continue
             if not st.child_instance_id:
                 continue
-            child_path = root / ".agent" / "instances" / st.child_instance_id / "instance.json"
-            if not child_path.exists():
-                continue
             try:
-                child = json.loads(child_path.read_text(encoding="utf-8"))
-                if child.get("status") == "COMPLETED":
-                    delta.stage_updates[st.stage_instance_id] = {
-                        "status": StageStatus.DONE,
-                        "exit_condition": "success",
-                    }
-                elif child.get("status") == "FAILED":
-                    delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.ERROR}
+                child_state = load_instance_state(st.child_instance_id)
             except Exception:
-                pass
+                continue
+
+            if child_state.status == InstanceStatus.COMPLETED:
+                delta.stage_updates[st.stage_instance_id] = {
+                    "status": StageStatus.DONE,
+                    "exit_condition": "success",
+                }
+            elif child_state.status == InstanceStatus.FAILED:
+                delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.ERROR}
 
     def _spawn_child_workflows(
         self, state: InstanceState, ctx: ExecutionContext, delta: StateDelta
@@ -144,8 +144,8 @@ class CheckChildrenProcessor:
     def _recurse_child_instances(
         self, state: InstanceState, ctx: ExecutionContext
     ) -> dict[str, list[dict]]:
-        """递归处理所有活跃子工作流实例。"""
-        from services.scheduler_legacy import _run_next_inner
+        """递归调度所有活跃子工作流实例。"""
+        from services.scheduler.orchestrator import SchedulerOrchestrator
 
         root = find_root()
         result: dict[str, list[dict]] = {
@@ -167,11 +167,11 @@ class CheckChildrenProcessor:
                 continue
 
             try:
-                child_instance = load_instance(child_id)
+                child_state = load_instance_state(child_id)
             except Exception:
                 continue
 
-            if child_instance.get("status") != "ACTIVE":
+            if child_state.status != InstanceStatus.ACTIVE:
                 continue
 
             child_lock_path = root / ".agent" / "instances" / child_id / "instance.json"
@@ -185,7 +185,28 @@ class CheckChildrenProcessor:
                 continue
 
             try:
-                child_result = _run_next_inner(child_id)
+                from core.dag import build_adjacency
+                from core.schema.loader import load_workflow
+                from services.resolver import find_workflow_dir
+
+                child_wf_dir = find_workflow_dir(
+                    child_state.workflow_id,
+                    child_state.version if child_state.version else None,
+                )
+                child_spec = load_workflow(child_wf_dir / "WORKFLOW.yaml")
+                child_adj = build_adjacency(child_spec)
+
+                child_ctx = ExecutionContext(
+                    instance_id=child_id,
+                    root=root,
+                    spec=child_spec,
+                    adj=child_adj,
+                    worktree_map={},
+                )
+
+                orchestrator = SchedulerOrchestrator()
+                child_result = orchestrator.run(child_ctx, child_state)
+
                 if child_result.get("status") != "ok":
                     continue
 

@@ -81,12 +81,14 @@ class CycleMeta:
         newly_error_stage_instance_ids: 本轮新出错的 stage
         newly_awaiting_confirm_ids: 本轮新进入等待确认的 stage
         ready_candidates: (stage_id, stage_instance_id) 就绪候选列表
+        child_confirm_pending: 子工作流中的确认挂起项
     """
 
     newly_done_stage_instance_ids: frozenset[str] = field(default_factory=frozenset)
     newly_error_stage_instance_ids: frozenset[str] = field(default_factory=frozenset)
     newly_awaiting_confirm_ids: frozenset[str] = field(default_factory=frozenset)
     ready_candidates: list[tuple[str, str]] = field(default_factory=list)
+    child_confirm_pending: list[dict] = field(default_factory=list)
 
     def with_done(self, stage_instance_id: str) -> "CycleMeta":
         """记录新增完成 stage，返回新 CycleMeta。"""
@@ -147,6 +149,7 @@ class StateDelta:
             instance_updates={**self.instance_updates, **other.instance_updates},
             append_stages=self.append_stages + other.append_stages,
             remove_stage_instance_ids=self.remove_stage_instance_ids + other.remove_stage_instance_ids,
+            cycle_meta=other.cycle_meta if other.cycle_meta is not None else self.cycle_meta,
         )
 
 
