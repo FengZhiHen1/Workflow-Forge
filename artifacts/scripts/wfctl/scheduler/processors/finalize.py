@@ -33,7 +33,8 @@ class FinalizeProcessor:
             stage_instance_id="__merge__",
             status=StageStatus.AWAITING_CONFIRM,
             confirm_questions=[
-                f"实例 {ctx.instance_id}（{state.goal}）全部 stage 已完成，是否合入 main？",
+                f"yes：实例 {ctx.instance_id}（{state.goal}）全部 stage 已完成，合入 main",
+                f"no：暂不合入，保留工作区",
             ],
         )
         delta = StateDelta(append_stages=[merge_stage])

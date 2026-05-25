@@ -43,6 +43,23 @@ def _handle_confirm(args) -> dict:
 
     stage = next((s for s in candidates if s.status == StageStatus.AWAITING_CONFIRM), None)
     if stage is None:
+        # 容错：SubAgent 可能已通过 continue 自行处理确认，stage 已 PENDING。
+        # 若 pending_choice 匹配，视为幂等确认，直接返回成功。
+        pending_match = next(
+            (s for s in candidates
+             if s.status == StageStatus.PENDING and s.pending_choice == args.choice),
+            None,
+        )
+        if pending_match is not None:
+            return {
+                "status": "ok",
+                "stage_id": args.stage,
+                "new_status": "PENDING",
+                "matched": args.choice,
+                "loop": pending_match.loop_counter,
+                "already_confirmed": True,
+            }
+
         statuses = {s.stage_instance_id: s.status.value for s in candidates}
         raise InputError(
             f"No AWAITING_CONFIRM instance for stage {args.stage}. "

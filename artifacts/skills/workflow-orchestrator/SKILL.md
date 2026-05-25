@@ -216,22 +216,21 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 - `instance_id`：需要确认的实例 ID。**与当前父实例不同时，确认目标为子工作流实例**
 - `parent_stage_id`：仅子实例 confirm 出现，标识对应父工作流的哪个 stage
-- `questions`：SubAgent 上报的原始选项文本——**这是选项的权威来源**
+- `options`：预解析的结构化选项数组 `[{choice_key, description}, ...]`——**这是选项的权威来源**，编排器无需自行解析
 
 执行步骤：
-0. **确认时机判断**：读取每条 pending 的 questions 内容，判断是前置对齐还是终审验收（详见「确认时机判断」章节）
-1. **以 `questions` 为权威构造 AskUserQuestion**：
+0. **确认时机判断**：读取每条 pending 的 options 内容，判断是前置对齐还是终审验收（详见「确认时机判断」章节）
+1. **以 `options` 为权威构造 AskUserQuestion**：
 
-   a. 解析 `questions`：对每条 question 找**第一个中文全角冒号 `：`**，之前为 `choice_key`，之后为 `description`
-   b. 没有 `：` 的 question：整条作为 choice_key，description 为空
-   c. 选项呈现：`<choice_key> —— <description>`（如有描述）
-   d. 子实例：`questions` 直接从 SubAgent 上报解析
+   每条 pending 条目已包含预解析的 `options` 数组，直接使用 `choice_key` 和 `description`：
 
    构造 `AskUserQuestion`：
    - `header`: `"确认 {stage_id} 阶段"`
-   - `options`: `[{label: "<choice>", description: "<映射到的描述>"}, ...]`
+   - `options`: `[{label: "<choice_key>", description: "<description>"}, ...]`
 
-   用户选择后，答案即为 `label`（即 questions 中 `：` 前的 `choice_key`），直接用作 `--choice`。
+   用户选择后，答案即为 `label`（即 `choice_key`），直接用作 `--choice`。
+   
+   **关键**：每条 pending 独立构造一个 AskUserQuestion question，**禁止**将不同 `stage_id` 的 options 合并到同一个 question 中。
 
 2. 若判断为前置对齐，在 description 中按「确认时机判断」的呈现方式追加警告
 3. 用户选择后，**使用 `pending` 条目中的 `instance_id`**（不是父实例 ID）调用：
@@ -241,7 +240,7 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 4. 父实例自身的确认 → 确认后调 `wfctl next --instance <父实例>`。子实例确认 → 确认后**对父实例**调 `wfctl next`，父 `next` 会感知到子实例状态变化并聚合下一轮 confirm
 5. **关键**：`confirm` action 是当前时刻的快照。你选取 stage 逐个呈现，而不是一次性全部展示。确认的 `--instance` 始终取 pending 条目中的 `instance_id`
 
-**`__merge__` 伪 stage**：一级实例全部 stage DONE 后，wfctl 自动产生。`stage_id` 为 `__merge__`，问题为"是否合入 main？"。处理方式与普通 confirm 一致——调 `wfctl confirm --stage __merge__ --choice yes`（或 `no` 推迟）。
+**`__merge__` 伪 stage**：一级实例全部 stage DONE 后，wfctl 自动产生。`stage_id` 为 `__merge__`，options 为 `yes`/`no`。处理方式与普通 confirm 一致——调 `wfctl confirm --stage __merge__ --choice yes`（或 `no` 推迟）。
 
 ---
 
@@ -249,19 +248,20 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITING_CONFIRM` 的 stage 列表。你按以下协议处理：
 
-1. 对 `pending` 中的**每个**条目，按上方「以 questions 为权威」步骤构造对应的 question（含 options）。多条 pending → 多个 question
+1. 对 `pending` 中的**每个**条目，使用其 `options` 数组直接构造 question。多条 pending → 多个 question，**每个 question 明确标注其 `stage_id`**
 2. **一次性**通过 `AskUserQuestion` 呈现所有 question（`questions` 数组，`multiSelect: false`）
-   - 每个 question 的 `header` 使用 `stage_id`，方便用户区分
+   - 每个 question 的 `header` 使用 `"确认 {stage_id} 阶段"`，方便用户区分
    - 若某条 question 判断为前置对齐，在其 `description` 中追加警告
 3. 用户一次性回答所有问题后，按 question 逐一映射回 `(instance_id, stage_id, choice)`：
    ```
    对每条回答：
      wfctl confirm --instance <对应instance_id> --stage <对应stage_id> --choice "<choice_key>"
    ```
+   **映射规则**：用户选择 `label`（即 `choice_key`）→ 找到包含该 `choice_key` 的 pending 条目 → 使用该条目的 `instance_id` 和 `stage_id`。若同一 `choice_key` 出现在多个 stage 的 options 中，靠 question 的 `header` 区分。
 4. 全部 confirm 完成后，调用一次 `wfctl next`——级联效应产生的新 pending 自然出现在下一轮
 5. 重复，直到 `next` 不再返回 `confirm` action
 
-**`--choice` 的值**：取用户选择的 `choice_key` 值（即 questions 中 `：` 前的部分），直接传给 `wfctl confirm`。不修改、不自生成。
+**`--choice` 的值**：取用户选择的 `choice_key` 值（即 options 中的 `choice_key`），直接传给 `wfctl confirm`。不修改、不自生成。
 
 **confirm 行为**：`confirm` 命令永远返回 PENDING + continue，将用户选择 `pending_choice` 注入 SubAgent 的 continue prompt。SubAgent 收到后自行决定后续（继续工作或 DONE + routing_choice）。不再有 CONFIRMED/REJECTED 边路由。
 

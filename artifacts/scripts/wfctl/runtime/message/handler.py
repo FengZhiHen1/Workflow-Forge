@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 
 from compat import CURRENT
+from compat.instance.registry import load_instance_state
 from infrastructure.io import atomic_write_json
 from infrastructure.timestamp import iso_timestamp
 from infrastructure.errors import ValidationError
@@ -56,6 +57,52 @@ def write_message(
                         filename = rest
                     status = _map_git_status_xy(xy)
                     modified_files.append({"path": filename, "status": status})
+
+    # 硬性约束：DONE + 有 valid_routing_choices 的 stage 必须传 routing_choice
+    if status == "DONE":
+        try:
+            state = load_instance_state(instance_id)
+            st = state.stage_by_instance_id(stage_instance_id)
+            if st and st.valid_routing_choices:
+                if not routing_choice:
+                    raise ValidationError(
+                        f"本 stage 支持条件路由，上报 DONE 时必须通过 --choice 指定路由值。"
+                        f"合法选项：{st.valid_routing_choices}",
+                        code="ROUTING_CHOICE_REQUIRED",
+                    )
+                if routing_choice not in st.valid_routing_choices:
+                    raise ValidationError(
+                        f"非法的 routing_choice: '{routing_choice}'。"
+                        f"合法选项：{st.valid_routing_choices}",
+                        code="INVALID_ROUTING_CHOICE",
+                    )
+        except ValidationError:
+            raise
+        except Exception:
+            # 无法加载实例状态时降级放行，消费端仍有兜底校验
+            pass
+
+    # 硬性约束：AWAITING_CONFIRM 的 questions 必须非空且符合 "choice_key：描述" 格式
+    if status == "AWAITING_CONFIRM":
+        questions = confirm_questions or []
+        if not questions:
+            raise ValidationError(
+                "AWAITING_CONFIRM 必须通过 --questions 提供至少 1 个确认选项。"
+                "格式：--questions \"choice_key：描述\"，使用中文全角冒号 `：` 分隔",
+                code="QUESTIONS_REQUIRED",
+            )
+        if len(questions) > 4:
+            raise ValidationError(
+                f"questions 最多 4 项，当前 {len(questions)} 项",
+                code="QUESTIONS_TOO_MANY",
+            )
+        for q in questions:
+            if "：" not in q or q.split("：", 1)[0].strip() == "":
+                raise ValidationError(
+                    f"question 格式错误: '{q}'。"
+                    f"每项必须为 \"choice_key：描述\"，使用中文全角冒号 `：` 分隔，choice_key 不能为空",
+                    code="QUESTION_FORMAT_INVALID",
+                )
 
     msg = {
         "schema_version": CURRENT.value,
