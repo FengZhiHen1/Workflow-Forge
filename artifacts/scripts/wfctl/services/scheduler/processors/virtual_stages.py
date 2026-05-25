@@ -1,14 +1,15 @@
 """VirtualStagesProcessor：预处理虚拟 stage。
 
 步骤 8：在就绪计算前将满足条件的虚拟 stage 标为 DONE。
+使用 TransitionPolicy 替代 _all_satisfied_virtual。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.dag import AdjacencyList
-from core.schema.interface import EdgeCondition, StageTargetType
+from core.schema.interface import StageTargetType
+from domain.transition.policy import TransitionPolicy
 from services.scheduler.context import ExecutionContext
 from services.scheduler.state_model import InstanceState, StageState, StateDelta, StageStatus
 from services.scheduler.processors.base import ProcessorResult
@@ -21,46 +22,57 @@ class VirtualStagesProcessor:
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
         delta = StateDelta()
-        stage_map = {s.stage_id: s for s in state.stages}
-        spec_stages = {s.stage_id: s for s in ctx.spec.stages}
+        policy_cache: dict[str, TransitionPolicy] = {}
+
+        def _get_policy(stage_id: str) -> TransitionPolicy:
+            if stage_id not in policy_cache:
+                policy_cache[stage_id] = TransitionPolicy.from_adjacency(ctx.adj, stage_id)
+            return policy_cache[stage_id]
 
         changed = True
         while changed:
             changed = False
-            for stage_id, stage_spec in spec_stages.items():
-                if stage_spec.target_type != StageTargetType.VIRTUAL:
+            stage_index = {s.stage_instance_id: s for s in state.stages}
+
+            for st in list(state.stages):
+                stage_spec = ctx.adj.stages.get(st.stage_id)
+                if not stage_spec or stage_spec.target_type != StageTargetType.VIRTUAL:
                     continue
-                st = stage_map.get(stage_id)
-                if not st or st.status != StageStatus.PENDING:
+                if st.stage_instance_id in delta.stage_updates:
+                    st = st.replace(**delta.stage_updates[st.stage_instance_id])
+                if st.status != StageStatus.PENDING:
                     continue
-                upstream_edges = ctx.adj.incoming.get(stage_id, [])
-                if _all_satisfied_virtual(upstream_edges, stage_map):
-                    delta.stage_updates[stage_id] = {"status": StageStatus.DONE}
-                    stage_map[stage_id] = st.replace(status=StageStatus.DONE)
-                    # 打锚点（副作用保持原样）
-                    anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{stage_id}"
+
+                upstream_edges = ctx.adj.incoming.get(st.stage_id, [])
+                policy = _get_policy(st.stage_id)
+                if _all_upstream_virtual_satisfied(upstream_edges, state, policy):
+                    delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.DONE}
+                    # TODO Phase 3: move tag_anchor to AutoCommitProcessor
+                    anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{st.stage_instance_id}"
                     try:
                         tag_anchor(ctx.instance_id, anchor)
                     except Exception:
                         pass
                     changed = True
 
+            if changed:
+                state = state.apply_delta(delta)
+
         return ProcessorResult(state_delta=delta)
 
 
-def _all_satisfied_virtual(upstream_edges: list, stage_states: dict[str, StageState]) -> bool:
-    """虚拟 stage 的就绪判断。"""
+def _all_upstream_virtual_satisfied(
+    upstream_edges: list,
+    state: InstanceState,
+    policy: TransitionPolicy,
+) -> bool:
+    """虚拟 stage 的就绪判断，使用 TransitionPolicy。"""
     if not upstream_edges:
         return True
     for edge in upstream_edges:
-        upstream_stage = stage_states.get(edge.from_stage)
-        if not upstream_stage or upstream_stage.status != StageStatus.DONE:
+        upstream = state.first_stage_by_id(edge.from_stage)
+        if upstream is None or upstream.status != StageStatus.DONE:
             continue
-        exit_cond = upstream_stage.exit_condition
-        if edge.condition == EdgeCondition.ALWAYS:
-            return True
-        if edge.condition == EdgeCondition.SUCCESS and exit_cond in ("success", ""):
-            return True
-        if edge.condition == EdgeCondition.CONFIRMED and exit_cond in ("confirmed", ""):
+        if policy.is_upstream_satisfied(upstream, edge):
             return True
     return False

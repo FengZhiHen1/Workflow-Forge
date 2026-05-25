@@ -1,9 +1,11 @@
 """DAG 引擎：邻接表构建、BFS 就绪计算、下游遍历。"""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from core.errors import InputError
-from core.schema.interface import EdgeCondition, EdgeSpec, StageSpec, WorkflowSpec
+from core.schema.interface import EdgeCondition, EdgeSpec, StageSpec, StageStatus, WorkflowSpec
 
 
 @dataclass
@@ -39,8 +41,8 @@ def build_adjacency(spec: WorkflowSpec) -> AdjacencyList:
     return AdjacencyList(outgoing=outgoing, incoming=incoming, stages=stages)
 
 
-def compute_ready(adj: AdjacencyList, instance: dict) -> list[str]:
-    """计算就绪的 stage_id 列表。"""
+def _compute_ready_dict(adj: AdjacencyList, instance: dict) -> list[str]:
+    """[DEPRECATED] 计算就绪的 stage_id 列表。Phase 5 删除。"""
     ready: list[str] = []
     stage_states = {s["stage_id"]: s for s in instance.get("stages", [])}
 
@@ -49,23 +51,14 @@ def compute_ready(adj: AdjacencyList, instance: dict) -> list[str]:
         if state.get("status") != "PENDING":
             continue
         upstream_edges = adj.incoming.get(stage_id, [])
-        if _all_satisfied(upstream_edges, stage_states):
+        if _all_satisfied_dict(upstream_edges, stage_states):
             ready.append(stage_id)
 
     return ready
 
 
-def _all_satisfied(upstream_edges: list[EdgeSpec], stage_states: dict) -> bool:
-    """检查是否至少有一条激活边已满足（OR 语义）。
-
-    多条来自不同上游的激活边代表不同到达路径——任一路径畅通即可解锁。
-
-    每条边仅在 upstream stage DONE 且 exit_condition 匹配时生效：
-    - ALWAYS: 接受任何 exit_condition（虚拟起始 stage）
-    - SUCCESS: 仅接受 "success"（SubAgent 正常上报 DONE）
-    - CONFIRMED: 仅接受 "confirmed"（用户确认）
-    - FAILURE / REJECTED / LOOP_EXCEEDED 不计入常规就绪（由专用 handler 触发）
-    """
+def _all_satisfied_dict(upstream_edges: list[EdgeSpec], stage_states: dict) -> bool:
+    """[DEPRECATED] Phase 5 删除。"""
     if not upstream_edges:
         return True
 
@@ -83,17 +76,56 @@ def _all_satisfied(upstream_edges: list[EdgeSpec], stage_states: dict) -> bool:
                 routing_choice = upstream_stage.get("routing_choice", "")
                 if routing_choice != edge.choice:
                     continue
-            # "" 兼容旧实例（升级前已 DONE 的 stage）
             return True
         if edge.condition == EdgeCondition.CONFIRMED and exit_cond in ("confirmed", ""):
-            # CONFIRMED 边有 choice 时，必须匹配上游 stage 的 confirmed_choice
             if edge.choice:
                 upstream_choice = upstream_stage.get("confirmed_choice", "")
                 if upstream_choice and upstream_choice != edge.choice:
                     continue
-            # "" 兼容旧实例
             return True
-        # failure / rejected / loop_exceeded 跳过，不计入常规就绪
+
+    return False
+
+
+def compute_ready(adj: AdjacencyList, state: "InstanceState") -> list[tuple[str, str]]:
+    """计算就绪的 (stage_id, stage_instance_id) 列表。
+
+    使用 InstanceState 原生接口，支持 parallel 拆分后的多实例场景。
+    """
+    ready: list[tuple[str, str]] = []
+
+    for stage_id in adj.stages:
+        for st in state.stages_by_id(stage_id):
+            if st.status != StageStatus.PENDING:
+                continue
+            upstream_edges = adj.incoming.get(stage_id, [])
+            if _any_upstream_satisfied(upstream_edges, state, adj):
+                ready.append((stage_id, st.stage_instance_id))
+
+    return ready
+
+
+def _any_upstream_satisfied(
+    upstream_edges: list[EdgeSpec],
+    state: "InstanceState",
+    adj: AdjacencyList,
+) -> bool:
+    """检查至少一条上游边已满足（OR 语义）。
+
+    每条边用 TransitionPolicy.is_upstream_satisfied() 检查。
+    """
+    if not upstream_edges:
+        return True
+
+    from domain.transition.policy import TransitionPolicy  # lazy import (avoid circular)
+
+    for edge in upstream_edges:
+        upstream = state.first_stage_by_id(edge.from_stage)
+        if upstream is None:
+            continue
+        policy = TransitionPolicy.from_adjacency(adj, edge.from_stage)
+        if policy.is_upstream_satisfied(upstream, edge):
+            return True
 
     return False
 

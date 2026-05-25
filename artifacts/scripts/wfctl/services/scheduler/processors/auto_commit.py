@@ -21,27 +21,40 @@ class AutoCommitProcessor:
     """自动提交 DONE stage 的变更并补锚点。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
-        changes = ctx.extra.get("message_changes", [])
-        self._auto_commit_done_stages(ctx, changes)
+        self._auto_commit_done_stages(ctx, state)
         self._ensure_anchors_for_done_stages(ctx, state)
         return ProcessorResult()
 
-    def _auto_commit_done_stages(self, ctx: ExecutionContext, changes: list[dict]) -> None:
-        done_changes = [c for c in changes if c.get("new_status") == "DONE"]
-        for change in done_changes:
-            stage_id = change["stage_id"]
-            msg = change.get("message", {})
-            worktree = ctx.worktree_map.get(stage_id)
+    def _auto_commit_done_stages(self, ctx: ExecutionContext, state: InstanceState) -> None:
+        import json
+
+        for stage_inst_id in state.cycle_meta.newly_done_stage_instance_ids:
+            st = state.stage_by_instance_id(stage_inst_id)
+            if not st or st.status != StageStatus.DONE:
+                continue
+
+            worktree = ctx.worktree_map.get(st.stage_id)
             if not worktree or not worktree.exists():
                 continue
 
-            report = msg.get("report", f"stage {stage_id} done")
-            stage_inst = msg.get("stage_instance_id", stage_id)
-            message_id = msg.get("message_id", "")
+            # 从消息文件读取 report
+            report = f"stage {st.stage_id} done"
+            message_id = st.output_message_id or ""
+            if message_id:
+                msg_path = (
+                    ctx.root / ".agent" / "instances" / ctx.instance_id
+                    / "messages" / f"{message_id}.json"
+                )
+                if msg_path.exists():
+                    try:
+                        msg_data = json.loads(msg_path.read_text(encoding="utf-8"))
+                        report = msg_data.get("report", report)
+                    except Exception:
+                        pass
 
             full_msg = (
                 f"{report}\n\n"
-                f"wf-stage: {stage_inst}\n"
+                f"wf-stage: {stage_inst_id}\n"
                 f"wf-instance: {ctx.instance_id}\n"
                 f"wf-message: {message_id}\n"
             )
@@ -52,14 +65,14 @@ class AutoCommitProcessor:
             rc, _, stderr = git_add_all(worktree)
             if rc != 0:
                 msg_file.unlink(missing_ok=True)
-                raise GitError(f"auto-commit add failed for stage {stage_id}: {stderr}")
+                raise GitError(f"auto-commit add failed for stage {st.stage_id}: {stderr}")
 
             rc, _, stderr = git_commit_file(worktree, msg_file)
             msg_file.unlink(missing_ok=True)
             if rc != 0:
-                raise GitError(f"auto-commit failed for stage {stage_id}: {stderr}")
+                raise GitError(f"auto-commit failed for stage {st.stage_id}: {stderr}")
 
-            anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{stage_inst}"
+            anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{stage_inst_id}"
             try:
                 tag_anchor(ctx.instance_id, anchor, worktree=worktree)
             except Exception:

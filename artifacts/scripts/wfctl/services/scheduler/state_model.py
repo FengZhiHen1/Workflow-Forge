@@ -124,6 +124,7 @@ class StateDelta:
     instance_updates: dict[str, Any] = field(default_factory=dict)
     append_stages: list[StageState] = field(default_factory=list)
     remove_stage_instance_ids: list[str] = field(default_factory=list)
+    cycle_meta: CycleMeta | None = None
 
     def is_empty(self) -> bool:
         return (
@@ -194,7 +195,11 @@ class InstanceState:
 
     def stage_by_id(self, stage_id: str) -> StageState | None:
         """按 stage_id 查找（同 id 取最后一条）。"""
-        return self.stage_map().get(stage_id)
+        result: StageState | None = None
+        for s in self.stages:
+            if s.stage_id == stage_id:
+                result = s
+        return result
 
     def stage_by_instance_id(self, stage_instance_id: str) -> StageState | None:
         """按 stage_instance_id 精确查找。"""
@@ -262,6 +267,9 @@ class InstanceState:
         # 确保 frozenset 类型正确
         if "consumed_message_ids" in instance_changes and isinstance(instance_changes["consumed_message_ids"], (list, set)):
             instance_changes["consumed_message_ids"] = frozenset(instance_changes["consumed_message_ids"])
+
+        if delta.cycle_meta is not None:
+            instance_changes["cycle_meta"] = delta.cycle_meta
 
         return replace(self, stages=new_stages, **instance_changes)
 

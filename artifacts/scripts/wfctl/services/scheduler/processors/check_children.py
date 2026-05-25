@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.dag import _all_satisfied
+from core.dag import _any_upstream_satisfied
 from core.lock import FileLock
 from core.project import find_root
 from core.schema.interface import StageTargetType
@@ -81,12 +81,12 @@ class CheckChildrenProcessor:
             try:
                 child = json.loads(child_path.read_text(encoding="utf-8"))
                 if child.get("status") == "COMPLETED":
-                    delta.stage_updates[st.stage_id] = {
+                    delta.stage_updates[st.stage_instance_id] = {
                         "status": StageStatus.DONE,
                         "exit_condition": "success",
                     }
                 elif child.get("status") == "FAILED":
-                    delta.stage_updates[st.stage_id] = {"status": StageStatus.ERROR}
+                    delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.ERROR}
             except Exception:
                 pass
 
@@ -99,7 +99,6 @@ class CheckChildrenProcessor:
 
         root = find_root()
         stage_specs = {s.stage_id: s for s in ctx.spec.stages}
-        stage_states = state.stage_map()
         inst_wt = root / ".tmp" / "worktrees" / f"instance-{ctx.instance_id}"
 
         rc, head_ref, _ = git_rev_parse(inst_wt, "HEAD")
@@ -113,7 +112,7 @@ class CheckChildrenProcessor:
                 continue
 
             upstream_edges = ctx.adj.incoming.get(st.stage_id, [])
-            if not _all_satisfied(upstream_edges, stage_states):
+            if not _any_upstream_satisfied(upstream_edges, state, ctx.adj):
                 continue
 
             wf_ref = stage_spec.target

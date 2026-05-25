@@ -28,43 +28,40 @@ class AllocateSpawnProcessor:
     """为就绪 stage 分配 worktree 并生成 action。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
-        from services.scheduler_legacy import _load_running_agents
+        from runtime.agent.manager import RunningAgentManager
 
-        ready = ctx.extra.get("ready_stage_ids", [])
+        ready = state.cycle_meta.ready_candidates
         if not ready:
             return ProcessorResult()
 
-        running_agents = _load_running_agents(ctx.instance_id)
+        agent_mgr = RunningAgentManager(ctx.root)
+        running_agents = agent_mgr.load()
         actions: list[dict] = []
         delta = StateDelta()
-        stage_map = state.stage_map()
         multi_ready = len(ready) > 1
 
-        for stage_id in ready:
+        for stage_id, stage_inst_id in ready:
             stage_spec = ctx.adj.stages.get(stage_id)
             if not stage_spec:
                 continue
 
+            st = state.stage_by_instance_id(stage_inst_id)
+            if not st:
+                continue
+
             if stage_spec.target_type == StageTargetType.VIRTUAL:
-                st = stage_map.get(stage_id)
-                if st:
-                    delta.stage_updates[stage_id] = {"status": StageStatus.DONE}
+                delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.DONE}
                 continue
 
             if stage_spec.target_type == StageTargetType.WORKFLOW:
                 continue
 
-            st = stage_map.get(stage_id)
-            if not st:
-                continue
-
-            stage_inst_id = st.stage_instance_id
             is_parallel = stage_inst_id != stage_id or st.fan_out_target
 
             skill_id = stage_spec.target
             matched_agent = None
             if not is_parallel:
-                matched_agent = self._lookup_running_agent(running_agents, skill_id)
+                matched_agent = agent_mgr.lookup(skill_id)
 
             # worktree 分配
             if multi_ready or is_parallel:
@@ -100,11 +97,12 @@ class AllocateSpawnProcessor:
                 if not sync_ok:
                     updates["status"] = StageStatus.CONFLICT
                     updates["conflict_files"] = conflict_files
-                    delta.stage_updates[stage_id] = updates
+                    delta.stage_updates[st.stage_instance_id] = updates
                     actions.append({
                         "action": "conflict",
                         "instance_id": ctx.instance_id,
                         "stage_id": stage_id,
+                        "stage_instance_id": stage_inst_id,
                         "worktree": str(worktree.relative_to(ctx.root)),
                         "conflict_files": conflict_files,
                         "source_stage": stage_id,
@@ -113,15 +111,20 @@ class AllocateSpawnProcessor:
 
                 # 同 Skill 延续
                 prev_stage_id = matched_agent["stage_id"]
-                prev_stage = stage_map.get(prev_stage_id)
-                if prev_stage:
-                    delta.stage_updates[prev_stage_id] = {"continued_to": stage_id}
+                prev_st = state.first_stage_by_id(prev_stage_id)
+                if prev_st:
+                    delta.stage_updates[prev_st.stage_instance_id] = {"continued_to": st.stage_id}
 
                 sys_id = matched_agent["system_agent_id"]
                 updates["system_agent_id"] = sys_id
-                delta.stage_updates[stage_id] = updates
+                delta.stage_updates[st.stage_instance_id] = updates
 
-                self._save_running_agent(ctx.instance_id, skill_id, sys_id, stage_id)
+                agent_mgr.register({
+                    "skill_id": skill_id,
+                    "system_agent_id": sys_id,
+                    "stage_id": st.stage_id,
+                    "instance_id": ctx.instance_id,
+                })
 
                 actions.append({
                     "action": "continue",
@@ -136,7 +139,7 @@ class AllocateSpawnProcessor:
                     "context": context,
                 })
             else:
-                delta.stage_updates[stage_id] = updates
+                delta.stage_updates[st.stage_instance_id] = updates
                 actions.append({
                     "action": "spawn",
                     "instance_id": ctx.instance_id,

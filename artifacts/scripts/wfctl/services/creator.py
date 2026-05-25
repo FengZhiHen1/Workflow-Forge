@@ -5,15 +5,16 @@ import shutil
 import time
 from pathlib import Path
 
-from core.atomic_write import atomic_write_json
 from core.dag import collect_ancestors
 from core.errors import InputError
 from core.git_ops import git_rev_parse
 from core.project import find_root
-from core.schema.interface import StageTargetType
+from core.schema.interface import StageStatus, StageTargetType
 from core.schema.loader import load_workflow
 from services.resolver import find_workflow_dir
+from services.scheduler.state_model import InstanceState, StageState
 from services.state_manager import load_instance, save_instance, append_deviation
+from state.persistence import save_instance_state
 from services.worktree_manager import (
     create_instance_worktree,
     tag_anchor,
@@ -146,23 +147,14 @@ def create_instance(
         worktree = create_instance_worktree(instance_id, base_ref=base_ref)
 
         # 构建 stages 初始状态
-        stages: list[dict] = []
+        stages: list[StageState] = []
         for s in spec.stages:
-            stages.append({
-                "stage_id": s.stage_id,
-                "stage_instance_id": s.stage_id,
-                "status": "PENDING",
-                "agent_id": None,
-                "system_agent_id": None,
-                "output_message_id": None,
-                "loop_counter": 0,
-                "attempt_count": 0,
-                "confirmed": False,
-                "started_at": None,
-                "model": s.model,
-                "child_instance_id": None,
-                "fan_out_target": None,
-            })
+            stages.append(StageState(
+                stage_id=s.stage_id,
+                stage_instance_id=s.stage_id,
+                status=StageStatus.PENDING,
+                model=s.model,
+            ))
 
         # ── fast-forward：将目标 stage 的拓扑前驱标为 DONE ──
         fast_forwarded: list[str] = []
@@ -175,30 +167,26 @@ def create_instance(
                     f"fast-forward target '{fast_forward_to}' is not a valid non-virtual stage",
                     code="INVALID_ARGUMENT",
                 )
-            stage_map = {s["stage_id"]: s for s in stages}
-            for stage_id in ancestors:
-                target = stage_map.get(stage_id)
-                if not target:
-                    continue
-                stage_spec = adj.stages.get(stage_id)
-                if stage_spec and stage_spec.target_type == StageTargetType.VIRTUAL:
-                    continue
-                target["status"] = "DONE"
-                fast_forwarded.append(stage_id)
+            for i, s in enumerate(stages):
+                if s.stage_id in ancestors:
+                    stage_spec = adj.stages.get(s.stage_id)
+                    if stage_spec and stage_spec.target_type == StageTargetType.VIRTUAL:
+                        continue
+                    stages[i] = s.replace(status=StageStatus.DONE)
+                    fast_forwarded.append(s.stage_id)
 
-        instance = {
-            "schema_version": "3.0.0",
-            "instance_id": instance_id,
-            "workflow_id": spec.workflow_id,
-            "version": spec.version,
-            "goal": goal,
-            "status": "ACTIVE",
-            "parent_instance_id": parent_instance_id,
-            "consumed_message_ids": [],
-            "stages": stages,
-        }
+        instance_state = InstanceState(
+            schema_version="3.0.0",
+            instance_id=instance_id,
+            workflow_id=spec.workflow_id,
+            version=spec.version,
+            goal=goal,
+            parent_instance_id=parent_instance_id,
+            consumed_message_ids=frozenset(),
+            stages=stages,
+        )
 
-        # 打初始锚点（在写入 instance.json 之前，锚点只依赖 worktree 状态）
+        # 打初始锚点
         tag_anchor(instance_id, anchor_name, worktree=worktree)
 
         # 为 fast-forwarded DONE stage 打锚点
@@ -211,7 +199,7 @@ def create_instance(
 
         # 保存 instance.json
         inst_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(inst_dir / "instance.json", instance)
+        save_instance_state(instance_id, instance_state)
 
         # 写入身份元数据到 worktree
         identity = {
@@ -229,6 +217,7 @@ def create_instance(
             "workflow_id": spec.workflow_id,
             "version": spec.version,
             "worktree": str(worktree.relative_to(root)),
+            "instance_state": instance_state,
         }
         if fast_forwarded:
             result["fast_forwarded"] = fast_forwarded
@@ -323,50 +312,38 @@ def _create_from_clone(
             all_old_done = old_entries and all(e.get("status") == "DONE" for e in old_entries)
 
             if all_old_done:
-                # 继承旧的 DONE stage（含 parallel fan_out 信息）
                 for entry in old_entries:
-                    stages.append({
-                        "stage_id": entry["stage_id"],
-                        "stage_instance_id": entry.get("stage_instance_id", entry["stage_id"]),
-                        "status": "DONE",
-                        "agent_id": entry.get("agent_id"),
-                        "system_agent_id": entry.get("system_agent_id"),
-                        "output_message_id": entry.get("output_message_id"),
-                        "loop_counter": entry.get("loop_counter", 0),
-                        "attempt_count": entry.get("attempt_count", 0),
-                        "confirmed": entry.get("confirmed", False),
-                        "started_at": entry.get("started_at"),
-                        "model": entry.get("model"),
-                        "child_instance_id": entry.get("child_instance_id"),
-                        "fan_out_target": entry.get("fan_out_target"),
-                    })
+                    stages.append(StageState(
+                        stage_id=entry["stage_id"],
+                        stage_instance_id=entry.get("stage_instance_id", entry["stage_id"]),
+                        status=StageStatus.DONE,
+                        agent_id=entry.get("agent_id"),
+                        system_agent_id=entry.get("system_agent_id"),
+                        output_message_id=entry.get("output_message_id"),
+                        loop_counter=entry.get("loop_counter", 0),
+                        attempt_count=entry.get("attempt_count", 0),
+                        confirmed=entry.get("confirmed", False),
+                        started_at=entry.get("started_at"),
+                        model=entry.get("model"),
+                        child_instance_id=entry.get("child_instance_id"),
+                        fan_out_target=entry.get("fan_out_target"),
+                    ))
             else:
-                # 非 DONE stage → PENDING
-                stages.append({
-                    "stage_id": s.stage_id,
-                    "stage_instance_id": s.stage_id,
-                    "status": "PENDING",
-                    "agent_id": None,
-                    "system_agent_id": None,
-                    "output_message_id": None,
-                    "loop_counter": 0,
-                    "attempt_count": 0,
-                    "confirmed": False,
-                    "started_at": None,
-                    "model": s.model,
-                    "child_instance_id": None,
-                    "fan_out_target": None,
-                })
+                stages.append(StageState(
+                    stage_id=s.stage_id,
+                    stage_instance_id=s.stage_id,
+                    model=s.model,
+                ))
 
-        # 只复制被继承的 DONE stage 对应的消息文件，并改写 instance_id
+        # 只复制被继承的 DONE stage 对应的消息文件
         old_msgs_dir = root / ".agent" / "instances" / clone_from / "messages"
         new_msgs_dir = inst_dir / "messages"
         consumed_message_ids: list[str] = []
         if old_msgs_dir.exists():
             inherited_msg_ids = {
-                s["output_message_id"]
+                s.output_message_id
                 for s in stages
-                if s.get("status") == "DONE" and s.get("output_message_id")
+                if s.status == StageStatus.DONE and s.output_message_id
             }
             if inherited_msg_ids:
                 new_msgs_dir.mkdir(parents=True, exist_ok=True)
@@ -375,28 +352,28 @@ def _create_from_clone(
                     if src.exists():
                         data = json.loads(src.read_text(encoding="utf-8"))
                         data["instance_id"] = instance_id
+                        from core.atomic_write import atomic_write_json
                         atomic_write_json(new_msgs_dir / f"{msg_id}.json", data)
                         consumed_message_ids.append(msg_id)
 
-        instance = {
-            "schema_version": "3.0.0",
-            "instance_id": instance_id,
-            "workflow_id": spec.workflow_id,
-            "version": spec.version,
-            "goal": goal,
-            "status": "ACTIVE",
-            "parent_instance_id": parent_instance_id,
-            "consumed_message_ids": consumed_message_ids,
-            "stages": stages,
-        }
+        instance_state = InstanceState(
+            schema_version="3.0.0",
+            instance_id=instance_id,
+            workflow_id=spec.workflow_id,
+            version=spec.version,
+            goal=goal,
+            parent_instance_id=parent_instance_id,
+            consumed_message_ids=frozenset(consumed_message_ids),
+            stages=stages,
+        )
 
         # 打初始锚点
         tag_anchor(instance_id, anchor_name, worktree=worktree)
 
-        # 为每个已继承的 DONE stage 打锚点（跳过 s00-workflow-start，已在上面打过）
+        # 为每个已继承的 DONE stage 打锚点
         for s in stages:
-            if s.get("status") == "DONE" and s["stage_instance_id"] != "s00-workflow-start":
-                anchor = f"{spec.anchor_prefix}-{instance_id}-{s['stage_instance_id']}"
+            if s.status == StageStatus.DONE and s.stage_instance_id != "s00-workflow-start":
+                anchor = f"{spec.anchor_prefix}-{instance_id}-{s.stage_instance_id}"
                 try:
                     tag_anchor(instance_id, anchor, worktree=worktree)
                 except Exception:
@@ -404,7 +381,7 @@ def _create_from_clone(
 
         # 保存 instance.json
         inst_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(inst_dir / "instance.json", instance)
+        save_instance_state(instance_id, instance_state)
 
         # 写入身份元数据
         identity = {
@@ -437,8 +414,9 @@ def _create_from_clone(
             "worktree": str(worktree.relative_to(root)),
             "cloned_from": clone_from,
             "worktree_source": worktree_source,
+            "instance_state": instance_state,
             "inherited_done_stages": [
-                s["stage_id"] for s in stages if s.get("status") == "DONE"
+                s.stage_id for s in stages if s.status == StageStatus.DONE
             ],
         }
 

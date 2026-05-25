@@ -38,7 +38,7 @@ class ErrorHandlerProcessor:
             max_attempts = stage_spec.retry if stage_spec else 0
 
             if st.attempt_count < max_attempts:
-                delta.stage_updates[stage_id] = {
+                delta.stage_updates[st.stage_instance_id] = {
                     "status": StageStatus.PENDING,
                     "attempt_count": st.attempt_count + 1,
                 }
@@ -63,7 +63,7 @@ class ErrorHandlerProcessor:
                         "reason": "failure edge targets non-existent stage",
                     })
                     continue
-                delta.stage_updates[failure_edge.to_stage] = {
+                delta.stage_updates[target_stage.stage_instance_id] = {
                     "status": StageStatus.PENDING,
                     "loop_counter": st.loop_counter + 1,
                 }
@@ -81,7 +81,7 @@ class ErrorHandlerProcessor:
                 target_stage = stage_map.get(loop_exceeded_edge.to_stage)
                 updates = {}
                 if target_stage:
-                    updates[loop_exceeded_edge.to_stage] = {
+                    updates[target_stage.stage_instance_id] = {
                         "status": StageStatus.PENDING,
                     }
                 delta = delta.merge(StateDelta(stage_updates=updates))
@@ -133,7 +133,7 @@ class ErrorHandlerProcessor:
                 continue
             if elapsed > stage_spec.timeout_seconds:
                 stage_id = st.stage_id
-                delta.stage_updates[stage_id] = {
+                delta.stage_updates[st.stage_instance_id] = {
                     "status": StageStatus.ERROR,
                     "started_at": None,
                 }

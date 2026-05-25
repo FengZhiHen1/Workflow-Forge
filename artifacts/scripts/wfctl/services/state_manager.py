@@ -13,34 +13,21 @@ from services.validator import validate_modified_files
 
 
 def load_instance(instance_id: str) -> dict:
-    """读取 instance.json。"""
-    root = find_root()
-    path = root / ".agent" / "instances" / instance_id / "instance.json"
-    if not path.exists():
-        # 兼容 v2 平铺式
-        v2_path = root / ".agent" / "workflows" / "instances" / f"{instance_id}.json"
-        if v2_path.exists():
-            data = json.loads(v2_path.read_text(encoding="utf-8"))
-            # 迁移到 v3 格式
-            data["schema_version"] = "3.0.0"
-            return data
-        raise InputError(f"Instance not found: {instance_id}", code="INVALID_ARGUMENT")
-
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise StateError(f"Corrupted instance.json: {e}", code="STATE_CORRUPTED")
+    """[DEPRECATED] 读取 instance.json。使用 state.persistence.load_instance_state() 替代。"""
+    from state.persistence import load_instance_state
+    state = load_instance_state(instance_id)
+    return state.to_dict()
 
 
 def save_instance(instance_id: str, data: dict) -> None:
-    """原子写入 instance.json。"""
-    root = find_root()
-    path = root / ".agent" / "instances" / instance_id / "instance.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, data)
+    """[DEPRECATED] 原子写入 instance.json。使用 state.persistence.save_instance_state() 替代。"""
+    from state.persistence import save_instance_state
+    from services.scheduler.state_model import InstanceState
+    state = InstanceState.from_dict(data)
+    save_instance_state(instance_id, state)
 
 
-def consume_messages(instance_id: str, instance: dict, worktree_map: dict[str, Path]) -> list[dict]:
+def _consume_messages_legacy(instance_id: str, instance: dict, worktree_map: dict[str, Path]) -> list[dict]:
     """消费消息池，更新 stage 状态，返回状态变更摘要。"""
     consumed_ids = set(instance.get("consumed_message_ids", []))
     messages = scan_messages(instance_id, consumed_ids)

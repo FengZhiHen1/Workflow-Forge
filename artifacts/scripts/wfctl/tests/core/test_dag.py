@@ -2,14 +2,38 @@
 
 import pytest
 
-from core.dag import build_adjacency, collect_downstream, compute_ready
+from core.dag import build_adjacency, collect_downstream, compute_ready, _compute_ready_dict
 from core.schema.interface import (
     EdgeCondition,
     EdgeSpec,
     StageSpec,
+    StageStatus,
     StageTargetType,
     WorkflowSpec,
 )
+from services.scheduler.state_model import InstanceState, StageState
+
+
+def _ids(ready: list[tuple[str, str]]) -> list[str]:
+    return [sid for sid, _ in ready]
+
+
+def _make_state(stages: list[dict]) -> InstanceState:
+    """从 dict 列表快速构建 InstanceState。"""
+    return InstanceState(
+        instance_id="test",
+        stages=[
+            StageState(
+                stage_id=s["stage_id"],
+                stage_instance_id=s.get("stage_instance_id", s["stage_id"]),
+                status=StageStatus(s["status"]),
+                exit_condition=s.get("exit_condition", ""),
+                routing_choice=s.get("routing_choice", ""),
+                confirmed_choice=s.get("confirmed_choice", ""),
+            )
+            for s in stages
+        ],
+    )
 
 
 def make_spec() -> WorkflowSpec:
@@ -39,39 +63,35 @@ def test_build_adjacency():
     spec = make_spec()
     adj = build_adjacency(spec)
     assert set(adj.outgoing.keys()) == {"s00", "s01", "s02", "s03", "s99"}
-    assert len(adj.outgoing["s01"]) == 2  # s01 → s02, s03
+    assert len(adj.outgoing["s01"]) == 2
 
 
 def test_compute_ready_initial():
     spec = make_spec()
     adj = build_adjacency(spec)
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "s01", "status": "PENDING"},
-            {"stage_id": "s02", "status": "PENDING"},
-            {"stage_id": "s03", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert ready == ["s01"]
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "PENDING"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s03", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["s01"]
 
 
 def test_compute_ready_after_s01():
     spec = make_spec()
     adj = build_adjacency(spec)
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "s01", "status": "DONE"},
-            {"stage_id": "s02", "status": "PENDING"},
-            {"stage_id": "s03", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert set(ready) == {"s02", "s03"}
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "DONE"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s03", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert set(_ids(ready)) == {"s02", "s03"}
 
 
 def test_collect_downstream():
@@ -89,11 +109,6 @@ def test_collect_downstream_exclude_failure():
 
 
 def test_always_chain_does_not_cascade():
-    """回归测试：always 边链不应级联放行未完成的上游。
-
-    s00→s01→s02→s03→s99，全部 always。
-    s00 DONE 时，仅 s01 就该绪。s02/s03/s99 必须等各自上游 DONE。
-    """
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-always-chain",
@@ -114,31 +129,29 @@ def test_always_chain_does_not_cascade():
         ],
     )
     adj = build_adjacency(spec)
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "PENDING"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s03", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["s01"], f"expected only s01, got {ready}"
 
-    # 仅 s00 DONE，只有 s01 该就绪
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "s01", "status": "PENDING"},
-            {"stage_id": "s02", "status": "PENDING"},
-            {"stage_id": "s03", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert ready == ["s01"], f"expected only s01, got {ready}"
-
-    # s00 和 s01 都 DONE，s02 该就绪
-    instance["stages"][1]["status"] = "DONE"  # s01 → DONE
-    ready = compute_ready(adj, instance)
-    assert ready == ["s02"], f"expected only s02, got {ready}"
+    # s01 → DONE
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "DONE"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s03", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["s02"], f"expected only s02, got {ready}"
 
 
 def test_always_edge_requires_upstream_done():
-    """回归测试：always 边必须有上游 DONE 才算满足。
-
-    模拟 real-world 场景：p0(RUNNING)→p1a(always)，p1a 不应就绪。
-    """
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-always-upstream",
@@ -159,28 +172,18 @@ def test_always_edge_requires_upstream_done():
         ],
     )
     adj = build_adjacency(spec)
-
-    # s00 DONE, p0 RUNNING —— p0→p1a(always) 不应满足
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "p0", "status": "RUNNING"},
-            {"stage_id": "p1a", "status": "PENDING"},
-            {"stage_id": "p1b", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "p0", "status": "RUNNING"},
+        {"stage_id": "p1a", "status": "PENDING"},
+        {"stage_id": "p1b", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
     assert ready == [], f"p0 is RUNNING, no stage should be ready, got {ready}"
 
 
 def test_multiple_incoming_or_semantics():
-    """回归测试：多入边应取 OR 语义——任一路径畅通即可解锁。
-
-    模拟 p5-complete 有两条到达路径：
-      p4-adv→p5 (success)   emerg→p5 (always)
-    p4-adv DONE 时 p5 就该绪，不管 emerg 状态。
-    """
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-or-semantics",
@@ -202,26 +205,18 @@ def test_multiple_incoming_or_semantics():
         ],
     )
     adj = build_adjacency(spec)
-
-    # p4 DONE, p4-adv DONE, emerg PENDING → p5 就该绪（OR：p4-adv 路径已通）
-    instance = {
-        "stages": [
-            {"stage_id": "p4", "status": "DONE"},
-            {"stage_id": "p4-adv", "status": "DONE"},
-            {"stage_id": "emerg", "status": "PENDING"},
-            {"stage_id": "p5", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert ready == ["p5"], f"p4-adv DONE should unlock p5 via OR, got {ready}"
+    state = _make_state([
+        {"stage_id": "p4", "status": "DONE"},
+        {"stage_id": "p4-adv", "status": "DONE"},
+        {"stage_id": "emerg", "status": "PENDING"},
+        {"stage_id": "p5", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["p5"], f"p4-adv DONE should unlock p5 via OR, got {ready}"
 
 
 def test_only_special_edges_not_ready():
-    """回归测试：仅有 failure/loop_exceeded 入边的 stage 不应出现在就绪列表。
-
-    模拟 p4-repair（仅 failure 入边）和 emergency-fallback（仅 loop_exceeded 入边）。
-    """
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-special-edges",
@@ -238,17 +233,12 @@ def test_only_special_edges_not_ready():
         ],
     )
     adj = build_adjacency(spec)
-
-    # p4 RUNNING。p4-repair（仅 failure 入边）和 emerg（仅 loop_exceeded 入边）
-    # 都没有激活边 → 都不该就绪
-    instance = {
-        "stages": [
-            {"stage_id": "p4", "status": "RUNNING"},
-            {"stage_id": "p4-repair", "status": "PENDING"},
-            {"stage_id": "emerg", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
+    state = _make_state([
+        {"stage_id": "p4", "status": "RUNNING"},
+        {"stage_id": "p4-repair", "status": "PENDING"},
+        {"stage_id": "emerg", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
     assert ready == [], f"special-only stages should not be ready, got {ready}"
 
 
@@ -256,7 +246,6 @@ def test_only_special_edges_not_ready():
 
 
 def test_diamond_dependency():
-    """A→B, A→C, B→D, C→D: DAG 使用 OR 语义，任一路径畅通即可解锁 D。"""
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-diamond",
@@ -280,30 +269,31 @@ def test_diamond_dependency():
         ],
     )
     adj = build_adjacency(spec)
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "A", "status": "DONE"},
+        {"stage_id": "B", "status": "DONE"},
+        {"stage_id": "C", "status": "PENDING"},
+        {"stage_id": "D", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert set(_ids(ready)) == {"C", "D"}, f"OR semantics: C and D should both be ready, got {ready}"
 
-    # A DONE, B DONE, C PENDING → D 就绪（OR 语义：B→D 路径已畅通）
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "A", "status": "DONE"},
-            {"stage_id": "B", "status": "DONE"},
-            {"stage_id": "C", "status": "PENDING"},
-            {"stage_id": "D", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert set(ready) == {"C", "D"}, f"OR semantics: C and D should both be ready, got {ready}"
-
-    # A DONE, B PENDING, C DONE → D 就绪（OR 语义：C→D 路径已畅通）
-    instance["stages"][2]["status"] = "PENDING"    # B → PENDING
-    instance["stages"][3]["status"] = "DONE"       # C → DONE
-    ready = compute_ready(adj, instance)
-    assert set(ready) == {"B", "D"}, f"OR semantics: B and D should both be ready, got {ready}"
+    # B PENDING, C DONE → B, D 就绪
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "A", "status": "DONE"},
+        {"stage_id": "B", "status": "PENDING"},
+        {"stage_id": "C", "status": "DONE"},
+        {"stage_id": "D", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert set(_ids(ready)) == {"B", "D"}, f"OR semantics: B and D should both be ready, got {ready}"
 
 
 def test_unreachable_stage_is_ready():
-    """无入边的 stage 就绪——上游依赖真空满足。"""
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-unreachable",
@@ -318,25 +308,20 @@ def test_unreachable_stage_is_ready():
         edges=[
             EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
             EdgeSpec(from_stage="s01", to_stage="s99", condition=EdgeCondition.SUCCESS),
-            # orphan 无任何入边 → 真空满足，视为就绪
         ],
     )
     adj = build_adjacency(spec)
-
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "orphan", "status": "PENDING"},
-            {"stage_id": "s01", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert "orphan" in ready, f"stage with no incoming edges should be ready, got {ready}"
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "orphan", "status": "PENDING"},
+        {"stage_id": "s01", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert "orphan" in _ids(ready), f"stage with no incoming edges should be ready, got {ready}"
 
 
 def test_confirmed_edge_empty_exit_condition_compat():
-    """confirmed 边在 upstream DONE + exit_condition='' 时视为满足（兼容旧实例）。"""
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-confirmed",
@@ -355,27 +340,26 @@ def test_confirmed_edge_empty_exit_condition_compat():
         ],
     )
     adj = build_adjacency(spec)
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "DONE", "exit_condition": ""},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["s02"], f"empty exit_condition is backward-compatible, got {ready}"
 
-    # ""(空) exit_condition 兼容旧实例 → s02 就绪
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "s01", "status": "DONE", "exit_condition": ""},
-            {"stage_id": "s02", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert ready == ["s02"], f"empty exit_condition is backward-compatible, got {ready}"
-
-    # exit_condition=confirmed → s02 就绪
-    instance["stages"][1]["exit_condition"] = "confirmed"
-    ready = compute_ready(adj, instance)
-    assert ready == ["s02"], f"explicit confirmed should also work, got {ready}"
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "DONE", "exit_condition": "confirmed"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["s02"], f"explicit confirmed should also work, got {ready}"
 
 
 def test_success_edge_with_choices_needs_routing_choice():
-    """SUCCESS 边的 choice 必须匹配 upstream routing_choice 才能路由。"""
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-success-choices",
@@ -397,28 +381,28 @@ def test_success_edge_with_choices_needs_routing_choice():
         ],
     )
     adj = build_adjacency(spec)
-
-    # routing_choice 不匹配 → 无 stage 就绪
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "s01", "status": "DONE", "exit_condition": "success", "routing_choice": "wrong"},
-            {"stage_id": "s02", "status": "PENDING"},
-            {"stage_id": "s03", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "DONE", "exit_condition": "success", "routing_choice": "wrong"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s03", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
     assert ready == [], f"unmatched routing_choice should not unlock any stage, got {ready}"
 
-    # routing_choice="path-a" → s02 就绪
-    instance["stages"][1]["routing_choice"] = "path-a"
-    ready = compute_ready(adj, instance)
-    assert ready == ["s02"], f"routing_choice=path-a should unlock s02, got {ready}"
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "DONE", "exit_condition": "success", "routing_choice": "path-a"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s03", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["s02"], f"routing_choice=path-a should unlock s02, got {ready}"
 
 
 def test_downstream_collection_respects_all_branches():
-    """collect_downstream 应收敛所有可达非虚拟 stage（含 failure 等分支）。"""
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-branches",
@@ -442,13 +426,11 @@ def test_downstream_collection_respects_all_branches():
     adj = build_adjacency(spec)
     downstream = collect_downstream(adj, "s01", set())
     assert downstream == {"s02", "s03", "s99"}
-
     downstream_no_failure = collect_downstream(adj, "s01", {EdgeCondition.FAILURE})
     assert downstream_no_failure == {"s02", "s99"}
 
 
 def test_single_stage_workflow():
-    """最简工作流：Start → A → End。"""
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-single",
@@ -465,20 +447,16 @@ def test_single_stage_workflow():
         ],
     )
     adj = build_adjacency(spec)
-
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "A", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = compute_ready(adj, instance)
-    assert ready == ["A"], f"expected only A, got {ready}"
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "A", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert _ids(ready) == ["A"], f"expected only A, got {ready}"
 
 
 def test_rejected_edge_not_in_ready_computation():
-    """rejected 边不应在 compute_ready 中触发就绪。"""
     spec = WorkflowSpec(
         schema_version="3.0.0",
         workflow_id="test-rejected",
@@ -498,15 +476,62 @@ def test_rejected_edge_not_in_ready_computation():
         ],
     )
     adj = build_adjacency(spec)
+    state = _make_state([
+        {"stage_id": "s00", "status": "DONE"},
+        {"stage_id": "s01", "status": "DONE", "exit_condition": "rejected"},
+        {"stage_id": "s02", "status": "PENDING"},
+        {"stage_id": "s99", "status": "PENDING"},
+    ])
+    ready = compute_ready(adj, state)
+    assert ready == [], f"rejected edge should not trigger ready, got {ready}"
 
-    # s01 DONE exit_condition=rejected → s99 不应通过 rejected 边触发就绪
+
+def test_compute_ready_parallel_instances():
+    """Parallel 场景：同一 stage_id 有多个 PENDING 实例，且上游不同。"""
+    spec = WorkflowSpec(
+        schema_version="3.0.0",
+        workflow_id="test-parallel",
+        version="1.0.0",
+        max_parallel_agents=4,
+        stages=[
+            StageSpec(stage_id="s00", name="start", target_type=StageTargetType.VIRTUAL),
+            StageSpec(stage_id="s01", name="split", target_type=StageTargetType.SKILL, target="skill-a"),
+            StageSpec(stage_id="s02", name="join", target_type=StageTargetType.VIRTUAL),
+        ],
+        edges=[
+            EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS),
+        ],
+    )
+    adj = build_adjacency(spec)
+    state = InstanceState(
+        instance_id="test",
+        stages=[
+            StageState(stage_id="s00", stage_instance_id="s00", status=StageStatus.DONE),
+            StageState(stage_id="s01", stage_instance_id="s01_0", status=StageStatus.DONE, exit_condition="success"),
+            StageState(stage_id="s01", stage_instance_id="s01_1", status=StageStatus.PENDING),
+            StageState(stage_id="s01", stage_instance_id="s01_2", status=StageStatus.PENDING),
+            StageState(stage_id="s02", stage_instance_id="s02", status=StageStatus.PENDING),
+        ],
+    )
+    ready = compute_ready(adj, state)
+    ids = _ids(ready)
+    # s01_1 and s01_2 都是 PENDING s01，但上游 s01_0 DONE 已满足 → s02 就绪
+    assert "s02" in ids, f"s02 should be ready, got {ids}"
+
+
+def test_legacy_dict_compat():
+    """验证 _compute_ready_dict 仍可被 scheduler_legacy 使用。"""
+    spec = make_spec()
+    adj = build_adjacency(spec)
     instance = {
         "stages": [
             {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "s01", "status": "DONE", "exit_condition": "rejected"},
+            {"stage_id": "s01", "status": "PENDING"},
             {"stage_id": "s02", "status": "PENDING"},
+            {"stage_id": "s03", "status": "PENDING"},
             {"stage_id": "s99", "status": "PENDING"},
         ]
     }
-    ready = compute_ready(adj, instance)
-    assert ready == [], f"rejected edge should not trigger ready, got {ready}"
+    ready = _compute_ready_dict(adj, instance)
+    assert ready == ["s01"]

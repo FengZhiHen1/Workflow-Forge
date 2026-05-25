@@ -6,10 +6,10 @@ from pathlib import Path
 from core.timestamp import iso_timestamp, parse_iso_timestamp
 
 from core.dag import (
-    _all_satisfied,
+    _all_satisfied_dict as _all_satisfied,
     build_adjacency,
     collect_downstream,
-    compute_ready,
+    _compute_ready_dict as compute_ready,
     get_confirmed_edges,
     get_failure_edge,
     get_loop_exceeded_edge,
@@ -23,8 +23,8 @@ from core.schema.interface import EdgeCondition, StageSpec, StageTargetType, Wor
 from core.schema.loader import load_workflow
 from services.message_handler import scan_messages
 from services.state_manager import (
+    _consume_messages_legacy as consume_messages,
     append_deviation,
-    consume_messages,
     load_instance,
     save_instance,
 )
@@ -79,7 +79,7 @@ def _run_next_inner(instance_id: str) -> dict:
 
     # === 新 Orchestrator 路径（Phase 3 启用）===
     import os
-    if os.environ.get("WFCTL_USE_ORCHESTRATOR", "0") == "1":
+    if os.environ.get("WFCTL_USE_ORCHESTRATOR", "1") == "1":
         from services.scheduler.state_model import InstanceState
         from services.scheduler.context import ExecutionContext
         from services.scheduler.orchestrator import SchedulerOrchestrator

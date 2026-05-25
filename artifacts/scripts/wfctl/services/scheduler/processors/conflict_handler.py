@@ -32,7 +32,7 @@ class ConflictHandlerProcessor:
             try:
                 success = resolve_conflicts_and_merge(ctx.instance_id, stage_inst_id)
                 if success:
-                    delta.stage_updates[stage_id] = {"status": StageStatus.DONE}
+                    delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.DONE}
                     # 打锚点
                     anchor = f"{ctx.spec.anchor_prefix}-{ctx.instance_id}-{stage_inst_id}"
                     try:
