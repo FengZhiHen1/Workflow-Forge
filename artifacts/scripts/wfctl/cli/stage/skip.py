@@ -8,7 +8,8 @@ from infrastructure.errors import InputError, StateError
 from compat.workflow.registry import load_workflow
 from domain.transition.policy import TransitionPolicy
 from compat.instance.registry import load_instance_state, save_instance_state
-from services.state_manager import _append_timeline, append_deviation
+from services.state_manager import append_deviation
+from state.timeline import append_timeline
 from runtime.worktree.manager import tag_anchor
 
 
@@ -67,7 +68,7 @@ def _handle_skip(args) -> dict:
     # ── 副作用区 ──
     for s_inst_id in result.stage_instance_ids:
         tag_anchor(args.instance, f"{spec.anchor_prefix}-{args.instance}-{s_inst_id}")
-        _append_timeline(
+        append_timeline(
             args.instance, stage_id,
             f"skipped{' force' if result.force_applied else ''}",
             {"reason": args.reason, "stage_instance_id": s_inst_id},

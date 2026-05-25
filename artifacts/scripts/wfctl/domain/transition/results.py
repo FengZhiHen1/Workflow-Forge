@@ -95,3 +95,22 @@ class MergeConfirmResult:
 
     merge_confirmed: bool = False
     remove_merge_stage: bool = True
+
+
+@dataclass(frozen=True)
+class SyncResult:
+    """worktree 同步结果。
+
+    success: 同步是否成功（无冲突）
+    conflict_files: 冲突文件路径列表（success=False 时填充）
+    """
+
+    success: bool
+    conflict_files: list[str] = field(default_factory=list)
+
+    @property
+    def message(self) -> str:
+        """人类可读的冲突描述。"""
+        if self.success:
+            return ""
+        return f"conflict files: {self.conflict_files}"

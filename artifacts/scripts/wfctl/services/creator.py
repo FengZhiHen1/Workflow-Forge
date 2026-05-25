@@ -10,11 +10,12 @@ from domain.dag.graph import collect_ancestors
 from infrastructure.errors import InputError
 from runtime.worktree.git import git_rev_parse
 from infrastructure.project import find_root
-from domain.workflow.spec import StageStatus, StageTargetType
+from domain.workflow.spec import InstanceStatus, StageStatus, StageTargetType
 from compat.workflow.registry import load_workflow
 from services.resolver import find_workflow_dir
+from services.state_manager import append_deviation
 from state.model import InstanceState, StageState
-from compat.instance.registry import save_instance_state
+from compat.instance.registry import load_instance_state, save_instance_state
 from runtime.worktree.manager import (
     create_instance_worktree,
     tag_anchor,
@@ -82,7 +83,7 @@ def create_instance(
     clone_from: str | None = None,
     fast_forward_to: str | None = None,
     worktree_base_ref: str | None = None,
-) -> dict:
+) -> InstanceState:
     """生成 Instance JSON，分配实例 worktree，写入身份元数据，打初始锚点。
 
     当 clone_from 指定时，从旧实例克隆：继承 DONE stage 状态、复制 worktree 文件、
@@ -211,17 +212,7 @@ def create_instance(
         identity_file = worktree / ".wfctl_identity.json"
         identity_file.write_text(json.dumps(identity, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        result = {
-            "status": "ok",
-            "instance_id": instance_id,
-            "workflow_id": spec.workflow_id,
-            "version": spec.version,
-            "worktree": str(worktree.relative_to(root)),
-            "instance_state": instance_state,
-        }
-        if fast_forwarded:
-            result["fast_forwarded"] = fast_forwarded
-        return result
+        return instance_state
     except Exception:
         # 回滚：清理已创建的资源
         from runtime.worktree.manager import remove_anchor, remove_instance_worktree
@@ -248,7 +239,7 @@ def _create_from_clone(
     version: str | None,
     goal: str,
     parent_instance_id: str | None,
-) -> dict:
+) -> InstanceState:
     """从旧实例克隆新实例。
 
     行为：
@@ -258,18 +249,18 @@ def _create_from_clone(
     4. 继承 DONE stage（含 parallel fan-out 信息），非 DONE stage 重置为 PENDING
     5. 旧实例标记 FAILED
     """
-    old_inst = load_instance(clone_from)
+    old_state = load_instance_state(clone_from)
 
     # 校验：旧实例不能是 COMPLETED
-    if old_inst.get("status") == "COMPLETED":
+    if old_state.status == InstanceStatus.COMPLETED:
         raise InputError(
             f"Cannot clone a COMPLETED instance: {clone_from}",
             code="INVALID_ARGUMENT",
         )
 
     # 使用旧实例的 workflow_id 和 version（除非调用方显式覆盖）
-    actual_wf_id = workflow_id if workflow_id else old_inst.get("workflow_id", "")
-    actual_version = version if version else old_inst.get("version", "")
+    actual_wf_id = workflow_id if workflow_id else old_state.workflow_id
+    actual_version = version if version else old_state.version
 
     wf_dir = find_workflow_dir(actual_wf_id, actual_version)
     spec = load_workflow(wf_dir / "WORKFLOW.yaml")
@@ -277,7 +268,7 @@ def _create_from_clone(
     # 生成新 instance_id（同时扫描活跃实例和归档实例，避免冲突）
     instance_id = _generate_instance_id(root)
 
-    goal = goal or old_inst.get("goal", "")
+    goal = goal or old_state.goal
 
     # 创建前清理残留的 git worktree 注册
     from runtime.worktree.git import git_worktree_prune
@@ -302,30 +293,30 @@ def _create_from_clone(
         worktree = create_instance_worktree(instance_id, base_ref=base_ref)
 
         # 构建 stages：继承 DONE，其余重置
-        old_stages_by_id: dict[str, list[dict]] = {}
-        for s in old_inst.get("stages", []):
-            old_stages_by_id.setdefault(s["stage_id"], []).append(s)
+        old_stages_by_id: dict[str, list[StageState]] = {}
+        for st in old_state.stages:
+            old_stages_by_id.setdefault(st.stage_id, []).append(st)
 
-        stages: list[dict] = []
+        stages: list[StageState] = []
         for s in spec.stages:
             old_entries = old_stages_by_id.get(s.stage_id, [])
-            all_old_done = old_entries and all(e.get("status") == "DONE" for e in old_entries)
+            all_old_done = old_entries and all(e.status == StageStatus.DONE for e in old_entries)
 
             if all_old_done:
                 for entry in old_entries:
                     stages.append(StageState(
-                        stage_id=entry["stage_id"],
-                        stage_instance_id=entry.get("stage_instance_id", entry["stage_id"]),
+                        stage_id=entry.stage_id,
+                        stage_instance_id=entry.stage_instance_id,
                         status=StageStatus.DONE,
-                        agent_id=entry.get("agent_id"),
-                        system_agent_id=entry.get("system_agent_id"),
-                        output_message_id=entry.get("output_message_id"),
-                        loop_counter=entry.get("loop_counter", 0),
-                        attempt_count=entry.get("attempt_count", 0),
-                        started_at=entry.get("started_at"),
-                        model=entry.get("model"),
-                        child_instance_id=entry.get("child_instance_id"),
-                        fan_out_target=entry.get("fan_out_target"),
+                        agent_id=entry.agent_id,
+                        system_agent_id=entry.system_agent_id,
+                        output_message_id=entry.output_message_id,
+                        loop_counter=entry.loop_counter,
+                        attempt_count=entry.attempt_count,
+                        started_at=entry.started_at,
+                        model=entry.model,
+                        child_instance_id=entry.child_instance_id,
+                        fan_out_target=entry.fan_out_target,
                     ))
             else:
                 stages.append(StageState(
@@ -395,29 +386,17 @@ def _create_from_clone(
         )
 
         # 旧实例标记 FAILED
-        old_status = old_inst.get("status")
-        if old_status != "FAILED":
-            old_inst["status"] = "FAILED"
-            save_instance(clone_from, old_inst)
+        if old_state.status != InstanceStatus.FAILED:
+            from dataclasses import replace as _replace
+            old_state = _replace(old_state, status=InstanceStatus.FAILED)
+            save_instance_state(clone_from, old_state)
             append_deviation(
                 clone_from,
                 "INSTANCE_CLONED",
                 f"Cloned to new instance {instance_id}",
             )
 
-        return {
-            "status": "ok",
-            "instance_id": instance_id,
-            "workflow_id": spec.workflow_id,
-            "version": spec.version,
-            "worktree": str(worktree.relative_to(root)),
-            "cloned_from": clone_from,
-            "worktree_source": worktree_source,
-            "instance_state": instance_state,
-            "inherited_done_stages": [
-                s.stage_id for s in stages if s.status == StageStatus.DONE
-            ],
-        }
+        return instance_state
 
     except Exception:
         # 回滚

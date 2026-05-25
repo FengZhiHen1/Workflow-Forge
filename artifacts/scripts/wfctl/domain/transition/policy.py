@@ -1,6 +1,6 @@
 """TransitionPolicy: 集中化边处理，单一真相源。
 
-将分散在 core/dag.py、ErrorHandlerProcessor、cli/confirm.py
+将分散在 core/dag.py、ErrorRecoveryProcessor、cli/confirm.py
 中的边处理逻辑集中于此。所有方法为纯函数，不产生副作用。
 """
 

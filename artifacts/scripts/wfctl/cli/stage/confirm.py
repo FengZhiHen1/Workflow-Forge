@@ -15,7 +15,7 @@ from compat.workflow.registry import load_workflow
 from domain.transition.policy import TransitionPolicy
 from compat.instance.registry import load_instance_state, save_instance_state
 from state.model import InstanceStatus, StageState, StageStatus, StateDelta
-from services.state_manager import _append_timeline
+from state.timeline import append_timeline
 
 
 def register_confirm(subparsers):
@@ -97,7 +97,7 @@ def _handle_confirm(args) -> dict:
 
     # timeline
     timeline_event = _pick_timeline_event(result)
-    _append_timeline(args.instance, args.stage, timeline_event, {
+    append_timeline(args.instance, args.stage, timeline_event, {
         "choice": args.choice,
         "reason": result.reason,
     })

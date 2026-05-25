@@ -33,11 +33,11 @@ def test_create_instance_success(monkeypatch, tmp_path: Path):
     subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), check=True, capture_output=True)
 
     monkeypatch.chdir(repo)
-    result = create_instance("test-flow", goal="test goal")
+    state = create_instance("test-flow", goal="test goal")
 
-    assert result["status"] == "ok"
-    assert result["workflow_id"] == "test-flow"
-    inst_id = result["instance_id"]
+    assert state.instance_id
+    assert state.workflow_id == "test-flow"
+    inst_id = state.instance_id
 
     # 验证 instance.json
     inst_path = repo / ".agent" / "instances" / inst_id / "instance.json"

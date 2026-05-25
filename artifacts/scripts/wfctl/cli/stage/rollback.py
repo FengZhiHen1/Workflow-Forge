@@ -9,7 +9,7 @@ from infrastructure.project import find_root
 from compat.workflow.registry import load_workflow
 from domain.transition.policy import TransitionPolicy
 from compat.instance.registry import load_instance_state, save_instance_state
-from services.state_manager import _append_timeline
+from state.timeline import append_timeline
 from runtime.worktree.manager import checkout_to_anchor, remove_anchor
 
 
@@ -61,7 +61,7 @@ def _handle_rollback(args) -> dict:
         anchor = f"{spec.anchor_prefix}-{args.instance}-{s_id}"
         remove_anchor(args.instance, anchor)
 
-    _append_timeline(args.instance, stage_id, "rollback", {"reset_stages": result.reset_stage_ids})
+    append_timeline(args.instance, stage_id, "rollback", {"reset_stages": result.reset_stage_ids})
 
     save_instance_state(args.instance, new_state)
 

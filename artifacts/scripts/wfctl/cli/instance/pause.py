@@ -6,7 +6,8 @@
 from infrastructure.errors import StateError
 from domain.transition.policy import TransitionPolicy
 from compat.instance.registry import load_instance_state, save_instance_state
-from services.state_manager import _append_timeline, append_deviation
+from services.state_manager import append_deviation
+from state.timeline import append_timeline
 
 
 def register_pause(subparsers):
@@ -42,7 +43,7 @@ def _handle_pause(args) -> dict:
     new_state = state.apply_delta(delta)
 
     # ── 副作用区 ──
-    _append_timeline(args.instance, "", "instance→paused", {
+    append_timeline(args.instance, "", "instance→paused", {
         "reason": args.reason,
         "reset_stages": reset_stage_ids,
     })

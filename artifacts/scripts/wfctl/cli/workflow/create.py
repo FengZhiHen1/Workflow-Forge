@@ -1,5 +1,6 @@
 """create 命令。"""
 
+from infrastructure.project import find_root
 from services.creator import create_instance
 
 
@@ -29,10 +30,23 @@ def _handle_create(args) -> dict:
     version = None
     if "@" in wf_id:
         wf_id, version = wf_id.split("@", 1)
-    return create_instance(
+    state = create_instance(
         wf_id,
         version=version,
         goal=args.goal,
         clone_from=getattr(args, "clone_from", None),
         fast_forward_to=getattr(args, "fast_forward_to", None),
     )
+    root = find_root()
+    worktree = root / ".tmp" / "worktrees" / f"instance-{state.instance_id}"
+    result: dict = {
+        "status": "ok",
+        "instance_id": state.instance_id,
+        "workflow_id": state.workflow_id,
+        "version": state.version,
+        "worktree": str(worktree.relative_to(root)),
+        "instance_state": state.to_dict(),
+    }
+    if state.parent_instance_id:
+        result["cloned_from"] = state.parent_instance_id
+    return result

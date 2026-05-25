@@ -23,11 +23,11 @@ class SyncWorktreeProcessor:
         parent_id = state.parent_instance_id
 
         if parent_id:
-            success, msg = sync_instance_with_parent(ctx.instance_id, parent_id)
+            result = sync_instance_with_parent(ctx.instance_id, parent_id)
         else:
-            success, msg = sync_instance_with_main(ctx.instance_id)
+            result = sync_instance_with_main(ctx.instance_id)
 
-        if not success:
-            append_deviation(ctx.instance_id, "SYNC_SKIPPED", msg)
+        if not result.success:
+            append_deviation(ctx.instance_id, "SYNC_SKIPPED", result.message)
 
         return ProcessorResult()

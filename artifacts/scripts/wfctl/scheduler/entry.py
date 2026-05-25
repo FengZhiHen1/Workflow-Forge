@@ -129,12 +129,12 @@ def _sync_worktree_upstream(instance_id: str, state: InstanceState) -> None:
     from services.state_manager import append_deviation
 
     if state.parent_instance_id:
-        success, msg = sync_instance_with_parent(instance_id, state.parent_instance_id)
+        result = sync_instance_with_parent(instance_id, state.parent_instance_id)
     else:
-        success, msg = sync_instance_with_main(instance_id)
+        result = sync_instance_with_main(instance_id)
 
-    if not success:
-        append_deviation(instance_id, "SYNC_SKIPPED", msg)
+    if not result.success:
+        append_deviation(instance_id, "SYNC_SKIPPED", result.message)
 
 
 def _load_workflow_for_instance(state: InstanceState):

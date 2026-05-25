@@ -104,10 +104,10 @@ class AllocateSpawnProcessor:
 
             if matched_agent:
                 # Level 2 同步
-                sync_ok, conflict_files = sync_stage_with_instance(ctx.instance_id, stage_inst_id)
-                if not sync_ok:
+                sync_result = sync_stage_with_instance(ctx.instance_id, stage_inst_id)
+                if not sync_result.success:
                     updates["status"] = StageStatus.CONFLICT
-                    updates["conflict_files"] = conflict_files
+                    updates["conflict_files"] = sync_result.conflict_files
                     delta.stage_updates[st.stage_instance_id] = updates
                     actions.append({
                         "action": "conflict",

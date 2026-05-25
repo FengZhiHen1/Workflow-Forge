@@ -133,7 +133,7 @@ class ChildWorkflowProcessor:
                 goal_parts.append(fan_out["context"])
             child_goal = "：".join(goal_parts)
 
-            child_result = _create_child(
+            child_state = _create_child(
                 workflow_id=child_wf_id,
                 version=child_version,
                 goal=child_goal,
@@ -142,7 +142,7 @@ class ChildWorkflowProcessor:
             )
 
             delta.stage_updates[st.stage_instance_id] = {
-                "child_instance_id": child_result["instance_id"],
+                "child_instance_id": child_state.instance_id,
                 "status": StageStatus.RUNNING,
                 "started_at": iso_timestamp(),
             }

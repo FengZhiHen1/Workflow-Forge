@@ -18,6 +18,7 @@ from runtime.worktree.git import (
     git_worktree_remove,
 )
 from infrastructure.project import find_root
+from domain.transition.results import SyncResult
 
 
 def create_instance_worktree(instance_id: str, base_ref: str = "HEAD") -> Path:
@@ -295,51 +296,45 @@ def _is_worktree_clean(wt: Path) -> bool:
     return stdout.strip() == ""
 
 
-def _sync_worktree(target: Path, source: Path) -> tuple[bool, list[str]]:
-    """将 source 的 HEAD 合并到 target。返回 (success, conflict_files)。
+def _sync_worktree(target: Path, source: Path) -> SyncResult:
+    """将 source 的 HEAD 合并到 target。
 
     fetch 失败或 target 不干净时静默跳过（返回 success=True）。
     """
     if not target.exists():
-        return True, []
+        return SyncResult(success=True)
     if not _is_worktree_clean(target):
-        return True, []
+        return SyncResult(success=True)
 
     rc, _, _ = git_fetch(target, source, "HEAD")
     if rc != 0:
-        return True, []
+        return SyncResult(success=True)
 
     rc, _, _ = git_merge(target, "FETCH_HEAD")
     if rc == 0:
-        return True, []
+        return SyncResult(success=True)
 
     git_merge_abort(target)
     conflict_files = _extract_conflict_files(target)
-    return False, conflict_files
+    return SyncResult(success=False, conflict_files=conflict_files)
 
 
-def sync_instance_with_main(instance_id: str) -> tuple[bool, str]:
+def sync_instance_with_main(instance_id: str) -> SyncResult:
     """Level 1: 同步本地主仓库 HEAD → 实例 worktree。"""
     root = find_root()
     inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
-    success, conflict_files = _sync_worktree(inst_wt, root)
-    if not success:
-        return False, f"conflict with main: {conflict_files}"
-    return True, ""
+    return _sync_worktree(inst_wt, root)
 
 
-def sync_instance_with_parent(instance_id: str, parent_instance_id: str) -> tuple[bool, str]:
+def sync_instance_with_parent(instance_id: str, parent_instance_id: str) -> SyncResult:
     """Level 1.5: 同步父实例 worktree → 子实例 worktree。"""
     root = find_root()
     child_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"
     parent_wt = root / ".tmp" / "worktrees" / f"instance-{parent_instance_id}"
-    success, conflict_files = _sync_worktree(child_wt, parent_wt)
-    if not success:
-        return False, f"conflict with parent instance: {conflict_files}"
-    return True, ""
+    return _sync_worktree(child_wt, parent_wt)
 
 
-def sync_stage_with_instance(instance_id: str, stage_instance_id: str) -> tuple[bool, list[str]]:
+def sync_stage_with_instance(instance_id: str, stage_instance_id: str) -> SyncResult:
     """Level 2: 同步实例 worktree → stage worktree。"""
     root = find_root()
     inst_wt = root / ".tmp" / "worktrees" / f"instance-{instance_id}"

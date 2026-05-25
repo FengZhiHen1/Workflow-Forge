@@ -24,25 +24,6 @@ def save_instance(instance_id: str, data: dict) -> None:
     save_instance_state(instance_id, state)
 
 
-def _append_timeline(instance_id: str, stage_id: str, event: str, extra: dict | None = None) -> None:
-    """追加 timeline 日志。"""
-    root = find_root()
-    logs_dir = root / ".agent" / "instances" / instance_id / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    timeline_path = logs_dir / "timeline.jsonl"
-
-    entry = {
-        "stage_id": stage_id,
-        "event": event,
-        "timestamp": iso_timestamp(),
-    }
-    if extra:
-        entry.update(extra)
-
-    with open(timeline_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
 def append_deviation(instance_id: str, dev_type: str, reason: str, stage_id: str | None = None, files: list[str] | None = None) -> None:
     """追加 deviation 日志。"""
     root = find_root()

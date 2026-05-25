@@ -177,7 +177,7 @@ class ParallelSplitProcessor:
             }], delta
 
         # SubAgent 已终止或重试耗尽 → 置 ERROR
-        # 返回 reinforce action，实际错误处理由 ErrorHandlerProcessor 在后续步骤处理
+        # 返回 reinforce action，实际错误处理由 ErrorRecoveryProcessor 在后续步骤处理
         return [], StateDelta()
 
     def _get_parallel_retry(self, state: InstanceState, stage_id: str) -> int:

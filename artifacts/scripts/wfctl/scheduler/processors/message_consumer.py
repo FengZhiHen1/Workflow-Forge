@@ -19,7 +19,8 @@ from state.model import (
     StateDelta,
 )
 from scheduler.processors.base import ProcessorResult
-from services.state_manager import append_deviation, _append_timeline
+from services.state_manager import append_deviation
+from state.timeline import append_timeline
 from services.validator import validate_modified_files
 
 
@@ -65,7 +66,7 @@ class ConsumeMessagesProcessor:
             except Exception as e:
                 import traceback
                 delta.stage_updates[st.stage_instance_id] = {}
-                _append_timeline(ctx.instance_id, st.stage_id, "running→error", {
+                append_timeline(ctx.instance_id, st.stage_id, "running→error", {
                     "reason": str(e),
                     "message_id": msg_id,
                     "intended_status": msg.get("status"),
@@ -89,7 +90,7 @@ class ConsumeMessagesProcessor:
                     valid = st.valid_routing_choices
                     if valid and routing_choice not in valid:
                         cycle_meta = cycle_meta.with_error(st.stage_instance_id)
-                        _append_timeline(ctx.instance_id, st.stage_id, "running→error", {
+                        append_timeline(ctx.instance_id, st.stage_id, "running→error", {
                             "message_id": msg_id,
                             "reason": f"非法 routing_choice: '{routing_choice}'，合法值: {valid}",
                         })
@@ -105,14 +106,14 @@ class ConsumeMessagesProcessor:
                         "exit_condition": "success",
                         "output_message_id": msg_id,
                     }
-                _append_timeline(ctx.instance_id, st.stage_id, "running→done", {"message_id": msg_id})
+                append_timeline(ctx.instance_id, st.stage_id, "running→done", {"message_id": msg_id})
                 cycle_meta = cycle_meta.with_done(st.stage_instance_id)
 
             elif msg_status == "ERROR":
                 delta.stage_updates[st.stage_instance_id] = {
                     "output_message_id": msg_id,
                 }
-                _append_timeline(ctx.instance_id, st.stage_id, "running→error", {
+                append_timeline(ctx.instance_id, st.stage_id, "running→error", {
                     "message_id": msg_id, "reason": msg.get("report", ""),
                 })
                 cycle_meta = cycle_meta.with_error(st.stage_instance_id)
@@ -124,12 +125,12 @@ class ConsumeMessagesProcessor:
                 if msg.get("confirm_questions"):
                     updates["confirm_questions"] = msg["confirm_questions"]
                 delta.stage_updates[st.stage_instance_id] = updates
-                _append_timeline(ctx.instance_id, st.stage_id, "running→awaiting_confirm", {"message_id": msg_id})
+                append_timeline(ctx.instance_id, st.stage_id, "running→awaiting_confirm", {"message_id": msg_id})
                 cycle_meta = cycle_meta.with_awaiting_confirm(st.stage_instance_id)
 
             elif msg_status == "RUNNING":
                 delta.stage_updates[st.stage_instance_id] = {"status": StageStatus.RUNNING}
-                _append_timeline(ctx.instance_id, st.stage_id, "scheduled", {"message_id": msg_id})
+                append_timeline(ctx.instance_id, st.stage_id, "scheduled", {"message_id": msg_id})
 
             new_consumed.add(msg_id)
 
