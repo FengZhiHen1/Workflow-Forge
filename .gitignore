@@ -5,3 +5,4 @@ __pycache__/
 .env
 .agent/
 .pytest_cache/
+.coverage
