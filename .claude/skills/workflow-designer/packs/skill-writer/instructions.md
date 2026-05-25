@@ -184,7 +184,7 @@ v3 规范下，Skill 正文**只写业务能力**，不涉及工作流协议：
 
 ### 7. 交互强制规则
 
-**当需求规格中标注 `confirmation_point: true` 时，SKILL.md 必须满足以下两项：**
+**当需求规格中标注 `` 时，SKILL.md 必须满足以下两项：**
 
 1. **必须包含至少一处 `AskUserQuestion`** —— 用户裁决点不能悬空
 2. **AskUserQuestion 的选项文本必须与需求规格中的 `choices` 逐字一致** —— 一个字都不能差
@@ -195,8 +195,7 @@ v3 规范下，Skill 正文**只写业务能力**，不涉及工作流协议：
 
 需求规格包含：
 ```
-- confirmation_point: true
-- choices: ["修改技术栈", "调整模块边界", "继续处理其他模块", "接受差异", "终止工作流", "放弃"]
+- - choices: ["修改技术栈", "调整模块边界", "继续处理其他模块", "接受差异", "终止工作流", "放弃"]
 ```
 
 Skill 中的正确写法：
@@ -237,8 +236,8 @@ Skill 中的正确写法：
 - [ ] 所有资源文件存在且被引用
 - [ ] **迁移清单中所有 ✅ 文件已复制并适配**（如适用）
 - [ ] **迁移清单中所有 ❌ 文件已确认不复制**（如适用）
-- [ ] **若 confirmation_point=true，至少有一处 AskUserQuestion 调用**
-- [ ] **AskUserQuestion 选项文本与需求规格中的 choices 逐字一致**
+- [ ] **若需要用户交互，至少有一处 AskUserQuestion 调用**
+- [ ] **AskUserQuestion 选项文本自由定义**
 - [ ] **无** Stage 名称、stage_id、edges 等工作流结构信息
 - [ ] **无** 内部 SubAgent 调度
 - [ ] **无** `[WORKFLOW_CONFIG]` 块

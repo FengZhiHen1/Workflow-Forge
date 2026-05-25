@@ -52,24 +52,11 @@ def check_confirmation_density(stages: list, edges: list) -> dict:
     if total == 0:
         return {"name": "确认点密度", "pass": True, "detail": "无业务 Stage"}
 
-    confirmation_count = sum(
-        1 for s in business_stages if s.get("confirmation_point")
-    )
-    density = confirmation_count / total
-
-    issues = []
-    if density > 0.5:
-        issues.append(f"密度过高 ({density:.0%})：超过50% Stage 有确认点，流程可能过于拖沓")
-    elif density > 0.3:
-        issues.append(f"密度偏高 ({density:.0%})：建议审视确认点必要性")
-    elif density < 0.1:
-        issues.append(f"密度偏低 ({density:.0%})：可能缺乏用户控制")
-
+    # 确认点密度已废弃（confirmation_point 字段已移除，确认现在是 Skill 内部行为）
     return {
         "name": "确认点密度",
-        "pass": len(issues) == 0,
-        "detail": f"{confirmation_count}/{total} ({density:.0%})",
-        "issues": issues,
+        "pass": True,
+        "detail": "已废弃——确认现在是 Skill 的 AskUserQuestion 内部行为，工作流定义不再声明确认点",
     }
 
 
@@ -209,47 +196,32 @@ def check_anti_patterns(stages: list, edges: list, dep_graph: dict | None) -> di
     """检查常见反模式。"""
     issues = []
 
-    # 反模式：非确认点有 confirmed/rejected 出边
-    cp_map = {}
-    for stage in stages:
-        if isinstance(stage, dict):
-            cp_map[stage.get("stage_id")] = stage.get("confirmation_point", False)
-
+    # 反模式：残留 confirmed/rejected 边条件
     for edge in edges:
         if not isinstance(edge, dict):
             continue
-        fr = edge.get("from")
         cond = edge.get("condition")
-        if cond in ("confirmed", "rejected") and fr in cp_map and not cp_map[fr]:
+        if cond in ("confirmed", "rejected"):
+            fr = edge.get("from")
             issues.append(
-                f"Stage '{fr}' confirmation_point=false，但有 {cond} 出边"
+                f"Edge '{fr}' 使用已废弃的 condition={cond}——改为 condition=success + choice"
             )
 
-    # 反模式：确认点无 confirmed/rejected 出边
+    # 反模式：残留 confirmation_point 字段
     for stage in stages:
         if not isinstance(stage, dict):
             continue
-        sid = stage.get("stage_id")
-        if stage.get("confirmation_point") and sid in cp_map:
-            has_special = any(
-                isinstance(e, dict) and e.get("from") == sid and e.get("condition") in ("confirmed", "rejected")
-                for e in edges
+        if "confirmation_point" in stage:
+            sid = stage.get("stage_id", "?")
+            issues.append(
+                f"Stage '{sid}' 包含已废弃的 confirmation_point 字段——请移除。"
+                f"确认现在是 Skill 内部行为（AskUserQuestion）"
             )
-            if not has_special:
-                issues.append(
-                    f"Stage '{sid}' confirmation_point=true，但无 confirmed/rejected 出边"
-                )
-
-    # 反模式：dependency-graph 中终节点 consumer 非空（循环依赖风险）
-    if dep_graph and "skills" in dep_graph:
-        for skill in dep_graph["skills"]:
-            consumers = skill.get("consumers", [])
-            # 这里仅做简单检查，复杂循环依赖由 reviewer 处理
 
     return {
         "name": "反模式检测",
         "pass": len(issues) == 0,
-        "detail": "检查 confirmed/rejected 匹配、确认点一致性",
+        "detail": "检查已废弃的 confirmed/rejected/confirmation_point 残留",
         "issues": issues,
     }
 

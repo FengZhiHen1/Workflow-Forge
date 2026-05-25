@@ -64,11 +64,7 @@ VIOLATIONS = {
     },
     "missing_askuserquestion": {
         "severity": "critical",
-        "message": "confirmation_point=true 但 SKILL.md 未包含 AskUserQuestion。确认点 Skill 必须显式调用 AskUserQuestion 请求用户决策。仅靠描述性表格不够——SubAgent 不会把选项表自动理解为交互点。",
-    },
-    "choice_mismatch": {
-        "severity": "critical",
-        "message": "AskUserQuestion 选项与 WORKFLOW.yaml edges 的 choice 不匹配。选项文本必须逐字一致，否则 wfctl 无法路由用户确认。",
+        "message": "Skill 需要用户确认但 SKILL.md 未包含 AskUserQuestion。需要交互的 Skill 必须显式调用 AskUserQuestion 请求用户决策。仅靠描述性表格不够——SubAgent 不会把选项表自动理解为交互点。",
     },
 }
 
@@ -233,28 +229,6 @@ def check_askuserquestion_present(skill_md_path: str) -> list[dict]:
     return results
 
 
-def check_choices_alignment(skill_md_path: str, expected_choices: str) -> list[dict]:
-    """检查 SKILL.md 中的选项文本与 WORKFLOW.yaml edges 的 choice 是否一致。"""
-    content = Path(skill_md_path).read_text(encoding="utf-8")
-    choices = [c.strip() for c in expected_choices.split(",") if c.strip()]
-    results = []
-
-    for choice in choices:
-        if choice not in content:
-            results.append(
-                {
-                    "category": "choice_mismatch",
-                    "severity": VIOLATIONS["choice_mismatch"]["severity"],
-                    "message": f"WORKFLOW.yaml 中的 choice '{choice}' 在 SKILL.md 中未找到。选项文本必须逐字一致。",
-                    "line": "N/A（全文搜索）",
-                    "line_num": 0,
-                    "match": choice,
-                }
-            )
-
-    return results
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="校验 SKILL.md 是否遵守 Skill-工作流边界"
@@ -263,12 +237,7 @@ def main() -> int:
     parser.add_argument(
         "--expect-askuserquestion",
         action="store_true",
-        help="要求 SKILL.md 必须包含 AskUserQuestion（用于 confirmation_point=true 的 Stage）",
-    )
-    parser.add_argument(
-        "--choices",
-        default=None,
-        help="期望的 AskUserQuestion 选项列表（逗号分隔），来自 WORKFLOW.yaml edges 的 choice 字段",
+        help="要求 SKILL.md 必须包含 AskUserQuestion（用于需要用户交互的 Stage）",
     )
     args = parser.parse_args()
 
@@ -278,13 +247,9 @@ def main() -> int:
 
     results = validate_skill_boundary(args.skill_md)
 
-    # 可选检查：confirmation_point=true 时要求 AskUserQuestion 存在
+    # 可选检查：需要用户交互的 Stage 要求 AskUserQuestion 存在
     if args.expect_askuserquestion:
         results.extend(check_askuserquestion_present(args.skill_md))
-
-    # 可选检查：choices 与 WORKFLOW.yaml 对齐
-    if args.choices is not None:
-        results.extend(check_choices_alignment(args.skill_md, args.choices))
 
     critical = [r for r in results if r["severity"] == "critical"]
     warnings = [r for r in results if r["severity"] == "warning"]

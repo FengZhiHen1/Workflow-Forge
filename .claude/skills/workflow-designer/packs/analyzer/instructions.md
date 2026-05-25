@@ -108,7 +108,7 @@ skill_relationships:
     output_files: []
     input_files: []
     suggested_edge:
-      condition: always|confirmed
+      condition: always|success
       reason: 为什么这样映射
 
 proposed_stages:
@@ -118,13 +118,12 @@ proposed_stages:
     derived_from: 源自哪段步骤
     skill_id: 建议的 skill_id
     mandatory: true
-    confirmation_point: false
     reason: 为什么这样拆分
 
 proposed_edges:
   - from: s01-xxx
     to: s02-yyy
-    condition: always|success|failure|confirmed|rejected|loop_exceeded
+    condition: always|success|failure|loop_exceeded
     reason: 为什么这样连接
     is_cross_skill: false
 
@@ -226,7 +225,7 @@ source_workflow:
    - Stage 数量和确认点密度
    - 死 Stage、循环出口完整性、异常路径覆盖
    - 确认点节奏是否合理
-   - 与父工作流的衔接（父 Stage 的 `confirmation_point` 与子工作流的终局确认是否重叠/冗余）
+   - 与父工作流的衔接（父 Stage 的 `confirmation_point` 与子工作流的DONE 上报是否重叠/冗余）
 4. **填写 `sub_workflows[]`**：每个子工作流一条记录，标注发现的问题和优化建议
 
 **子工作流递归**：如果子工作流内部又引用了孙工作流（嵌套），同样检测并记录。标注嵌套深度，超过 3 层标为 critical risk。

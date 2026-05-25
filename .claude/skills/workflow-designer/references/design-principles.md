@@ -38,15 +38,15 @@
 edges:
   - from: s01
     to: s02
-    condition: confirmed
+    condition: success + choice
     choice: "通过"
   - from: s01
     to: s99-workflow-end
-    condition: rejected
+    condition: success + choice
     choice: "放弃"
   - from: s01
     to: s01
-    condition: confirmed
+    condition: success + choice
     choice: "继续完善"
     max_loop: 5
   - from: s01

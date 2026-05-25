@@ -39,9 +39,9 @@
 
 ### 6. 反模式检测
 
-- 非确认点有 `confirmed`/`rejected` 出边
-- 确认点无 `confirmed`/`rejected` 出边
-- 确认点密度异常
+- （已废弃）检测 `confirmed`/`rejected` 边条件残留
+- （已废弃）`confirmation_point` 字段不再使用
+- 确认点密度异常（已废弃——确认现在是 Skill 内部行为）
 
 ## 执行方式
 

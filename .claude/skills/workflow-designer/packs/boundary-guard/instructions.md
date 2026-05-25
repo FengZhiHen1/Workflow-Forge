@@ -50,7 +50,7 @@ Skill 可以自然使用 `AskUserQuestion` 请求用户决策。框架注入的�
 
 ## 交互强制规则
 
-**当需求规格中标注 `confirmation_point: true` 时，SKILL.md 必须满足以下两项：**
+**当需求规格中标注 `` 时，SKILL.md 必须满足以下两项：**
 
 1. **必须包含至少一处 `AskUserQuestion`** —— 用户裁决点不能悬空
 2. **AskUserQuestion 的选项文本必须与需求规格中的 `choices` 逐字一致** —— 一个字都不能差
@@ -65,8 +65,8 @@ Skill 可以自然使用 `AskUserQuestion` 请求用户决策。框架注入的�
 - [ ] **无** "触发下一阶段"、"进入 Stage XXX" 等下游行为描述
 - [ ] **无** 外部对接协议段
 - [ ] **无** Message 上报契约段
-- [ ] **若 confirmation_point=true，至少有一处 AskUserQuestion 调用**
-- [ ] **AskUserQuestion 选项文本与需求规格中的 choices 逐字一致**
+- [ ] **若需要用户交互，至少有一处 AskUserQuestion 调用**
+- [ ] **AskUserQuestion 选项文本自由定义**
 
 ## 自动校验
 

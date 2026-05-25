@@ -39,7 +39,7 @@ max_parallel_agents: <N>
 stages:
   - stage_id: s00-workflow-start
     name: "工作流启动"
-  # ... 核心业务 Stage（含 confirmation_point 标注）
+  # ... 核心业务 Stage
   - stage_id: s99-workflow-end
     name: "工作流终止"
 edges:

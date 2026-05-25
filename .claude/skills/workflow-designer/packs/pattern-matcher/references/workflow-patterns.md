@@ -7,7 +7,7 @@
 ## 模式一：顺序审批流（Sequential Approval）
 
 ### 特征
-多个 Stage 串联执行，关键 Stage 设置 `confirmation_point: true`，用户逐个确认后推进。
+多个 Stage 串联执行，关键 Stage 设置 ``，用户逐个确认后推进。
 
 ### 适用场景
 - 文档审核流水线（初稿 → 审核 → 定稿）
@@ -31,21 +31,15 @@ stages:
     name: "需求分析"
     skill_id: requirement-analyst
     mandatory: true
-    confirmation_point: true
-
-  - stage_id: s02-design
+    - stage_id: s02-design
     name: "方案设计"
     skill_id: design-architect
     mandatory: true
-    confirmation_point: true
-
-  - stage_id: s03-implementation
+    - stage_id: s03-implementation
     name: "代码实现"
     skill_id: code-generator
     mandatory: true
-    confirmation_point: false
-
-  - stage_id: s99-workflow-end
+    - stage_id: s99-workflow-end
     name: "工作流终止"
 
 edges:
@@ -55,18 +49,18 @@ edges:
 
   - from: s01-analysis
     to: s02-design
-    condition: confirmed
+    condition: success + choice
     choice: "通过"
 
   - from: s01-analysis
     to: s01-analysis
-    condition: confirmed
+    condition: success + choice
     choice: "继续完善"
     max_loop: 3
 
   - from: s01-analysis
     to: s99-workflow-end
-    condition: rejected
+    condition: success + choice
     choice: "放弃"
 
   - from: s01-analysis
@@ -75,18 +69,18 @@ edges:
 
   - from: s02-design
     to: s03-implementation
-    condition: confirmed
+    condition: success + choice
     choice: "通过"
 
   - from: s02-design
     to: s02-design
-    condition: confirmed
+    condition: success + choice
     choice: "继续完善"
     max_loop: 5
 
   - from: s02-design
     to: s99-workflow-end
-    condition: rejected
+    condition: success + choice
     choice: "放弃"
 
   - from: s02-design
@@ -99,8 +93,8 @@ edges:
 ```
 
 ### 设计要点
-- 每个 `confirmation_point: true` 的 Stage 必须有 `confirmed` / `rejected` / `loop_exceeded` 出边
-- 中继确认（回指自身）适用于"需要多轮打磨"的 Stage
+- 每个 `` 的 Stage 必须有 `confirmed` / `rejected` / `loop_exceeded` 出边
+- confirm + continue（回指自身）适用于"需要多轮打磨"的 Stage
 - 非确认 Stage（如 s03）只有 `success` / `failure` 出边
 
 ### 常见反模式
@@ -137,13 +131,10 @@ stages:
     name: "任务拆解"
     skill_id: task-decomposer
     mandatory: true
-    confirmation_point: true
-
-  - stage_id: s02-parallel-process
+    - stage_id: s02-parallel-process
     name: "并行处理"
     skill_id: batch-processor
     mandatory: true
-    confirmation_point: false
     parallel:
       source: s01-decompose
       max_instances: 10
@@ -152,9 +143,7 @@ stages:
     name: "结果聚合"
     skill_id: result-aggregator
     mandatory: true
-    confirmation_point: true
-
-  - stage_id: s99-workflow-end
+    - stage_id: s99-workflow-end
     name: "工作流终止"
 
 edges:
@@ -164,18 +153,18 @@ edges:
 
   - from: s01-decompose
     to: s02-parallel-process
-    condition: confirmed
+    condition: success + choice
     choice: "通过"
 
   - from: s01-decompose
     to: s01-decompose
-    condition: confirmed
+    condition: success + choice
     choice: "重新拆解"
     max_loop: 3
 
   - from: s01-decompose
     to: s99-workflow-end
-    condition: rejected
+    condition: success + choice
     choice: "放弃"
 
   - from: s01-decompose
@@ -189,12 +178,12 @@ edges:
 
   - from: s03-aggregate
     to: s99-workflow-end
-    condition: confirmed
+    condition: success + choice
     choice: "通过"
 
   - from: s03-aggregate
     to: s03-aggregate
-    condition: confirmed
+    condition: success + choice
     choice: "重新聚合"
     max_loop: 3
 ```
@@ -215,7 +204,7 @@ edges:
 ## 模式三：迭代打磨流（Iterative Refinement）
 
 ### 特征
-单个 Stage 设置 `confirmation_point: true`，用户可选择"继续完善"回指自身，多轮迭代后定稿。
+单个 Stage 设置 ``，用户可选择"继续完善"回指自身，多轮迭代后定稿。
 
 ### 适用场景
 - 创意生成（方案设计、文案撰写、架构设计）
@@ -239,21 +228,15 @@ stages:
     name: "初稿生成"
     skill_id: draft-writer
     mandatory: true
-    confirmation_point: false
-
-  - stage_id: s02-refine
+    - stage_id: s02-refine
     name: "迭代打磨"
     skill_id: refinement-editor
     mandatory: true
-    confirmation_point: true
-
-  - stage_id: s03-finalize
+    - stage_id: s03-finalize
     name: "终稿确认"
     skill_id: final-reviewer
     mandatory: true
-    confirmation_point: true
-
-  - stage_id: s99-workflow-end
+    - stage_id: s99-workflow-end
     name: "工作流终止"
 
 edges:
@@ -267,18 +250,18 @@ edges:
 
   - from: s02-refine
     to: s02-refine
-    condition: confirmed
+    condition: success + choice
     choice: "继续完善"
     max_loop: 5
 
   - from: s02-refine
     to: s03-finalize
-    condition: confirmed
+    condition: success + choice
     choice: "进入终稿"
 
   - from: s02-refine
     to: s99-workflow-end
-    condition: rejected
+    condition: success + choice
     choice: "放弃"
 
   - from: s02-refine
@@ -287,12 +270,12 @@ edges:
 
   - from: s03-finalize
     to: s99-workflow-end
-    condition: confirmed
+    condition: success + choice
     choice: "通过"
 
   - from: s03-finalize
     to: s02-refine
-    condition: rejected
+    condition: success + choice
     choice: "返回打磨"
     max_loop: 3
 ```
@@ -337,27 +320,19 @@ stages:
     name: "方案评估"
     skill_id: solution-evaluator
     mandatory: true
-    confirmation_point: true
-
-  - stage_id: s02-route-a
+    - stage_id: s02-route-a
     name: "执行方案A"
     skill_id: executor-a
     mandatory: true
-    confirmation_point: false
-
-  - stage_id: s02-route-b
+    - stage_id: s02-route-b
     name: "执行方案B"
     skill_id: executor-b
     mandatory: true
-    confirmation_point: false
-
-  - stage_id: s03-merge
+    - stage_id: s03-merge
     name: "结果合并"
     skill_id: result-merger
     mandatory: true
-    confirmation_point: false
-
-  - stage_id: s99-workflow-end
+    - stage_id: s99-workflow-end
     name: "工作流终止"
 
 edges:
@@ -367,23 +342,23 @@ edges:
 
   - from: s01-evaluate
     to: s02-route-a
-    condition: confirmed
+    condition: success + choice
     choice: "方案A"
 
   - from: s01-evaluate
     to: s02-route-b
-    condition: confirmed
+    condition: success + choice
     choice: "方案B"
 
   - from: s01-evaluate
     to: s01-evaluate
-    condition: confirmed
+    condition: success + choice
     choice: "重新评估"
     max_loop: 3
 
   - from: s01-evaluate
     to: s99-workflow-end
-    condition: rejected
+    condition: success + choice
     choice: "放弃"
 
   - from: s01-evaluate
@@ -411,7 +386,7 @@ edges:
 ### 常见反模式
 - ❌ 分支后没有汇聚 → 工作流在任意分支完成时就结束，其他分支可能还在跑
 - ❌ `choice` 值重复 → wfctl 无法正确路由
-- ❌ 缺少兜底 edge（无 choice 的 confirmed）→ 用户选择未预料选项时工作流卡住
+- ❌ 缺少兜底 success edge（无 choice）→ routing_choice 不匹配时工作流卡住
 
 ---
 

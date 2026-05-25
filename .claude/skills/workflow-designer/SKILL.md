@@ -34,7 +34,7 @@ description: >
 | | `packs/designer/` | 生成 WORKFLOW.yaml + WORKFLOW.md | 按场景自动 |
 | | `packs/skill-writer/` | 生成 SKILL.md + resources | 按场景自动 |
 | **专项优化** | `packs/stage-splitter/` | Stage 拆分 / 合并 / 重构 | 按需 |
-| | `packs/parallel-optimizer/` | 并发优化（parallel 扇出、中继确认、聚合） | 按需 |
+| | `packs/parallel-optimizer/` | 并发优化（parallel 扇出、confirm + continue、聚合） | 按需 |
 | | `packs/routing-designer/` | 条件路由设计（edges、choice） | 按需 |
 | | `packs/subworkflow-designer/` | 子工作流嵌套设计 | 按需 |
 | | `packs/pattern-matcher/` | 常见工作流模式识别与套用 | 按需 |
@@ -244,9 +244,9 @@ python .claude/skills/workflow-designer/packs/boundary-guard/scripts/validate.py
 | Stage 缺失失败路径、edges 配置错误、确认点设置不当 | **工作流层** | 修改 WORKFLOW.yaml / WORKFLOW.md | 禁止修改 SKILL.md 来"配合"工作流 |
 | Skill 的业务逻辑错误 | **Skill 层** | 修改 SKILL.md（只改业务逻辑） | 禁止引入 Stage 名称、edges、工作流协议 |
 | Skill 的 AskUserQuestion 措辞不清 | **Skill 层** | 修改 SKILL.md 的问题描述 | 禁止让 Skill 描述"下一步选项"或工作流行为 |
-| Skill 交互与工作流 edges 不匹配 | **工作流层** | 修改 WORKFLOW.yaml 的 edges / condition / confirm_questions | 禁止修改 SKILL.md 去"匹配"工作流结构 |
+| Skill 交互与工作流 edges 不匹配 | **工作流层** | 修改 WORKFLOW.yaml 的 edges / condition / choice | 禁止修改 SKILL.md 去"匹配"工作流结构 |
 | Skill 产出未被工作流正确消费 | **工作流层** | 修改 WORKFLOW.yaml 的配置 | 禁止让 Skill 描述自己的产物如何被工作流消费 |
-| parallel.source 的上游 stage 使用了终局确认 | **工作流层** | 改为中继确认（自循环）+ `success` 边 | 禁止降级为单实例静默执行 |
+| parallel.source 的上游 stage 使用了DONE 上报 | **工作流层** | 改为confirm + continue（自循环）+ `success` 边 | 禁止降级为单实例静默执行 |
 | 同一 Skill 跨越多个 stage，无拆分收益 | **工作流层** | 合并为单 stage | 禁止保持拆分的同时在 Skill 里做跨 stage 适配 |
 
 **判断原则**：

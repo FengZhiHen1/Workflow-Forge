@@ -15,14 +15,14 @@
 | 确认点过密 | confirmation_count / 业务Stage数 > 0.5 | warning |
 | 死 Stage | 有入边无出边，或无入边无出边（非虚拟） | critical |
 | 循环无出口 | 带 max_loop 的 edge 没有对应的 loop_exceeded | critical |
-| 确认点与 edge 不匹配 | confirmation_point=true 但无 confirmed/rejected 出边 | critical |
-| 非确认点有 confirmed 出边 | confirmation_point=false 但有 confirmed/rejected 出边 | critical |
+| 路由与 edge 不匹配 | SUCCESS 边缺少 choice 定义 | critical |
+| 残留旧边条件 | Stage 使用了已废弃的 confirmed/rejected 边 | critical |
 | 分支无汇聚 | 从同一 Stage 分出的多条路径没有汇聚到同一 Stage | warning |
 | 过度嵌套循环 | Stage A 循环 → Stage B 循环 → Stage C 循环 | warning |
 | 并行与 exclusive 冲突 | parallel 和 exclusive 同时存在 | critical |
 | 上游产出未被消费 | 某 Skill 的 consumers 为空（终节点除外）| suggestion |
 | 子工作流嵌套过深 | 嵌套深度 > 3 层 | critical |
-| 子工作流确认点冗余 | 父 Stage 有 confirmation_point 且子工作流终局 Stage 也有 | warning |
+| 子工作流确认冗余 | 父 Stage 与子工作流终局 Stage 均有用户交互 | warning |
 | 子工作流骨架缺失 | Stage 有 `workflow` 字段但无对应骨架 | warning |
 
 ### 2. 确认点合理性
@@ -49,7 +49,7 @@
 ### 5. 鲁棒性
 
 - 所有 Stage 都有 failure 处理路径
-- 所有 confirmed/rejected 路径都有对应的 loop_exceeded
+- 所有 SUCCESS + choice 路径都有对应的 loop_exceeded
 - 虚拟 Stage 正确配置
 - 子工作流骨架存在且自身通过反模式检测
 

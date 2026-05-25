@@ -7,12 +7,12 @@ WORKFLOW.yaml v3.0.0 合法性校验脚本。
 2. Schema v3.0.0 结构校验（字段类型、必填项、枚举值）
 3. 交叉引用一致性（stage_id、edges、skill_id、parallel.source）
 4. 图结构合法性（可达性、死节点、s99 终态可达性）
-5. 确认点与 Edge 匹配校验（含 choice 唯一性、最小覆盖）
+5. 废弃字段检测（confirmation_point、confirmed/rejected 边）
 6. 虚拟 Stage 约束（s00 只能 always 出边，s00 无入边，s99 无出边）
 7. 循环出口完整性（loop_exceeded）
-8. retry 耗尽降级路径完整性（retry>0 非确认点必须有 failure/loop_exceeded 出口）
+8. retry 耗尽降级路径完整性（retry>0 必须有 failure/loop_exceeded 出口）
 9. 子工作流 failure 传播完整性（workflow stage 必须有 failure edge）
-10. rejected 回跳可回复性（rejected→非s99 目标能否返回源 stage）
+10. 回边可回复性（SUCCESS 回边目标能否返回源 stage）
 11. 冗余 edge 检测（always + success/failure 指向同一目标）
 12. parallel 与 exclusive 互斥检查
 13. aggregation 仅用于 parallel 场景
@@ -47,7 +47,7 @@ except ImportError:
     yaml = None
 
 
-VALID_CONDITIONS = {"always", "success", "failure", "confirmed", "rejected", "loop_exceeded"}
+VALID_CONDITIONS = {"always", "success", "failure", "loop_exceeded"}
 VALID_MODELS = {"light", "standard", "heavy"}
 
 KEBAB_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -202,10 +202,6 @@ def validate_stages(stages: list, errors: list) -> dict:
         if m is not None and not isinstance(m, bool):
             _err(f"{prefix}.mandatory 必须是布尔值", errors)
 
-        cp = stage.get("confirmation_point")
-        if cp is not None and not isinstance(cp, bool):
-            _err(f"{prefix}.confirmation_point 必须是布尔值", errors)
-
         retry = stage.get("retry")
         if retry is not None:
             if not isinstance(retry, int) or isinstance(retry, bool) or retry < 0:
@@ -304,8 +300,8 @@ def validate_edges(edges: list, stage_ids: dict, stage_info: dict, errors: list)
         if max_loop is not None:
             if not isinstance(max_loop, int) or isinstance(max_loop, bool) or max_loop < 1:
                 _err(f"{prefix}.max_loop 必须是正整数", errors)
-            if cond not in ("failure", "confirmed", "rejected"):
-                _err(f"{prefix} 设置了 max_loop，但 condition={cond}（仅 failure/confirmed/rejected 需要）", errors)
+            if cond not in ("failure", "loop_exceeded"):
+                _err(f"{prefix} 设置了 max_loop，但 condition={cond}（仅 failure/loop_exceeded 需要）", errors)
 
         lcs = edge.get("loop_counter_stage")
         if lcs and lcs not in stage_ids:
@@ -363,62 +359,31 @@ def validate_edges(edges: list, stage_ids: dict, stage_info: dict, errors: list)
 
 
 def validate_confirmation_points(stages: list, stage_ids: dict, edges: list, errors: list) -> None:
-    if not stages or not edges:
-        return
-
-    has_confirmed_out = {sid: False for sid in stage_ids}
-    has_rejected_out = {sid: False for sid in stage_ids}
-
-    for edge in edges:
-        if not isinstance(edge, dict):
-            continue
-        fr = edge.get("from")
-        cond = edge.get("condition")
-        if fr in stage_ids:
-            if cond == "confirmed":
-                has_confirmed_out[fr] = True
-            if cond == "rejected":
-                has_rejected_out[fr] = True
-
+    """检测是否残留已废弃的 confirmation_point 字段。"""
     for stage in stages:
         if not isinstance(stage, dict):
             continue
-        sid = stage.get("stage_id")
-        cp = stage.get("confirmation_point")
-        if cp and sid in stage_ids:
-            has_outgoing = any(
-                isinstance(e, dict) and e.get("from") == sid
-                for e in edges
-            )
-            if not has_outgoing:
-                _err(f"stage '{sid}' confirmation_point=true 但没有任何出边——确认结果无处流转", errors)
-            elif not has_confirmed_out[sid] and not has_rejected_out[sid]:
-                _err(f"stage '{sid}' confirmation_point=true 且有出边，但出边中既没有 confirmed 也没有 rejected——确认结果无法被消费", errors)
-            # 最小覆盖检查：确认点至少需要一条 confirmed 和一条 rejected/loop_exceeded 出口
-            has_loop_exceeded = any(
-                isinstance(e, dict) and e.get("from") == sid and e.get("condition") == "loop_exceeded"
-                for e in edges
-            )
-            if has_confirmed_out[sid] and not has_rejected_out[sid] and not has_loop_exceeded:
-                _err(f"stage '{sid}' confirmation_point=true 有 confirmed 出口，"
-                     f"但缺少 rejected 或 loop_exceeded 出口——用户无法在确认点主动退出", errors)
+        if "confirmation_point" in stage:
+            sid = stage.get("stage_id", "?")
+            _err(f"stage '{sid}' 包含已废弃的 confirmation_point 字段——请移除。"
+                 f"确认现在是 Skill 内部行为（AskUserQuestion），不再由工作流定义声明。", errors)
 
 
 def validate_choice_uniqueness(stage_ids: dict, edges: list, errors: list) -> None:
-    """校验同一 from stage 的 confirmed edge 的 choice 值不重复。
+    """校验同一 from stage 的 SUCCESS edge 的 choice 值不重复。
 
-    对应 audit SK-4：如果两条 confirmed edge 设了相同的 choice，
-    wfctl 的 _match_edges 会取第一条匹配，另一条永远不可达。
+    如果两条 SUCCESS edge 设了相同的 choice，match_success_edge 会取第一条匹配，
+    另一条永远不可达。
     """
     if not edges:
         return
 
-    # 按 from stage 分组 confirmed edges 的 choice 值
+    # 按 from stage 分组 SUCCESS edges 的 choice 值
     choice_map = {}
     for edge in edges:
         if not isinstance(edge, dict):
             continue
-        if edge.get("condition") != "confirmed":
+        if edge.get("condition") != "success":
             continue
         fr = edge.get("from")
         choice = edge.get("choice")
@@ -431,7 +396,7 @@ def validate_choice_uniqueness(stage_ids: dict, edges: list, errors: list) -> No
     for sid, counts in choice_map.items():
         for choice, count in counts.items():
             if count > 1:
-                _err(f"stage '{sid}' 的 confirmed edges 中 choice='{choice}' 重复 {count} 次——"
+                _err(f"stage '{sid}' 的 success edges 中 choice='{choice}' 重复 {count} 次——"
                      f"wfctl 只会匹配第一条，其余 edge 永远不可达", errors)
 
 
@@ -566,10 +531,9 @@ def validate_s99_reachability(stage_ids: dict, edges: list, errors: list) -> Non
 
 
 def validate_rejected_returnability(stage_ids: dict, edges: list, errors: list) -> None:
-    """校验 rejected edge 目标非 s99 时，从目标 stage 能否重新到达源 stage。
+    """校验 SUCCESS 回边目标非 s99 时，从目标 stage 能否重新到达源 stage。
 
-    对应 audit_workflow.py UB-1：用户确认点选择"拒绝"回跳到上游 stage，
-    但若从回跳目标无法再次到达当前 stage，用户被剥夺重试机会。
+    对应回边路由检查：SUCCESS 边回指上游 stage 时，需确保从回跳目标可再次到达当前 stage。
     """
     if not edges:
         return
@@ -584,16 +548,22 @@ def validate_rejected_returnability(stage_ids: dict, edges: list, errors: list) 
         if fr in stage_ids and to in stage_ids:
             adj[fr].append(to)
 
+    # 构建拓扑序
+    topo_order = _build_topo_order(stage_ids, adj)
+
     for edge in edges:
         if not isinstance(edge, dict):
             continue
         cond = edge.get("condition")
-        if cond != "rejected":
+        if cond != "success":
             continue
         fr = edge.get("from")
         to = edge.get("to")
         if to == "s99-workflow-end":
-            continue  # rejected→s99 是正常终止，无需返回
+            continue
+        # 仅检查回边（to 在拓扑序中先于 fr）
+        if topo_order.get(to, 999) >= topo_order.get(fr, 0):
+            continue
 
         # BFS 从 to 到 fr，检查是否可达
         visited = set()
@@ -612,8 +582,33 @@ def validate_rejected_returnability(stage_ids: dict, edges: list, errors: list) 
                     queue.append(nxt)
 
         if not can_return:
-            _err(f"edges condition=rejected 中 from='{fr}' to='{to}' —— 从 rejected 目标 '{to}' "
-                 f"无法再次到达源 stage '{fr}'，用户被剥夺重试机会", errors)
+            _err(f"回边 SUCCESS edge from='{fr}' to='{to}' —— 从目标 '{to}' "
+                 f"无法再次到达源 stage '{fr}'，用户可能被剥夺重试机会", errors)
+
+
+def _build_topo_order(stage_ids: dict, adj: dict) -> dict[str, int]:
+    """Kahn 拓扑排序，返回 {stage_id: order}。"""
+    in_degree = {sid: 0 for sid in stage_ids}
+    for fr, tos in adj.items():
+        for to in tos:
+            if to in in_degree:
+                in_degree[to] += 1
+    queue = [sid for sid, deg in in_degree.items() if deg == 0]
+    order: dict[str, int] = {}
+    idx = 0
+    while queue:
+        curr = queue.pop(0)
+        order[curr] = idx
+        idx += 1
+        for nxt in adj.get(curr, []):
+            if nxt in in_degree:
+                in_degree[nxt] -= 1
+                if in_degree[nxt] == 0:
+                    queue.append(nxt)
+    for sid in stage_ids:
+        if sid not in order:
+            order[sid] = idx  # 环中节点放在最后
+    return order
 
 
 def validate_parallel_source(parallel_sources: set, stage_ids: dict, errors: list) -> None:
@@ -727,8 +722,6 @@ def validate_retry_failure_exit(stages: list, stage_ids: dict, edges: list, erro
             continue
         if sid in ("s00-workflow-start", "s99-workflow-end"):
             continue
-        if stage.get("confirmation_point"):
-            continue  # 确认点有自己的 confirmed/rejected 路径
         retry = stage.get("retry", 0)
         if not isinstance(retry, int) or retry <= 0:
             continue
@@ -824,20 +817,14 @@ def validate_workflow_yaml(path: Path, skills_dir: Path | None = None,
     if skills_dir:
         validate_skills_exist(skill_ids, skills_dir, errors)
 
-    # confirmed/rejected edge 的 from stage 必须有 confirmation_point=true（所有模式均检查）
-    cp_map = {}
-    for stage in stages:
-        if isinstance(stage, dict):
-            sid = stage.get("stage_id")
-            if sid and sid not in ("s00-workflow-start", "s99-workflow-end"):
-                cp_map[sid] = stage.get("confirmation_point", False)
+    # 检测旧版 confirmed/rejected 边条件残留（所有模式均检查）
     for i, edge in enumerate(edges):
         if not isinstance(edge, dict):
             continue
-        fr = edge.get("from")
         cond = edge.get("condition")
-        if cond in ("confirmed", "rejected") and fr in cp_map and not cp_map[fr]:
-            _err(f"edges[{i}] condition={cond}，但 from stage '{fr}' 的 confirmation_point=false——确认/拒绝的 edge 只能从确认点 Stage 出发", errors)
+        if cond in ("confirmed", "rejected"):
+            _err(f"edges[{i}] condition={cond} 已废弃——改用 condition=success + choice。"
+                 f"确认现在是 Skill 内部行为（AskUserQuestion），不再需要 confirmed/rejected 边条件。", errors)
 
     if strict:
         wf_id = data.get("workflow_id")

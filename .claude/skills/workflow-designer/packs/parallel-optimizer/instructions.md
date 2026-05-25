@@ -16,32 +16,32 @@ parallel:
 
 当 stage 同时满足以下两个条件时，存在一条**强制性设计约束**：
 
-1. 本 stage 设有 `confirmation_point: true`
+1. 本 stage 设有 ``
 2. 存在下游 stage 通过 `parallel: {source: <本 stage>}` 引用本 stage 的输出
 
-**约束：该 stage 的确认点不可使用终局确认（`to` 指向下游 stage）。必须使用中继确认（`to` 指向自身，自循环），确保 SubAgent 在用户确认后能继续执行并产出 `parallel_targets`。**
+**约束：该 stage 的确认点不可使用DONE 上报（`to` 指向下游 stage）。必须使用confirm + continue（`to` 指向自身，自循环），确保 SubAgent 在用户确认后能继续执行并产出 `parallel_targets`。**
 
 ```yaml
-# 错误：终局确认 — SubAgent 在确认后直接关闭，无法产出 parallel_targets
+# 错误：DONE 上报 — SubAgent 在确认后直接关闭，无法产出 parallel_targets
 - from: s07-dispatch
   to: s08-fanout
-  condition: confirmed
+  condition: success + choice
   choice: "确认调度"
 
-# 正确：中继确认 + success 边
+# 正确：confirm + continue + success 边
 - from: s07-dispatch
   to: s08-fanout
   condition: success                         # ← DONE(success) 才解锁下游
 - from: s07-dispatch
   to: s07-dispatch
-  condition: confirmed
+  condition: success + choice
   choice: "确认调度"
   max_loop: 3                                # ← 自循环，SubAgent 继续执行
 ```
 
-**原因**：终局确认直接关闭 stage（AWAITING_CONFIRM → DONE），SubAgent 不会再获得控制权。此时若消息中未包含 `parallel_targets`，下游并行拆分无法执行。中继确认让 stage 回到 PENDING → SubAgent 通过 `continue` 继续 → 处理用户选择 → 产出 `parallel_targets` → 上报 DONE(success) → `success` 边解锁下游并行 stage。
+**原因**：DONE 上报直接关闭 stage（AWAITING_CONFIRM → DONE），SubAgent 不会再获得控制权。此时若消息中未包含 `parallel_targets`，下游并行拆分无法执行。confirm + continue让 stage 回到 PENDING → SubAgent 通过 `continue` 继续 → 处理用户选择 → 产出 `parallel_targets` → 上报 DONE(success) → `success` 边解锁下游并行 stage。
 
-**运行时防护**：`wfctl confirm` 会在终局确认阶段检测此违规——若 stage 的 `requires_parallel_targets` 已持久化为 `true` 而消息中无 `parallel_targets`，将拒绝关闭并返回 `PARALLEL_TARGETS_REQUIRED` 错误。但不应依赖运行时拦截——设计阶段就应避免。
+**运行时防护**：`wfctl confirm` 会在DONE 上报阶段检测此违规——若 stage 的 `requires_parallel_targets` 已持久化为 `true` 而消息中无 `parallel_targets`，将拒绝关闭并返回 `PARALLEL_TARGETS_REQUIRED` 错误。但不应依赖运行时拦截——设计阶段就应避免。
 
 ## 并发效率检查清单
 

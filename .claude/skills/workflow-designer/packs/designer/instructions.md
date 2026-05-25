@@ -22,7 +22,7 @@
 **以下内容已从本指令中移除，必须从上述规范文件中获取：**
 - 完整的字段定义和约束 → 见 `WORKFLOW.yaml字段规范.md`
 - condition 枚举的完整说明 → 见 `WORKFLOW.yaml字段规范.md` §三
-- 中继确认与终局确认的详细机制 → 见 `WORKFLOW.yaml字段规范.md` §四
+- confirm + continue与DONE 上报的详细机制 → 见 `WORKFLOW.yaml字段规范.md` §四
 - 状态机流转规则 → 见 `Instance状态机规范.md`
 - action 结构字段 → 见 `wfctl接口与行为规范.md` §四
 
@@ -59,7 +59,7 @@ stages:
     name: "<中文名>"
     skill_id: <kebab-case>     # 与 workflow 字段互斥
     mandatory: true|false
-    confirmation_point: true|false
+    |false
     retry: 1                    # 整数，失败重试次数，默认 0 不重试
     timeout_seconds: 600        # 可选
     model: standard             # 可选: light/standard/heavy
@@ -72,9 +72,7 @@ stages:
     name: "..."
     workflow: sub-workflow@1.0.0  # 子工作流，与 skill_id 互斥
     mandatory: true
-    confirmation_point: false
-
-  - stage_id: s99-workflow-end
+    - stage_id: s99-workflow-end
     name: "工作流终止"
 
 edges:
@@ -84,18 +82,18 @@ edges:
 
   - from: s01-xxx
     to: s02-xxx
-    condition: confirmed
-    choice: "通过"              # 可选，匹配 confirm_questions 选项
+    condition: success + choice
+    choice: "通过"              # 可选，对应 SubAgent 的 routing_choice 值
 
   - from: s01-xxx
-    to: s01-xxx                 # 中继确认
-    condition: confirmed
+    to: s01-xxx                 # confirm + continue
+    condition: success + choice
     choice: "继续完善"
     max_loop: 5
 
   - from: s01-xxx
     to: s99-workflow-end
-    condition: rejected
+    condition: success + choice
     choice: "放弃"
 
   - from: s01-xxx
@@ -112,9 +110,9 @@ edges:
 
 > 完整的字段定义、约束、condition 枚举和示例请从 `workshop/specs/细节设计/WORKFLOW.yaml字段规范.md` 获取。以下仅列出最易出错的要点：
 
-- **虚拟 stage**（`s00-workflow-start`、`s99-workflow-end`）：不写 skill_id/workflow，豁免 mandatory/confirmation_point/retry 校验
+- **虚拟 stage**（`s00-workflow-start`、`s99-workflow-end`）：不写 skill_id/workflow，豁免 mandatory/retry 校验
 - **执行目标互斥**：`skill_id` 与 `workflow` 二选一
-- **确认点与 edge**：`confirmation_point: true` 须有 `confirmed`/`rejected` 出边
+- **条件路由**：须有 `success` + `choice` 出边
 - **循环必配出口**：带 `max_loop` 的 edge 必须有对应的 `loop_exceeded` edge
 - **已移除的 v2 字段**：`concurrency_rules`、`conflict_resolution`、`git_anchors`；`retry_policy` 对象 → `retry` 整数
 
@@ -125,7 +123,7 @@ edges:
 | Stage 草案的 Stage ID | `stages[].stage_id` |
 | Stage 名称 | `stages[].name` |
 | Skill 需求规格的 skill_id | `stages[].skill_id` |
-| confirmation_point 及理由 | `stages[].confirmation_point` |
+| （已废弃——确认是 Skill 内部 AskUserQuestion） | （不再使用） |
 | Stage 之间的流转关系 | `edges[]` |
 
 ### 自主推断范围
@@ -142,7 +140,7 @@ edges:
 - 决策文档和草稿对同一 Stage 描述矛盾
 - Stage 之间缺少明确流转路径
 - skill_id 未在决策文档中指定
-- confirmation_point 设定与用户意图有歧义
+- 路由设计与用户意图有歧义
 
 ### 模式模板引用
 
@@ -200,7 +198,7 @@ max_parallel_agents: <N>
 stages:
   - stage_id: s00-workflow-start
     name: "工作流启动"
-  # ... 核心业务 Stage（含 confirmation_point 标注）
+  # ... 核心业务 Stage
   - stage_id: s99-workflow-end
     name: "工作流终止"
 edges:
@@ -249,7 +247,6 @@ flowchart TD
     {
       "skill_id": "xxx",
       "stage_id": "s01-xxx",
-      "confirmation_point": false,
       "mandatory": true,
       "source": "generated|existing|inferred"
     }
@@ -270,7 +267,7 @@ flowchart TD
 - [ ] 所有 `stage_id` 为 kebab-case，无重复
 - [ ] 虚拟 stage `s00-workflow-start` 和 `s99-workflow-end` 存在
 - [ ] 每个业务 stage 有 `skill_id` 或 `workflow`（互斥）
-- [ ] `confirmation_point: true` 的 stage 有 `confirmed`/`rejected` 出边
+- [ ] 条件路由的 stage 有 `success` + `choice` 出边
 - [ ] 带 `max_loop` 的 edge 有 `loop_exceeded` 出口
 - [ ] Mermaid 图与 YAML edges 一致
 - [ ] 无 v2 遗留字段（concurrency_rules、conflict_resolution、git_anchors、retry_policy）
