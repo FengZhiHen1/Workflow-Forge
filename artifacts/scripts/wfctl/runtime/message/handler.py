@@ -58,6 +58,15 @@ def write_message(
                     status = _map_git_status_xy(xy)
                     modified_files.append({"path": filename, "status": status})
 
+    # 防线前移：status 必须为合法 StageStatus 枚举值
+    from domain.workflow.spec import StageStatus as _StageStatus
+    _valid_statuses = {s.value for s in _StageStatus}
+    if status not in _valid_statuses:
+        raise ValidationError(
+            f"非法的 status: '{status}'。合法值：{sorted(_valid_statuses)}",
+            code="INVALID_STATUS",
+        )
+
     # 硬性约束：DONE + 有 valid_routing_choices 的 stage 必须传 routing_choice
     if status == "DONE":
         try:

@@ -42,7 +42,7 @@ def _handle_message_write(args) -> dict:
             f"Identity mismatch: instance_id {identity.get('instance_id')} != {args.instance}",
             code="IDENTITY_MISMATCH",
         )
-    if identity.get("stage_id") and identity["stage_id"] != args.stage:
+    if identity.get("stage_id") is not None and identity["stage_id"] != args.stage:
         raise InputError(
             f"Identity mismatch: stage_id {identity['stage_id']} != {args.stage}",
             code="IDENTITY_MISMATCH",

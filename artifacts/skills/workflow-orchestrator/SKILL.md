@@ -180,9 +180,10 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 ### continue —— 延续已有 SubAgent
 
-1. 按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
-2. 向 `system_agent_id` 发两条消息：第一条注入 continue prompt，第二条 "收到请开始执行上述任务" 触发工具调用
-3. 不等待——继续下一个 action
+1. **先验证 agent 存活**：`SendMessage` 探测。若返回 "No transcript found"，降级为 spawn——action 中已含 `skill_id`、`worktree`、`context` 等全部 spawn 所需字段，按 spawn 流程启动新 SubAgent 并覆盖 `running_agents.json` 中对应条目
+2. agent 存活时，按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
+3. 向 `system_agent_id` 发两条消息：第一条注入 continue prompt，第二条 "收到请开始执行上述任务" 触发工具调用
+4. 不等待——继续下一个 action
 
 `next` 已自动更新映射表中的 `stage_id`。JSON 示例和完整步骤见 `references/action-handlers.md` §continue。
 

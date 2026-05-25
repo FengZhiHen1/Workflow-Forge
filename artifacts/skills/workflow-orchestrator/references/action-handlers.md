@@ -68,11 +68,12 @@
 
 执行步骤：
 
-1. 按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
-2. **不**调用 `Agent()` 创建新实例——向已有 SubAgent（`system_agent_id`）发送继续消息
-3. **发送激活消息**：第一条消息恢复上下文后 SubAgent 可能不触发新的工具调用回合（`SendMessage` 返回 "resumed from transcript" 但 agent 仍 idle）。紧接发送第二条简短消息（如"收到请开始执行上述任务"）触发实际的工具调用回合
-4. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
-5. **不等待**——继续处理下一个 action
+1. **先验证 agent 是否存活**：尝试 `SendMessage` 发一条轻量探测消息。若返回 "No transcript found" 或 agent 已失效，**降级为 spawn**——使用 action 中已有的 `skill_id`、`worktree`、`context`、`valid_routing_choices` 等字段，按上方 spawn 步骤 1-6 启动新 SubAgent，并在 `.agent/running_agents.json` 中覆盖该 `skill_id` 的旧条目
+2. agent 存活时，按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
+3. **不**调用 `Agent()` 创建新实例——向已有 SubAgent（`system_agent_id`）发送继续消息
+4. **发送激活消息**：第一条消息恢复上下文后 SubAgent 可能不触发新的工具调用回合（`SendMessage` 返回 "resumed from transcript" 但 agent 仍 idle）。紧接发送第二条简短消息（如"收到请开始执行上述任务"）触发实际的工具调用回合
+5. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
+6. **不等待**——继续处理下一个 action
 
 ---
 
