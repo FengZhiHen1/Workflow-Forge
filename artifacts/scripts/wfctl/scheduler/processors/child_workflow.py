@@ -13,7 +13,7 @@ from infrastructure.lock import FileLock
 from infrastructure.project import find_root
 from domain.workflow.spec import StageTargetType
 from infrastructure.timestamp import iso_timestamp
-from compat.instance.registry import load_instance_state
+from compat.instance.registry import load_instance_state, save_instance_state
 from scheduler.context import ExecutionContext
 from state.model import (
     CycleMeta,
@@ -244,6 +244,9 @@ class ChildWorkflowProcessor:
 
                 if child_result.get("status") != "ok":
                     continue
+
+                # 持久化子实例状态变更，避免递归编排后的 stage 变更丢失
+                save_instance_state(child_id, child_result["_state"])
 
                 for action in child_result.get("actions", []):
                     action_type = action.get("action")
