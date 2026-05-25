@@ -560,6 +560,43 @@ class TransitionPolicy:
         return MergeConfirmResult(merge_confirmed=False, remove_merge_stage=True)
 
     @staticmethod
+    def build_confirm_delta(
+        result: ConfirmResult,
+        stage: StageState,
+        state: InstanceState,
+        spec_stages: list[StageSpec],
+    ) -> StateDelta:
+        """纯决策：将 ConfirmResult 转换为 StateDelta。"""
+        stage_updates: dict[str, dict] = {}
+        instance_updates: dict = {}
+
+        su = dict(result.updates)
+        su["status"] = result.next_status
+        if result.exit_condition:
+            su["exit_condition"] = result.exit_condition
+        stage_updates[stage.stage_instance_id] = su
+
+        if result.is_rejected and result.target_stage_id:
+            target = state.first_stage_by_id(result.target_stage_id)
+            if target:
+                target_updates = {"status": StageStatus.PENDING}
+                if result.target_stage_id == stage.stage_id:
+                    target_updates["loop_counter"] = stage.loop_counter + 1
+                stage_updates[target.stage_instance_id] = target_updates
+
+        if result.exit_condition == "loop_exceeded" and result.target_stage_id:
+            target = state.first_stage_by_id(result.target_stage_id)
+            if target:
+                target_updates = {"status": StageStatus.PENDING}
+                if result.target_stage_id != stage.stage_id:
+                    target_updates["loop_counter"] = target.loop_counter + 1
+                stage_updates[target.stage_instance_id] = target_updates
+            if TransitionPolicy._is_terminal_stage(result.target_stage_id, spec_stages):
+                instance_updates["status"] = InstanceStatus.FAILED
+
+        return StateDelta(stage_updates=stage_updates, instance_updates=instance_updates)
+
+    @staticmethod
     def _is_terminal_stage(stage_id: str, spec_stages: list[StageSpec]) -> bool:
         """判断 stage 是否为终态 stage（被 rejected/loop_exceeded 指向时实例应 FAILED）。"""
         for s in spec_stages:

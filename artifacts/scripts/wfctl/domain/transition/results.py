@@ -46,6 +46,17 @@ class ConfirmResult:
     is_rejected: bool = False
     instance_failed: bool = False
 
+    @property
+    def timeline_event_label(self) -> str:
+        """纯决策：根据确认结果选择 timeline 事件名称。"""
+        if self.exit_condition == "loop_exceeded":
+            return "loop_exceeded"
+        if self.is_rejected:
+            return "awaiting_confirm→done"
+        if self.exit_condition == "confirmed":
+            return "awaiting_confirm→done"
+        return "awaiting_confirm→pending"
+
 
 @dataclass(frozen=True)
 class CascadeResetResult:
@@ -59,6 +70,24 @@ class CascadeResetResult:
     reset_stage_instance_ids: list[str] = field(default_factory=list)
     removed_stage_instance_ids: list[str] = field(default_factory=list)
     cleanup_running_agent_stage_ids: list[str] = field(default_factory=list)
+
+    def to_state_delta(self, spec_stages: list[Any]) -> Any:
+        """纯决策：将级联重置结果转换为 StateDelta。"""
+        from state.model import StageState, StageStatus, StateDelta
+        spec_stage_map = {s.stage_id: s for s in spec_stages}
+        append_stages: list[StageState] = []
+        for sid in self.reset_stage_instance_ids:
+            stage_spec = spec_stage_map.get(sid)
+            append_stages.append(StageState(
+                stage_id=sid,
+                stage_instance_id=sid,
+                status=StageStatus.PENDING,
+                model=stage_spec.model if stage_spec else None,
+            ))
+        return StateDelta(
+            remove_stage_instance_ids=self.removed_stage_instance_ids,
+            append_stages=append_stages,
+        )
 
 
 @dataclass(frozen=True)

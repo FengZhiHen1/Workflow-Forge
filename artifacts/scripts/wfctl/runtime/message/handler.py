@@ -105,6 +105,37 @@ def scan_messages(instance_id: str, consumed_ids: set[str], messages_dir: str | 
     return messages
 
 
+def validate_parallel_targets(instance_id: str, stage_id: str, output_message_id: str | None) -> None:
+    """验证 stage 的消息中包含 parallel_targets。"""
+    from infrastructure.errors import InputError
+    if not output_message_id:
+        raise InputError(
+            f"Stage {stage_id} 需要产出 parallel_targets 但无 output_message_id。"
+            f"请使用中继确认（自循环）让 SubAgent 在确认后继续执行并上报 parallel_targets。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )
+    root = find_root()
+    msg_path = root / ".agent" / "instances" / instance_id / "messages" / f"{output_message_id}.json"
+    if not msg_path.exists():
+        raise InputError(
+            f"Stage {stage_id} 需要产出 parallel_targets 但消息文件 {output_message_id}.json 不存在。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )
+    try:
+        msg = json.loads(msg_path.read_text(encoding="utf-8"))
+    except Exception:
+        raise InputError(
+            f"Stage {stage_id} 的消息文件 {output_message_id}.json 解析失败。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )
+    if not msg.get("parallel_targets"):
+        raise InputError(
+            f"Stage {stage_id} 需要产出 parallel_targets 但当前消息中未包含。"
+            f"请使用中继确认（自循环）让 SubAgent 补交 parallel_targets。",
+            code="PARALLEL_TARGETS_REQUIRED",
+        )
+
+
 def inject_modified_files(msg: dict, worktree: Path) -> dict:
     """通过 git status --porcelain 获取变更列表，注入 modified_files。"""
     rc, stdout, _ = git_status_porcelain(worktree)
