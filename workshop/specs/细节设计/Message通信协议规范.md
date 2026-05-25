@@ -51,6 +51,7 @@ Message 是 SubAgent 与主 Agent 之间**唯一的通信协议**。SubAgent 通
 | `checkpoint_summary` | `string` | SubAgent | 面向下一个 SubAgent 的交接说明。格式：`已完成：...；关键上下文：...；待处理：...`。用于冷启动恢复时向下一个 SubAgent 注入上下文 |
 | `confirm_questions` | `string[]` | SubAgent | `status=AWAITING_CONFIRM` 时必填，长度 1-4（匹配 AskUserQuestion 上限） |
 | `parallel_targets` | `object[]` | SubAgent | 拆分目标列表 `[{id, label, context}]`。下游有 `parallel` 声明时通过提示词注入要求产出 |
+| `routing_choice` | `string` | SubAgent | 选择边值。当上游 stage 有多条 SUCCESS edge 且设置了 `choice` 时，SubAgent 上报 DONE 需携带此字段，值须与某条 SUCCESS edge 的 `choice` 严格一致。`MessageConsumerProcessor` 校验该值合法性（通过 `TransitionPolicy.validate_routing_choice()`），非法则 stage → ERROR |
 | `modified_files` | `string[]` | wfctl 注入 | wfctl 通过 `git status --porcelain` 获取变更列表。**SubAgent 不填此字段** |
 | `timestamp` | `string` | wfctl 注入 | ISO 8601 带时区 |
 

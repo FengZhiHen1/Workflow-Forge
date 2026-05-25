@@ -66,6 +66,7 @@
 | `condition` | `string` | 是 | 枚举见 3.1 |
 | `max_loop` | `integer` | 条件必填 | `condition=failure` 或 `condition=confirmed`（且 `from == to`，即中继确认回指自身）时必填。循环次数达到上限后走 `loop_exceeded` edge |
 | `choice` | `string` | 否 | `condition=confirmed` 或 `condition=rejected` 时可选。值须与 SubAgent `confirm_questions` 中标注的选项值严格一致。wfctl 通过字符串匹配选择对应 edge。同 `from` 下的多条同 condition edge 当 `choice` 互斥；无 `choice` 的 edge 作为兜底 |
+| `cascade_reset_until` | `string` | 否 | 级联重置的上限 stage_id。仅用于回边（`to` 在拓扑序上位于 `from` 之前或自身）。当 confirmed/rejected edge 触发回跳时，`rollback` 命令或 `TransitionPolicy.compute_cascade_reset()` 只重置到该 stage 为止（含），不继续向上游扩散。该 stage 必须是从 `from` 可达的祖先或 `from` 自身 |
 | `aggregation` | `string` | 否 | `all`（默认）/ `any`。多实例时解锁下游的条件。`any` 解锁下游时自动取消其余未完成实例。仅适用于互斥替代方案（如多方案评估，任一通过即可），不适用于互补拆分 |
 
 ### 3.1 condition 枚举

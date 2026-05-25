@@ -125,6 +125,10 @@ PENDING → RUNNING → DONE
 | `fan_out_target` | `object` | 否 | parallel 拆分目标 `{id, label, context}` |
 | `system_agent_id` | `string` | 否 | 平台原生 Agent ID。同 skill 跨 Stage 延续时，此字段直接复制到下游 Stage，不生成新 ID |
 | `continued_to` | `string` | 否 | 实例被保留并延续到的下游 stage_id。仅 `AWAITING_CONFIRM → confirmed(same skill_id)` 时写入 |
+| `requires_parallel_targets` | `boolean` | 否 | `true` 时该 stage 的 Skill 需要产出 `parallel_targets`。`next` 在 spawn action 中标注 `requires_parallel_targets: true`，由主 Agent 注入提示词要求。`confirm` 前校验该 stage 是否已产出 `parallel_targets`（通过 `output_message_id` 关联的消息检查），未产出则置 ERROR |
+| `confirmed_choice` | `string` | 否 | 用户确认时选择的 choice 值。`confirm` 命令由 `TransitionPolicy.on_confirm()` 写入，用于后续 CONFIRMED edge 的 choice 匹配 |
+| `routing_choice` | `string` | 否 | SubAgent 上报 DONE 时携带的选择值。`MessageConsumerProcessor` 从消息提取并写入，用于 SUCCESS edge 的 choice 匹配。多条 SUCCESS edge 且设置了 `choice` 时必填 |
+| `confirmed` | ~~`boolean`~~ | — | ~~已移除~~。旧 legacy 字段，新架构不再使用。`StageState` dataclass 中不存在该字段， instance.json 中如有出现将被忽略 |
 
 ---
 

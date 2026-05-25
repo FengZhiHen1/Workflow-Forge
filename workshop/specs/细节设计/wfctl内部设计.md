@@ -409,6 +409,28 @@ def collect_downstream(adj: AdjacencyList, stage_id: str,
 - `aggregation=any` 的 parallel 拆分：任一实例 DONE 即解锁下游，其余实例被标记为 SUPERSEDED（写入 stage_history，不参与流转）
 - `exclusive` 的调度约束在 scheduler 层处理，dag 只管就绪判断
 
+### 3.7 DAG 验证器（`domain/dag/validator.py`）
+
+验证器在 `load_workflow()` 时自动调用，基于 `analyze_topology()` 的拓扑分析结果执行 15 项静态检查：
+
+| # | 检查项 | 说明 | 严重度 |
+|---|--------|------|--------|
+| 1 | 自环无 `max_loop` | 自环（`from == to`）的 FAILURE / CONFIRMED 边必须设置 `max_loop > 0` | ERROR |
+| 2 | 多节点环无 `max_loop` | 多节点环上至少有一条边设置 `max_loop > 0` | ERROR |
+| 3 | 回边无 `max_loop` | 回边（from 拓扑序 > to 拓扑序）必须设置 `max_loop > 0` | ERROR |
+| 4 | `failure_edge` 指向不存在 stage | FAILURE 边的 `to_stage` 必须在 `stages` 中存在 | ERROR |
+| 5 | `cascade_reset_until` 指向不存在 stage 或非祖先 | `cascade_reset_until` 必须存在且是 `from_stage` 的祖先（或自身） | ERROR |
+| 6 | `confirmation_point=true` 但无 `REJECTED` 边 | 设置了 confirmation_point 的 stage 必须至少有一条 REJECTED 边，否则用户无法拒绝 | WARNING |
+| 7 | SUCCESS 边 choice 不完备 | 多条 SUCCESS 边时，要么全部设置 `choice`，要么全部不设置 | ERROR |
+| 8 | SUCCESS 边 choice 重复 | 同一 stage 的多条 SUCCESS 边 `choice` 值必须互斥 | ERROR |
+| 9 | CONFIRMED 边 choice 混用 | 多条 CONFIRMED 边时，不允许部分有 `choice`、部分无 `choice` | ERROR |
+| 10 | REJECTED 边 choice 混用 | 多条 REJECTED 边时，不允许部分有 `choice`、部分无 `choice` | ERROR |
+| 11 | `failure_edge` 但 `retry=0` | 有 FAILURE 边但 `StageSpec.retry == 0`，failure_edge 永远不会触发 | WARNING |
+| 12 | `loop_exceeded_edge` 但无 `failure_edge` | LOOP_EXCEEDED 边存在但无 FAILURE 边，逻辑不连贯 | WARNING |
+| 13 | parallel fan-in 一致性 | parallel 拆分的多个实例必须能正确 fan-in 到同一下游 stage | ERROR |
+| 14 | 终态 stage 有非 ALWAYS 出边 | DONE 后不应有条件判断，终态 stage 的出边只能是 ALWAYS | WARNING |
+| 15 | 歧义路由（多条 choice 边 + 兜底边） | 存在多条有 choice 的边时，若同时存在无 choice 的兜底边，路由逻辑模糊 | WARNING |
+
 ---
 
 ## 四、状态管理（`state/`）
@@ -571,6 +593,70 @@ if rc != 0:
 ---
 
 ## 六、调度核心（`scheduler/`）
+
+### 6.0 `TransitionPolicy` 详细设计（`domain/transition/policy.py`）
+
+`TransitionPolicy` 是 Stage 出边策略的单一真相源，所有边处理逻辑集中于此。每个 Processor 和 CLI 命令通过 `TransitionPolicy.from_adjacency(adj, stage_id)` 获取策略对象，调用对应方法做纯决策。
+
+#### 三种确认模式
+
+`on_confirm()` 内部根据 edge 类型和 stage 配置，区分三种确认模式：
+
+| 模式 | 触发条件 | 状态转换 | 关键行为 |
+|------|----------|----------|----------|
+| **Confirmation Point** | `confirmation_point: true` + confirmed edge 指向下游 | `AWAITING_CONFIRM → PENDING` | `confirmed_choice = choice`，同 SubAgent 继续（不重新 spawn） |
+| **Relay（中继确认）** | confirmed 自循环边（`to_stage == from_stage`） | `AWAITING_CONFIRM → PENDING` | `loop_counter++`，`system_agent_id = None`，重新 spawn |
+| **终局确认** | confirmed edge 指向下游且非 confirmation_point | `AWAITING_CONFIRM → DONE` | `confirmed_choice = choice`，`exit_condition = confirmed`，解锁下游 |
+
+三种模式可以**叠加使用**：一个 stage 既设置 `confirmation_point: true`，又配置自循环 confirmed 边，实现"多轮确认 + 每轮重新 spawn"。
+
+#### 选择边统一接口
+
+```python
+class TransitionPolicy:
+    def match_success_edge(self, routing_choice: str | None) -> EdgeSpec | None:
+        """根据 SubAgent 上报的 routing_choice 匹配 SUCCESS 边。
+        精确匹配 choice → 无匹配时返回无 choice 的兜底 edge → 无兜底返回 None。"""
+
+    def match_confirmed_edge(self, choice: str) -> EdgeSpec | None:
+        """根据用户 choice 匹配 CONFIRMED 边。"""
+
+    def match_rejected_edge(self, choice: str) -> EdgeSpec | None:
+        """根据用户 choice 匹配 REJECTED 边。"""
+
+    def validate_routing_choice(self, routing_choice: str | None) -> tuple[bool, str]:
+        """校验 SubAgent 上报的 routing_choice 是否合法。
+        返回 (is_valid, error_message)。该 stage 无 SUCCESS choice 边时任何值都合法。"""
+```
+
+#### 级联重置
+
+```python
+class TransitionPolicy:
+    def compute_cascade_reset(
+        self, state: InstanceState, from_stage_id: str, to_stage_id: str, spec: WorkflowSpec
+    ) -> CascadeResetResult:
+        """计算回边级联重置范围。
+
+        从 to_stage_id 出发 BFS 遍历下游（排除 failure/loop_exceeded），
+        直到遇到 from_stage_id 或 cascade_reset_until 指定的上限 stage。
+        返回需要重置的 stage_instance_ids、需要移除的 stage_instance_ids、
+        需要清理 running_agents 的 stage_ids。
+        """
+```
+
+#### `__merge__` 伪 stage
+
+```python
+class TransitionPolicy:
+    def build_merge_stage(self, instance_id: str, goal: str) -> StageState:
+        """创建 __merge__ 伪 stage（status=AWAITING_CONFIRM）。"""
+
+    def on_merge_confirm(self, state: InstanceState, choice: str) -> MergeConfirmResult:
+        """处理 __merge__ 确认。choice 为 yes/y/confirm/accept/ok 时 merge_confirmed=true。"""
+```
+
+---
 
 ### 6.1 Processor 流水线
 

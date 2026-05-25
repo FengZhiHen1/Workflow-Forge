@@ -197,6 +197,44 @@ Stage 进入 ERROR 的两种路径：
 
 全部为确定性规则，wfctl 无需语义判断即可处理。
 
+### 选择边（choice routing）
+
+选择边通过 `SUCCESS` / `CONFIRMED` / `REJECTED` 边 + `choice` 属性实现，将 stage 导向不同下游。
+
+#### 分类
+
+| 类型 | 边条件 | choice 来源 | 决策时机 | 处理接口 |
+|------|--------|------------|----------|---------|
+| **运行时选择** | `SUCCESS` | SubAgent 上报 `routing_choice` | `next` 消费消息时 | `TransitionPolicy.match_success_edge()` |
+| **确认选择** | `CONFIRMED` | 用户 `wfctl confirm --choice` | CLI 命令时 | `TransitionPolicy.match_confirmed_edge()` |
+| **拒绝选择** | `REJECTED` | 用户 `wfctl confirm --choice` | CLI 命令时 | `TransitionPolicy.match_rejected_edge()` |
+
+#### 运行时选择（SUCCESS choice）
+
+SubAgent 上报 DONE 时，消息中可携带 `routing_choice`。`MessageConsumerProcessor` 调用 `TransitionPolicy.validate_routing_choice()` 校验：
+
+- 该 stage 无 SUCCESS choice 边 → 任何 `routing_choice` 都合法（包括 `null`）
+- 有 SUCCESS choice 边 → `routing_choice` 必须匹配某条边的 `choice` 值，否则 stage → ERROR，记录 deviation
+
+校验通过后，`TransitionPolicy.match_success_edge(routing_choice)` 匹配具体边：
+- 精确匹配 choice → 返回对应 edge
+- 无匹配但存在无 choice 的兜底 edge → 返回兜底 edge
+- 无匹配且无兜底 → stage → ERROR
+
+#### 确认选择（CONFIRMED / REJECTED choice）
+
+用户调用 `confirm --choice <value>` 时，`TransitionPolicy.on_confirm()` 内部按以下顺序匹配：
+
+1. 在 `confirmed_edges` 中精确匹配 choice → 命中则按 confirmed 逻辑处理
+2. 在 `rejected_edges` 中精确匹配 choice → 命中则按 rejected 逻辑处理
+3. 均无匹配 → 报错（unknown choice）
+
+每条 choice 边组（同 condition）中，允许存在一条无 choice 的兜底 edge。精确匹配优先，兜底 edge 作为默认分支。
+
+#### 与独立使用的兼容性
+
+Skill 单独使用时（非工作流环境），其 `AskUserQuestion` 正常触发，不涉及 choice routing。同一份 SKILL.md 无需修改即可兼容。
+
 ### action 结构
 
 ```json
@@ -348,7 +386,41 @@ rollback --instance <id> --stage <stage_id>
 
 ---
 
-## 七、`terminate` —— 取消实例
+## 七、`skip` —— 跳过 stage
+
+```
+skip --instance <id> --stage <stage_id> [--force]
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--instance` | 是 | 实例 ID |
+| `--stage` | 是 | 目标 stage_id |
+| `--force` | 否 | 强制跳过 `mandatory=true` 的 stage |
+
+### 行为
+
+`skip` 遵循 CLI stage 操作统一模式：调用 `TransitionPolicy` 做纯决策 → 生成 `StateDelta` → `apply_delta()` → 执行副作用 → `save_instance_state()`。
+
+1. 加载 `InstanceState`，定位目标 stage
+2. `TransitionPolicy.on_skip(state, stage_id, args.force)` 做决策：
+   - 若 stage 为 `mandatory=true` 且未提供 `--force` → 报错
+   - 将 stage 状态 → `DONE`，`exit_condition` → `skipped`
+3. 隔离该 stage 的未消费消息：扫描消息池，将该 stage 的所有未消费消息 ID 追加到 `consumed_message_ids`
+4. `state.apply_delta(delta)` → 执行 `tag_anchor`（Git 副作用，在 stage worktree 或实例 worktree 中打锚点）
+5. `save_instance_state()` + 写入 timeline + 写入 deviation（`type: USER_OVERRIDE`）
+6. 返回 `{status: "ok", stage_id: "s03", new_status: "DONE"}`
+
+### 不可跳过
+
+| 情况 | 返回 |
+|------|------|
+| stage 已是终态（DONE/ERROR/CONFLICT） | `{status: "error", reason: "stage already in terminal state"}` |
+| stage 为 `mandatory=true` 且无 `--force` | `{status: "error", reason: "stage is mandatory, use --force to skip"}` |
+
+---
+
+## 八、`terminate` —— 取消实例
 
 ```
 terminate --instance <id>
@@ -378,7 +450,37 @@ terminate --instance <id>
 
 ---
 
-## 八、`pause` / `resume` —— 暂停与恢复实例
+## 九、`__merge__` —— 实例合入主仓库确认
+
+`__merge__` 是一个**运行时才创建的伪 stage**，由 `FinalizeProcessor` 在检测到实例所有非虚拟 stage 均 DONE 后自动插入。它不在 `WorkflowSpec` 中定义，stage_id 固定为 `__merge__`。
+
+### 触发条件
+
+```
+FinalizeProcessor 检测到 all_done(state, spec) == true
+  → 实例中插入 __merge__ stage（status=AWAITING_CONFIRM）
+  → next 返回 confirm action，pending 列表包含 __merge__
+```
+
+### 行为
+
+**主 Agent 收到 confirm action 后**：
+1. 向用户呈现问题："实例 {instance_id}（{goal}）全部 stage 已完成，是否合入 main？"
+2. 用户确认 → 主 Agent 调用 `confirm --instance <id> --stage __merge__ --choice yes`
+3. wfctl 内部：`TransitionPolicy.on_merge_confirm(state, choice)`：
+   - `choice` 为 `yes/y/confirm/accept/ok` 之一 → 返回 `merge_confirmed=true`
+   - 其他 → 返回 `merge_confirmed=false`
+4. `StateDelta` 移除 `__merge__` 伪 stage
+5. 若 `merge_confirmed=true`：wfctl 将实例 worktree 合入主仓库，打最终锚点
+6. 若合入主仓库有冲突：返回 `conflict` action，worktree 指向主仓库，走常规冲突消解流程
+
+### 与 `merge_to_main` action 的关系
+
+`next` 在 `__merge__` 未确认前**不返回** `merge_to_main` action。`merge_to_main` 是旧行为（直接返回 action 让主 Agent 执行合并），`__merge__` 是确认前置的新行为。当前实现以 `__merge__` 为准。
+
+---
+
+## 十、`pause` / `resume` —— 暂停与恢复实例
 
 ```
 pause --instance <id>
@@ -409,7 +511,7 @@ resume --instance <id>
 
 ---
 
-## 九、无状态契约
+## 十一、无状态契约
 
 ```
 每次调用 = 冷启动
@@ -425,7 +527,7 @@ wfctl 不守护、不监听、不持有内存状态。主 Agent 负责在适当�
 
 ---
 
-## 九、主 Agent ↔ wfctl 协作协议（循环模型）
+## 十二、主 Agent ↔ wfctl 协作协议（循环模型）
 
 ```
 [用户指令 / 平台通知(SubAgent 完成) / 用户确认]
@@ -443,7 +545,7 @@ wfctl 永远只返回"下一步该做什么"，不做任何物理副作用。
 
 ---
 
-## 十、身份与消息投递机制
+## 十三、身份与消息投递机制
 
 | 环节 | 机制 |
 |------|------|
@@ -454,7 +556,7 @@ wfctl 永远只返回"下一步该做什么"，不做任何物理副作用。
 
 ---
 
-## 十一、消息池与状态机解耦
+## 十四、消息池与状态机解耦
 
 | 层面 | 规则 |
 |------|------|
@@ -466,7 +568,7 @@ wfctl 永远只返回"下一步该做什么"，不做任何物理副作用。
 
 ---
 
-## 十二、触发模型
+## 十五、触发模型
 
 | 触发源 | 行为 |
 |--------|------|
@@ -478,7 +580,7 @@ wfctl 无推送能力，不主动产生任何事件。不依赖定时轮询。
 
 ---
 
-## 十三、批量指令、worktree 分配与两级合并
+## 十六、批量指令、worktree 分配与两级合并
 
 - `next` 返回批量 action 数组，主 Agent 按并发规则批量启动 SubAgent。
 
@@ -519,7 +621,7 @@ conflict-resolver 是全局 Skill，放在 `artifacts/skills/conflict-resolver/`
 
 ---
 
-## 十四、权限与隔离
+## 十七、权限与隔离
 
 | 层级 | 机制 |
 |------|------|
