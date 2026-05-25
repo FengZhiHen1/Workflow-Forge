@@ -56,7 +56,7 @@ class SchedulerOrchestrator:
         """执行完整调度流程。
 
         Returns:
-            {"status": "ok", "actions": [...]}
+            {"status": "ok", "actions": [...], "_state": InstanceState}
         """
         state = initial_state
         all_actions: list[dict] = []
@@ -70,4 +70,4 @@ class SchedulerOrchestrator:
         if not all_actions:
             all_actions.append({"action": "await", "reason": "no ready stages"})
 
-        return {"status": "ok", "actions": all_actions}
+        return {"status": "ok", "actions": all_actions, "_state": state}

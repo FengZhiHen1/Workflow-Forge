@@ -73,6 +73,13 @@ class ErrorRecoveryProcessor:
                     })
                     continue
 
+                # 判断触发源：loop_exceeded → failure edge → error-recovery
+                reason = "error-recovery"
+                if self._is_loop_exceeded(st, ctx):
+                    reason = "loop-exceeded"
+                elif self._is_failure_edge_path(st, ctx):
+                    reason = "failure-edge"
+
                 delta.stage_updates[target.stage_instance_id] = {
                     "status": StageStatus.PENDING,
                     "loop_counter": st.loop_counter + 1,
@@ -81,7 +88,7 @@ class ErrorRecoveryProcessor:
                     "action": "spawn",
                     "instance_id": ctx.instance_id,
                     "stage_id": result.target_stage_id,
-                    "reason": "error-recovery",
+                    "reason": reason,
                 })
 
             elif result.action == "terminate":
@@ -100,8 +107,14 @@ class ErrorRecoveryProcessor:
         if timeout_cycle:
             cycle_meta = self._merge_cycle_meta(cycle_meta, timeout_cycle)
 
-        delta.cycle_meta = cycle_meta
-        return ProcessorResult(state_delta=delta, actions=actions)
+        final_delta = StateDelta(
+            stage_updates=delta.stage_updates,
+            instance_updates=delta.instance_updates,
+            append_stages=delta.append_stages,
+            remove_stage_instance_ids=delta.remove_stage_instance_ids,
+            cycle_meta=cycle_meta,
+        )
+        return ProcessorResult(state_delta=final_delta, actions=actions)
 
     def _check_timeouts(
         self, ctx: ExecutionContext, state: InstanceState, stage_specs: dict
@@ -158,6 +171,30 @@ class ErrorRecoveryProcessor:
                 )
 
         return (delta if not delta.is_empty() else None), cycle_meta
+
+    @staticmethod
+    def _is_loop_exceeded(st: StageState, ctx: ExecutionContext) -> bool:
+        """判断 stage 是否通过 loop_exceeded 路径恢复。"""
+        from core.dag import get_loop_exceeded_edge
+        edge = get_loop_exceeded_edge(ctx.adj, st.stage_id)
+        if edge is None:
+            return False
+        max_loop = edge.max_loop or 0
+        return st.loop_counter >= max_loop
+
+    @staticmethod
+    def _is_failure_edge_path(st: StageState, ctx: ExecutionContext) -> bool:
+        """判断 stage 是否通过 failure_edge 路径恢复。"""
+        from core.dag import get_failure_edge, get_loop_exceeded_edge
+        failure = get_failure_edge(ctx.adj, st.stage_id)
+        if failure is None:
+            return False
+        loop_edge = get_loop_exceeded_edge(ctx.adj, st.stage_id)
+        if loop_edge is not None:
+            max_loop = loop_edge.max_loop or 0
+            if st.loop_counter >= max_loop:
+                return False  # loop_exceeded 优先
+        return True
 
     @staticmethod
     def _merge_cycle_meta(base: CycleMeta, other: CycleMeta) -> CycleMeta:

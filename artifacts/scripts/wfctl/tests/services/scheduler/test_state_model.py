@@ -29,7 +29,6 @@ class TestStageState:
             output_message_id="msg-abc123",
             loop_counter=2,
             attempt_count=1,
-            confirmed=True,
             started_at="2026-05-24T12:00:00Z",
             model="claude-sonnet",
             fan_out_target={"id": "x", "label": "X"},

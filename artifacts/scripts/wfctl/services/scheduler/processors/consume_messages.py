@@ -156,9 +156,16 @@ class ConsumeMessagesProcessor:
 
         # 更新 consumed_message_ids
         delta.instance_updates["consumed_message_ids"] = frozenset(new_consumed)
-        delta.cycle_meta = cycle_meta
 
-        return ProcessorResult(state_delta=delta)
+        # 构建最终 StateDelta（含 cycle_meta，frozen dataclass 不支持直接赋值）
+        final_delta = StateDelta(
+            stage_updates=delta.stage_updates,
+            instance_updates=delta.instance_updates,
+            append_stages=delta.append_stages,
+            remove_stage_instance_ids=delta.remove_stage_instance_ids,
+            cycle_meta=cycle_meta,
+        )
+        return ProcessorResult(state_delta=final_delta)
 
     @staticmethod
     def _find_stage(

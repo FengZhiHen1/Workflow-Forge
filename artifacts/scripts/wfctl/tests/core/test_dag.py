@@ -2,7 +2,7 @@
 
 import pytest
 
-from core.dag import build_adjacency, collect_downstream, compute_ready, _compute_ready_dict
+from core.dag import build_adjacency, collect_downstream, compute_ready
 from core.schema.interface import (
     EdgeCondition,
     EdgeSpec,
@@ -518,20 +518,3 @@ def test_compute_ready_parallel_instances():
     ids = _ids(ready)
     # s01_1 and s01_2 都是 PENDING s01，但上游 s01_0 DONE 已满足 → s02 就绪
     assert "s02" in ids, f"s02 should be ready, got {ids}"
-
-
-def test_legacy_dict_compat():
-    """验证 _compute_ready_dict 仍可被 scheduler_legacy 使用。"""
-    spec = make_spec()
-    adj = build_adjacency(spec)
-    instance = {
-        "stages": [
-            {"stage_id": "s00", "status": "DONE"},
-            {"stage_id": "s01", "status": "PENDING"},
-            {"stage_id": "s02", "status": "PENDING"},
-            {"stage_id": "s03", "status": "PENDING"},
-            {"stage_id": "s99", "status": "PENDING"},
-        ]
-    }
-    ready = _compute_ready_dict(adj, instance)
-    assert ready == ["s01"]

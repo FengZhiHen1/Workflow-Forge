@@ -1,15 +1,12 @@
-"""instance.json 读写 + 消息消费。"""
+"""instance.json 读写 + timeline/deviations 日志。"""
 
 import json
-from pathlib import Path
 
 from core.atomic_write import atomic_write_json
 from core.errors import InputError, StateError
 from core.timestamp import iso_timestamp
 from core.lock import FileLock
 from core.project import find_root
-from services.message_handler import scan_messages
-from services.validator import validate_modified_files
 
 
 def load_instance(instance_id: str) -> dict:
@@ -25,99 +22,6 @@ def save_instance(instance_id: str, data: dict) -> None:
     from services.scheduler.state_model import InstanceState
     state = InstanceState.from_dict(data)
     save_instance_state(instance_id, state)
-
-
-def _consume_messages_legacy(instance_id: str, instance: dict, worktree_map: dict[str, Path]) -> list[dict]:
-    """消费消息池，更新 stage 状态，返回状态变更摘要。"""
-    consumed_ids = set(instance.get("consumed_message_ids", []))
-    messages = scan_messages(instance_id, consumed_ids)
-    changes: list[dict] = []
-
-    stage_map = {s["stage_id"]: s for s in instance.get("stages", [])}
-
-    for msg in messages:
-        stage_id = msg.get("stage_id")
-        stage = stage_map.get(stage_id)
-        if not stage:
-            continue
-
-        # 校验 modified_files（已在 message write 时注入）
-        try:
-            wt = worktree_map.get(stage_id) if worktree_map else None
-            if msg.get("modified_files") and wt:
-                validate_modified_files(wt, msg["modified_files"], stage_id)
-        except Exception as e:
-            import traceback
-            stage["status"] = "ERROR"
-            _append_timeline(instance_id, stage_id, "running→error", {
-                "reason": str(e),
-                "message_id": msg["message_id"],
-                "intended_status": msg.get("status"),
-                "modified_files": msg.get("modified_files", []),
-                "traceback": traceback.format_exc(),
-            })
-            consumed_ids.add(msg["message_id"])
-            changes.append({
-                "stage_id": stage_id,
-                "old_status": "RUNNING",
-                "new_status": "ERROR",
-                "message": msg,
-            })
-            continue
-
-        old_status = stage.get("status", "PENDING")
-        new_status = msg.get("status", old_status)
-
-        # 状态无变化 → 只消费消息，不覆盖已有字段（防止后续消息覆盖
-        # confirm/skip 写入的 exit_condition、confirm_questions 等）
-        if old_status == new_status:
-            consumed_ids.add(msg["message_id"])
-            continue
-
-        if new_status == "DONE":
-            routing_choice = msg.get("routing_choice")
-            if routing_choice:
-                valid = stage.get("valid_routing_choices", [])
-                if valid and routing_choice not in valid:
-                    stage["status"] = "ERROR"
-                    _append_timeline(instance_id, stage_id, "running→error",
-                                     {"message_id": msg["message_id"],
-                                      "reason": f"非法 routing_choice: '{routing_choice}'，合法值: {valid}"})
-                    consumed_ids.add(msg["message_id"])
-                    changes.append({
-                        "stage_id": stage_id,
-                        "old_status": old_status,
-                        "new_status": "ERROR",
-                        "message": msg,
-                    })
-                    continue
-                stage["routing_choice"] = routing_choice
-            stage["status"] = "DONE"
-            stage["exit_condition"] = "success"
-            stage["output_message_id"] = msg["message_id"]
-            _append_timeline(instance_id, stage_id, "running→done", {"message_id": msg["message_id"]})
-        elif new_status == "ERROR":
-            stage["status"] = "ERROR"
-            _append_timeline(instance_id, stage_id, "running→error", {"message_id": msg["message_id"], "reason": msg.get("report", "")})
-        elif new_status == "AWAITING_CONFIRM":
-            stage["status"] = "AWAITING_CONFIRM"
-            stage["output_message_id"] = msg["message_id"]
-            stage["confirm_questions"] = msg.get("confirm_questions", [])
-            _append_timeline(instance_id, stage_id, "running→awaiting_confirm", {"message_id": msg["message_id"]})
-        elif new_status == "RUNNING":
-            stage["status"] = "RUNNING"
-            _append_timeline(instance_id, stage_id, "scheduled", {"message_id": msg["message_id"]})
-
-        consumed_ids.add(msg["message_id"])
-        changes.append({
-            "stage_id": stage_id,
-            "old_status": old_status,
-            "new_status": stage["status"],
-            "message": msg,
-        })
-
-    instance["consumed_message_ids"] = list(consumed_ids)
-    return changes
 
 
 def _append_timeline(instance_id: str, stage_id: str, event: str, extra: dict | None = None) -> None:

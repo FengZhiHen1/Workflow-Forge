@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from core.dag import compute_ready
 from services.scheduler.context import ExecutionContext
@@ -22,8 +22,9 @@ class ReadyComputeProcessor:
         ready = compute_ready(ctx.adj, state)
         ready = self._apply_scheduling_constraints(ready, state, ctx)
 
-        delta = StateDelta()
-        delta.cycle_meta = state.cycle_meta.replace(ready_candidates=ready)
+        delta = StateDelta(
+            cycle_meta=replace(state.cycle_meta, ready_candidates=ready),
+        )
         return ProcessorResult(state_delta=delta)
 
     def _apply_scheduling_constraints(

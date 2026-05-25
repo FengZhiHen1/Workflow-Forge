@@ -322,7 +322,6 @@ def _create_from_clone(
                         output_message_id=entry.get("output_message_id"),
                         loop_counter=entry.get("loop_counter", 0),
                         attempt_count=entry.get("attempt_count", 0),
-                        confirmed=entry.get("confirmed", False),
                         started_at=entry.get("started_at"),
                         model=entry.get("model"),
                         child_instance_id=entry.get("child_instance_id"),

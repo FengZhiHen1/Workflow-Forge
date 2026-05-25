@@ -65,8 +65,14 @@ class ChildWorkflowProcessor:
             child_confirm_pending=child_results.get("confirm_pending", []),
         )
 
-        delta.cycle_meta = cycle_meta
-        return ProcessorResult(state_delta=delta, actions=actions)
+        final_delta = StateDelta(
+            stage_updates=delta.stage_updates,
+            instance_updates=delta.instance_updates,
+            append_stages=delta.append_stages,
+            remove_stage_instance_ids=delta.remove_stage_instance_ids,
+            cycle_meta=cycle_meta,
+        )
+        return ProcessorResult(state_delta=final_delta, actions=actions)
 
     def _check_child_workflows(
         self, state: InstanceState, ctx: ExecutionContext, delta: StateDelta

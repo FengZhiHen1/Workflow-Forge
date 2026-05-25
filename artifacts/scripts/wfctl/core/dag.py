@@ -41,52 +41,6 @@ def build_adjacency(spec: WorkflowSpec) -> AdjacencyList:
     return AdjacencyList(outgoing=outgoing, incoming=incoming, stages=stages)
 
 
-def _compute_ready_dict(adj: AdjacencyList, instance: dict) -> list[str]:
-    """[DEPRECATED] 计算就绪的 stage_id 列表。Phase 5 删除。"""
-    ready: list[str] = []
-    stage_states = {s["stage_id"]: s for s in instance.get("stages", [])}
-
-    for stage_id, stage_spec in adj.stages.items():
-        state = stage_states.get(stage_id, {})
-        if state.get("status") != "PENDING":
-            continue
-        upstream_edges = adj.incoming.get(stage_id, [])
-        if _all_satisfied_dict(upstream_edges, stage_states):
-            ready.append(stage_id)
-
-    return ready
-
-
-def _all_satisfied_dict(upstream_edges: list[EdgeSpec], stage_states: dict) -> bool:
-    """[DEPRECATED] Phase 5 删除。"""
-    if not upstream_edges:
-        return True
-
-    for edge in upstream_edges:
-        upstream_stage = stage_states.get(edge.from_stage, {})
-        upstream_status = upstream_stage.get("status", "PENDING")
-        if upstream_status != "DONE":
-            continue
-        exit_cond = upstream_stage.get("exit_condition", "")
-
-        if edge.condition == EdgeCondition.ALWAYS:
-            return True
-        if edge.condition == EdgeCondition.SUCCESS and exit_cond not in ("loop_exceeded",):
-            if edge.choice:
-                routing_choice = upstream_stage.get("routing_choice", "")
-                if routing_choice != edge.choice:
-                    continue
-            return True
-        if edge.condition == EdgeCondition.CONFIRMED and exit_cond in ("confirmed", ""):
-            if edge.choice:
-                upstream_choice = upstream_stage.get("confirmed_choice", "")
-                if upstream_choice and upstream_choice != edge.choice:
-                    continue
-            return True
-
-    return False
-
-
 def compute_ready(adj: AdjacencyList, state: "InstanceState") -> list[tuple[str, str]]:
     """计算就绪的 (stage_id, stage_instance_id) 列表。
 

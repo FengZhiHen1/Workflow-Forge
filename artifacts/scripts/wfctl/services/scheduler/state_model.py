@@ -26,7 +26,6 @@ class StageState:
     output_message_id: str | None = None
     loop_counter: int = 0
     attempt_count: int = 0
-    confirmed: bool = False
     started_at: str | None = None
     model: str | None = None
     child_instance_id: str | None = None
@@ -54,10 +53,16 @@ class StageState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StageState:
-        """从 instance.json stage 条目解析。"""
+        """从 instance.json stage 条目解析。
+
+        静默跳过旧数据中的幽灵字段（如 confirmed）。
+        """
         import dataclasses as dc
 
         raw = dict(data)
+        # 跳过已废弃的字段
+        raw.pop("confirmed", None)
+
         status_str = raw.pop("status", "PENDING")
         raw["status"] = StageStatus(status_str) if isinstance(status_str, str) else status_str
         for f_name, f_def in cls.__dataclass_fields__.items():
