@@ -149,12 +149,26 @@ def _load_timeline(instance_id: str, limit: int = 20) -> list[dict]:
     return events
 
 
+def _load_running_agents(instance_id: str) -> dict[str, dict]:
+    """读取 running_agents.json，返回 stage_id -> agent info 映射。"""
+    root = find_root()
+    path = root / ".agent" / "running_agents.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {a["stage_id"]: a for a in data if a.get("instance_id") == instance_id}
+    except Exception:
+        return {}
+
+
 def _collect_instance_data(instance_id: str) -> dict | None:
     """收集单个实例的完整数据，用于渲染 dashboard。"""
     data = _load_instance_json(instance_id)
     if data is None:
         return None
 
+    running_agents = _load_running_agents(instance_id)
     messages = _load_messages(instance_id)
     timeline = _load_timeline(instance_id, limit=30)
 
@@ -170,8 +184,9 @@ def _collect_instance_data(instance_id: str) -> dict | None:
     }
     for s in stages:
         status = s.get("status", "PENDING")
-        if status in stages_summary:
-            stages_summary[status] += 1
+        key = status.lower()
+        if key in stages_summary:
+            stages_summary[key] += 1
 
     # 构建 stage 详情列表（包含文件信息）
     stage_details = []
@@ -207,12 +222,19 @@ def _collect_instance_data(instance_id: str) -> dict | None:
                     "stage_status": status,
                 })
 
+        # 优先从 instance.json 读取 agent，否则从 running_agents.json 补充
+        agent_id = s.get("agent_id")
+        system_agent_id = s.get("system_agent_id")
+        if not agent_id and not system_agent_id and sid in running_agents:
+            system_agent_id = running_agents[sid].get("system_agent_id")
+
         stage_details.append({
             "stage_id": sid,
             "stage_instance_id": s_inst_id,
             "status": status,
             "status_color": _status_color(status),
-            "agent_id": s.get("agent_id"),
+            "agent_id": agent_id,
+            "system_agent_id": system_agent_id,
             "attempt_count": s.get("attempt_count", 0),
             "loop_counter": s.get("loop_counter", 0),
             "output_message_id": msg_id,
@@ -308,10 +330,10 @@ def _generate_mermaid_for_instance(instance_data: dict) -> str:
 
     # 定义边
     for edge in spec.edges:
-        style = "--"
+        style = "-->"
         if edge.condition.value in ("failure", "loop_exceeded"):
-            style = "-."
-        lines.append(f"    {edge.from_stage} {style}> {edge.to_stage}")
+            style = "-.->"
+        lines.append(f"    {edge.from_stage} {style} {edge.to_stage}")
 
     # 样式类定义
     lines.append("    classDef pending fill:#757575,stroke:#555,color:#fff")
@@ -944,7 +966,7 @@ def _render_instance_page(inst: dict) -> str:
             f'  <td><code>{st["stage_id"]}</code></td>\n'
             f'  <td><span class="status-dot" style="background:{st["status_color"]}"></span>{st["status"]}</td>\n'
             f'  <td>{st.get("attempt_count", 0)}</td>\n'
-            f'  <td>{st.get("agent_id") or "—"}</td>\n'
+            f'  <td>{st.get("agent_id") or st.get("system_agent_id") or "—"}</td>\n'
             f'  <td>{files_html}</td>\n'
             f'</tr>\n'
         )

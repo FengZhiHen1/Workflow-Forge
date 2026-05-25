@@ -88,6 +88,20 @@ class ConsumeMessagesProcessor:
             old_status = st.status
             msg_status = msg.get("status", old_status.value)
 
+            # 防御：拒绝非法 status 值（SubAgent 绕过 wfctl message write 手写 JSON 导致）
+            if msg_status not in {s.value for s in StageStatus}:
+                new_consumed.add(msg_id)
+                side_effects.append(SideEffect(
+                    kind="deviation_write",
+                    description=f"Illegal message status '{msg_status}' from {st.stage_id}",
+                    execute=lambda iid=ctx.instance_id, sid=st.stage_id, mid=msg_id, ms=msg_status: _append_deviation(
+                        iid, "ILLEGAL_MESSAGE_STATUS",
+                        f"消息 {mid} 的 status='{ms}' 不是合法枚举值，已丢弃。请通过 wfctl message write 上报消息。",
+                        stage_id=sid,
+                    ),
+                ))
+                continue
+
             # 状态无变化 → 只消费消息 ID
             if old_status.value == msg_status:
                 new_consumed.add(msg_id)

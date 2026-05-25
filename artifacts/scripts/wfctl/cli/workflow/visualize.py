@@ -47,7 +47,7 @@ def _generate_mermaid(spec, adj) -> str:
         label = edge.condition.value
         if edge.choice:
             label += f"({edge.choice})"
-        lines.append(f"    {edge.from_stage} {style}> {edge.to_stage}" + (f" :|{label}|" if label else ""))
+        lines.append(f"    {edge.from_stage} {style} {edge.to_stage}" + (f" :|{label}|" if label else ""))
 
     # 样式类
     lines.append("    classDef virtual fill:#f0f0f0,stroke:#999,stroke-dasharray: 5 5")
@@ -73,12 +73,12 @@ def _get_shape(stage):
 
 def _get_edge_style(edge):
     if edge.condition == EdgeCondition.ALWAYS:
-        return "--"
+        return "-->"
     if edge.condition == EdgeCondition.FAILURE:
-        return "-."
+        return "-.->"
     if edge.condition == EdgeCondition.LOOP_EXCEEDED:
-        return "-."
-    return "--"
+        return "-.->"
+    return "-->"
 
 
 def _get_class(stage):
