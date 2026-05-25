@@ -71,8 +71,10 @@
 ### Instance
 
 ```
+ACTIVE → PAUSED     用户或主 Agent 调用 pause 命令
 ACTIVE → COMPLETED  所有 stage 终态（DONE/ERROR 且无可用 handler）
 ACTIVE → FAILED     ERROR 无可用 handler 且无 failure edge
+PAUSED → ACTIVE     用户或主 Agent 调用 resume 命令
 ```
 
 ### Stage
@@ -116,7 +118,7 @@ PENDING → RUNNING → DONE
 | `agent_id` | `string` | 否 | wfctl 生成的逻辑 Agent ID，启动前写入 |
 | `system_agent_id` | `string` | 否 | 平台原生 Agent ID，启动后主 Agent 回填 |
 | `output_message_id` | `string` | 否 | 该 stage 产出的消息 ID |
-| `loop_counter` | `integer` | 是 | stage 级回跳计数，由 wfctl 根据 edge 的 `loop_counter_stage` 写入及读取，默认 0 |
+| `loop_counter` | `integer` | 是 | stage 级回跳计数，默认 0。中继确认（confirmed 自循环边）或 failure edge 重定向时递增 |
 | `attempt_count` | `integer` | 是 | stage 级重试计数，默认 0 |
 | `model` | `string` | 否 | 模型档位，由主 Agent 查平台模型映射表解析为具体模型名后写入 |
 | `child_instance_id` | `string` | 否 | 子工作流实例 ID |
@@ -133,6 +135,8 @@ PENDING → RUNNING → DONE
 当多个连续或非连续的 Stage 使用同一个 `skill_id` 时，`next` 通过 `.agent/running_agents.json` 映射表检测命中，生成 `continue` action（而非 `spawn`），让同一个 SubAgent 实例跨 Stage 继续执行。
 
 ### 映射表
+
+`runtime/agent/manager.py` 中的 `RunningAgentManager` 统一管理。
 
 `.agent/running_agents.json`（项目级唯一文件），格式 `[{skill_id, system_agent_id, stage_id, instance_id}]`。
 - 编排器在 `spawn` 成功后写入新条目（按 `system_agent_id` 去重）

@@ -25,8 +25,10 @@ wfctl 不接触用户，不启动 SubAgent，不做语义判断，不持有内�
 | `confirm` | 将指定 AWAITING_CONFIRM 的 stage 解锁，恢复流转 | 用户回复确认后 |
 | `rollback` | 重建实例 worktree 到指定 stage 锚点（`git checkout anchor-s2`），下游 stage 产物被 git 自然清除，其状态重置为 PENDING。**级联清理**被回退 stage 及所有下游 stage 关联的 `consumed_message_ids`。旧状态保留在 git reflog 中可恢复 | 用户要求回退或失败策略触发时 |
 | `status` | 无参数：扫描 `.agent/instances/`，返回项目全局状态（活跃实例、阻塞点、最近完成/失败）。`--instance <id>`：返回指定实例完整摘要（含子工作流透传） | 开发者询问进度 / 主 Agent 获取视野时 |
+| `pause` | 暂停 ACTIVE 实例，所有 RUNNING stage 回退到 PENDING，实例标记 PAUSED | 用户要求暂停或主 Agent 判断需暂停时 |
+| `resume` | 恢复 PAUSED 实例，实例标记 ACTIVE | 用户要求恢复或主 Agent 判断需恢复时 |
 | `deviate` | 向日志追加一条 deviation 记录 | 主 Agent 检测到非标行为时 |
-| `terminate` | 取消 ACTIVE 实例，清理全部 worktree，实例标记 FAILED | 用户要求取消或主 Agent 判断需终止时 |
+| `terminate` | 取消 ACTIVE/PAUSED 实例，清理全部 worktree，实例标记 FAILED | 用户要求取消或主 Agent 判断需终止时 |
 
 ### `status` 返回结构
 
@@ -128,24 +130,33 @@ wfctl 不接触用户，不启动 SubAgent，不做语义判断，不持有内�
 
 ### 核心流程
 
+`next` 内部由 14 步 Processor 流水线实现，各阶段通过 `CycleMeta` 显式传递本轮事件（取代旧 `ctx.extra` 隐式依赖）。外部行为等效于：
+
 ```
 next --instance <id>
   │
-  ├─ 1. 读 instance.json
-  ├─ 1.5 读取 .agent/running_agents.json（项目级文件），按 instance_id 过滤当前实例的存活 SubAgent 列表
-  ├─ 2. 扫描消息池 .agent/instances/<instance_id>/messages/
-  ├─ 3. 消费未处理消息，更新对应 stage 状态
-  ├─ 3.5 并发 stage 合并：多个 stage 同时 DONE 时按 stage_id 字典序依次合入实例 worktree
-  ├─ 4. 检查 parallel 拆分（见下方）
-  ├─ 5. 检查子工作流完成（见下方）
-  ├─ 6. 计算就绪 stage
-  ├─ 6.5 同 Skill 延续检测：对每个就绪 stage，在映射表中查同 skill_id 的条目
-  │     └─ 命中 → {action: "continue", ...}（不创建新 SubAgent），更新该条目 stage_id
-  │     └─ 未命中 → {action: "spawn", ...}（正常新建）
-  ├─ 7. 分配 worktree（见第十三节）—— spawn 和 continue 的 worktree 分配逻辑一致
-  ├─ 8. 检测实例终态（COMPLETED / FAILED）→ 自动清理全部 worktree
-  ├─ 9. 返回批量 action 数组
+  ├─ 1. 同步 worktree 状态（检测合并冲突）
+  ├─ 2. 扫描并消费消息池，更新对应 stage 状态
+  ├─ 3. 虚拟 stage 直通（无 worktree、无 action）
+  ├─ 4. 将本轮事件（newly_done / newly_error / newly_awaiting_confirm）统一应用到 stages
+  ├─ 5. 自动提交：对刚 DONE 的 stage 执行 git commit
+  ├─ 6. 合并并发 stage worktree 回实例 worktree
+  ├─ 7. 检查 parallel 拆分需求，创建多实例
+  ├─ 8. 检查子工作流完成状态，递归调度活跃子实例
+  ├─ 9. 错误恢复：ERROR stage 按 retry / failure_edge / loop_exceeded_edge 策略处理
+  ├─ 10. 冲突处理：CONFLICT stage 自愈或上报
+  ├─ 11. 计算就绪 stage（BFS + 边条件判断）
+  ├─ 12. 同 Skill 延续检测 + worktree 分配
+  ├─ 13. 确认点聚合
+  ├─ 14. 检测实例终态（COMPLETED / FAILED）→ 自动清理全部 worktree
+  └─ 返回批量 action 数组
 ```
+
+流水线顺序与行为保证：
+- **消息消费与状态转换分离**：MessageConsumerProcessor 只扫描消息并标记 `cycle_meta`，StateTransitionProcessor 统一将事件写入 stages。所有状态变更必须经过 `StateDelta.apply()`。
+- **副作用隔离**：AutoCommit（git commit）、MergeWorktrees（git merge）、worktree 分配等副作用在状态决策之后执行，不混在状态判断中。
+- **子工作流统一递归**：ChildWorkflowProcessor 通过 `SchedulerOrchestrator.run()` 递归调度子实例，不再调用旧 legacy 路径。
+- **错误恢复基于 `TransitionPolicy`**：ErrorRecoveryProcessor 调用 `TransitionPolicy.on_error()` 做决策，不再分散在多个文件中。
 
 ### parallel 拆分
 
@@ -278,20 +289,23 @@ confirm --instance <id> --stage <stage_id> --choice <string> [--feedback "..."]
 
 ### 行为
 
+`confirm` 是 CLI stage 操作命令之一，遵循统一模式：调用 `TransitionPolicy` 做纯决策 → 生成 `StateDelta` → `apply_delta()` → 执行副作用 → `save_instance_state()`。不直接 mutate dict。
+
 **choice 匹配到 confirmed edge**：
-1. 校验 stage 当前状态为 `AWAITING_CONFIRM`
-2. 在 YAML 中查找 `from=stage_id`、`condition=confirmed`、`choice` 值匹配的 edge
-3. 找到 → stage 状态 → `DONE`，匹配的 edge 在随后的 `next` 中解锁对应下游
-4. 未找到 → 报错 `{status: "error", reason: "unknown choice: <value>"}`
-5. 写入 timeline（`awaiting_confirm→done`，标注 `confirmed_by: user`，`choice: <value>`）
-6. 返回 `{status: "ok", stage_id: "s03", new_status: "DONE", matched: "方案A-微服务"}`
+1. 加载 `InstanceState`，校验 stage 当前状态为 `AWAITING_CONFIRM`
+2. `TransitionPolicy.from_adjacency(adj, stage_id).on_confirm(stage, choice)` 做决策
+3. 决策结果转换为 `StateDelta`，应用到实例状态
+4. 若涉及回边级联重置（`cascade_reset_target`），执行 Git 副作用（checkout、remove anchor）
+5. 若需要 feedback，写入 feedback message（副作用）
+6. 保存状态，写入 timeline
+7. 返回 `{status: "ok", stage_id: "s03", new_status: "DONE", matched: "方案A-微服务"}`
 
 **choice 匹配到 rejected edge 或无 edge 的兜底**：
-1. 在 YAML 中查找 `from=stage_id`、`condition=rejected`、`choice` 值匹配的 edge
-2. **有匹配的 rejected edge**：stage 状态 → `PENDING`，`attempt_count` 归零。主 Agent 随后调用 `next` 时走对应 edge
-3. **无匹配的 rejected edge**：Instance 状态 → `FAILED`，记录 deviation 日志
+1. `TransitionPolicy.on_confirm()` 内部匹配 rejected edges
+2. **有匹配的 rejected edge**：`StateDelta` 将 stage 置 `PENDING`，`attempt_count` 归零
+3. **无匹配的 rejected edge**：`StateDelta` 将 instance 置 `FAILED`
 4. `--feedback` 文本写入 Message 关联字段，供 SubAgent 重做时参考
-5. 写入 timeline（`awaiting_confirm→pending`，标注 `rejected_by: user`，`choice: <value>`）
+5. 保存状态，写入 timeline
 6. 返回 `{status: "ok", stage_id: "s03", new_status: "PENDING"}` 或 `{status: "instance_failed", ...}`
 
 ### 与 `next` confirm action 的关系
@@ -313,14 +327,15 @@ rollback --instance <id> --stage <stage_id>
 
 ### 行为
 
-1. 校验 `<stage_id>` 存在且有对应锚点（`wf-<instance_id>-<stage_id>`）
-2. 确定受影响的下游 stage：从 `<stage_id>` 出发，沿 edges（排除 `condition=failure` 和 `loop_exceeded`）BFS 遍历，收集所有可达 stage（含 parallel 拆出的所有 stage 实例）。**同 skill 延续链**：如果受影响的 stage 携带 `continued_to` 字段，沿链追踪，一并纳入复位范围
-3. 重建实例 worktree 到目标锚点
-4. 移除受影响 stage 的锚点 tags
-5. 重置受影响 stage 状态为 `PENDING`，清零 `attempt_count`、`loop_counter`、`system_agent_id`、`continued_to`
-6. 级联清理受影响 stage 的 `consumed_message_ids`
-7. 写入 timeline
-8. 返回 `{status: "ok", reset_stages: ["s04", "s05"], worktree: ".tmp/worktrees/instance-<id>/"}`
+`rollback` 遵循 CLI stage 操作统一模式：调用 `TransitionPolicy` 做纯决策 → 生成 `StateDelta` → `apply_delta()` → 执行 Git 副作用 → `save_instance_state()`。
+
+1. 加载 `InstanceState`，校验 `<stage_id>` 存在且有对应锚点（`wf-<instance_id>-<stage_id>`）
+2. `TransitionPolicy.from_adjacency(adj, stage_id).on_rollback(state, stage_id)` 计算受影响下游 stage 及 `StateDelta`
+3. `state.apply_delta(delta)` 应用状态变更（下游 stage → `PENDING`，清零计数，清理 `consumed_message_ids`）
+4. 重建实例 worktree 到目标锚点（Git 副作用）
+5. 移除受影响 stage 的锚点 tags（Git 副作用）
+6. 保存状态，写入 timeline
+7. 返回 `{status: "ok", reset_stages: ["s04", "s05"], worktree: ".tmp/worktrees/instance-<id>/"}`
 
 ### 不可回退
 
@@ -345,9 +360,11 @@ terminate --instance <id>
 
 ### 行为
 
-1. 校验实例状态为 `ACTIVE`（终态实例不可重复终止）
-2. 实例状态 → `FAILED`，记录终止原因为 `user_terminated`
-3. 清理该实例所有关联 stage worktree 和实例 worktree（`git worktree remove --force`）
+`terminate` 遵循 CLI 实例操作统一模式：`TransitionPolicy` / `StateDelta` 处理状态转换，`WorktreeManager.terminate_instance()` 原子化执行全部副作用。
+
+1. 校验实例状态为 `ACTIVE` 或 `PAUSED`（终态实例不可重复终止）
+2. `StateDelta` 将实例状态 → `FAILED`，记录终止原因为 `user_terminated`
+3. `WorktreeManager.terminate_instance()` 原子化执行：清理 anchor tags、移除全部 worktree、归档实例目录
 4. 写入 deviation 日志（`type: USER_TERMINATED`）
 5. 写入 timeline（`active→failed`，标注 `terminated_by: user`）
 6. 返回 `{status: "ok", terminated_instance: "<id>", cleaned_worktrees: [...]}`
@@ -361,7 +378,38 @@ terminate --instance <id>
 
 ---
 
-## 八、无状态契约
+## 八、`pause` / `resume` —— 暂停与恢复实例
+
+```
+pause --instance <id>
+resume --instance <id>
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--instance` | 是 | 实例 ID |
+
+### `pause` 行为
+
+1. 校验实例状态为 `ACTIVE`
+2. `TransitionPolicy.on_pause(state)` 生成 `StateDelta`：
+   - 所有 `RUNNING` stage → `PENDING`
+   - 实例状态 → `PAUSED`
+3. `state.apply_delta(delta)` → `save_instance_state()`
+4. 写入 timeline（`active→paused`）
+5. 返回 `{status: "ok", instance_id: "<id>", new_status: "PAUSED"}`
+
+### `resume` 行为
+
+1. 校验实例状态为 `PAUSED`
+2. `TransitionPolicy.on_resume(state)` 生成 `StateDelta`：实例状态 → `ACTIVE`
+3. `state.apply_delta(delta)` → `save_instance_state()`
+4. 写入 timeline（`paused→active`）
+5. 返回 `{status: "ok", instance_id: "<id>", new_status: "ACTIVE"}`
+
+---
+
+## 九、无状态契约
 
 ```
 每次调用 = 冷启动
