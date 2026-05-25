@@ -44,9 +44,9 @@ class FinalizeProcessor:
         non_virtual = [s for s in ctx.spec.stages if s.target_type != StageTargetType.VIRTUAL]
         if not non_virtual:
             return False
-        stage_map = state.stage_map()
         return all(
-            stage_map.get(s.stage_id) and stage_map[s.stage_id].status == StageStatus.DONE
+            state.first_stage_by_id(s.stage_id)
+            and state.first_stage_by_id(s.stage_id).status == StageStatus.DONE
             for s in non_virtual
         )
 

@@ -173,26 +173,6 @@ class InstanceState:
 
     # ── 查询辅助 ──
 
-    def stage_map(self) -> dict[str, StageState]:
-        """按 stage_id 构建查找表（同 stage_id 取最后一条，兼容旧行为）。
-
-        .. deprecated::
-            使用 stages_by_id() 或 stage_by_instance_id() 替代。
-            将在 Phase 3 删除。
-        """
-        import warnings
-
-        warnings.warn(
-            "stage_map() is deprecated. Use stages_by_id() for multi-match "
-            "or stage_by_instance_id() for exact lookup.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        m: dict[str, StageState] = {}
-        for s in self.stages:
-            m[s.stage_id] = s
-        return m
-
     def stage_by_id(self, stage_id: str) -> StageState | None:
         """按 stage_id 查找（同 id 取最后一条）。"""
         result: StageState | None = None

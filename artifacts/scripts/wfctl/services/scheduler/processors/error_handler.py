@@ -27,7 +27,6 @@ class ErrorHandlerProcessor:
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
         delta = StateDelta()
         actions: list[dict] = []
-        stage_map = state.stage_map()
 
         for st in state.stages:
             if st.status != StageStatus.ERROR:
@@ -53,7 +52,7 @@ class ErrorHandlerProcessor:
             # 重试耗尽
             failure_edge = get_failure_edge(ctx.adj, stage_id)
             if failure_edge and st.loop_counter < (failure_edge.max_loop or 0):
-                target_stage = stage_map.get(failure_edge.to_stage)
+                target_stage = state.first_stage_by_id(failure_edge.to_stage)
                 if not target_stage:
                     delta.instance_updates["status"] = InstanceStatus.FAILED
                     actions.append({
@@ -78,7 +77,7 @@ class ErrorHandlerProcessor:
             # failure edge 也耗尽
             loop_exceeded_edge = get_loop_exceeded_edge(ctx.adj, stage_id)
             if loop_exceeded_edge:
-                target_stage = stage_map.get(loop_exceeded_edge.to_stage)
+                target_stage = state.first_stage_by_id(loop_exceeded_edge.to_stage)
                 updates = {}
                 if target_stage:
                     updates[target_stage.stage_instance_id] = {

@@ -22,19 +22,19 @@ class ParallelSplitProcessor:
     """处理 parallel 拆分。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
-        from services.scheduler_legacy import _load_running_agents
+        from runtime.agent.manager import RunningAgentManager
 
-        running_agents = _load_running_agents(ctx.instance_id)
+        agent_mgr = RunningAgentManager(ctx.root)
+        running_agents = agent_mgr.load()
         actions: list[dict] = []
         delta = StateDelta()
-        stage_map = state.stage_map()
 
         for stage_spec in ctx.spec.stages:
             if not stage_spec.parallel:
                 continue
 
             source_stage_id = stage_spec.parallel.source
-            source_stage = stage_map.get(source_stage_id)
+            source_stage = state.first_stage_by_id(source_stage_id)
             if not source_stage or source_stage.status != StageStatus.DONE:
                 continue
 
@@ -119,7 +119,9 @@ class ParallelSplitProcessor:
             delta = delta.merge(StateDelta(
                 remove_stage_instance_ids=[
                     s.stage_instance_id for s in state.stages
-                    if s.stage_id == stage_spec.stage_id and not s.fan_out_target
+                    if s.stage_id == stage_spec.stage_id
+                    and not s.fan_out_target
+                    and s.status == StageStatus.PENDING
                 ],
             ))
             delta = delta.merge(StateDelta(append_stages=new_stages))
@@ -130,15 +132,14 @@ class ParallelSplitProcessor:
         self, state: InstanceState, stage_spec, instance_id: str, source_stage_id: str,
         running_agents: list[dict], reason: str
     ) -> tuple[list[dict], StateDelta]:
-        """处理缺失 parallel_targets。返回 (actions, delta)。"""
         max_retry = 2
         retry_count = self._get_parallel_retry(state, stage_spec.stage_id)
 
-        source_agent = None
-        for a in running_agents:
-            if a.get("instance_id") == instance_id and a.get("stage_id") == source_stage_id:
-                source_agent = a
-                break
+        source_agent = next(
+            (a for a in running_agents
+             if a.get("instance_id") == instance_id and a.get("stage_id") == source_stage_id),
+            None,
+        )
 
         if source_agent and retry_count < max_retry:
             new_count = retry_count + 1

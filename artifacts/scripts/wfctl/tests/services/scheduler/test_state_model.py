@@ -1,7 +1,5 @@
 """测试 state_model 的序列化/反序列化兼容性。"""
 
-import warnings
-
 import pytest
 
 from core.schema.interface import StageStatus, InstanceStatus
@@ -326,11 +324,4 @@ class TestNewQueryMethods:
         inst = InstanceState(instance_id="test")
         assert inst.first_stage_by_id("nonexistent") is None
 
-    def test_stage_map_deprecation_warning(self):
-        """stage_map() 触发 DeprecationWarning。"""
-        inst = InstanceState(instance_id="test")
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            inst.stage_map()
-            assert len(w) == 1
-            assert issubclass(w[0].category, DeprecationWarning)
+

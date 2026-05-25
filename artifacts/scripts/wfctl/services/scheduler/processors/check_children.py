@@ -135,7 +135,7 @@ class CheckChildrenProcessor:
                 worktree_base_ref=base_ref,
             )
 
-            delta.stage_updates[st.stage_id] = {
+            delta.stage_updates[st.stage_instance_id] = {
                 "child_instance_id": child_result["instance_id"],
                 "status": StageStatus.RUNNING,
                 "started_at": iso_timestamp(),
