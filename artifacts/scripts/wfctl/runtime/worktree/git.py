@@ -72,7 +72,7 @@ def git_tag_exists(repo: Path, tag_name: str) -> bool:
 
 def git_status_porcelain(repo: Path) -> tuple[int, str, str]:
     """git -C <repo> status --porcelain"""
-    return _git(repo, "status", "--porcelain")
+    return _git(repo, "-c", "core.quotePath=false", "status", "--porcelain")
 
 
 def git_merge_base(repo: Path, ref_a: str, ref_b: str) -> tuple[int, str, str]:
