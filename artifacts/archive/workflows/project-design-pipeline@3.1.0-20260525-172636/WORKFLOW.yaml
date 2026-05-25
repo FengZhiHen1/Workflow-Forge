@@ -19,6 +19,7 @@ stages:
     name: "收集需求与上下文"
     skill_id: design-tech-stack
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -26,6 +27,7 @@ stages:
     name: "架构关节点选型"
     skill_id: design-tech-stack
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -33,6 +35,7 @@ stages:
     name: "技术栈方案输出"
     skill_id: design-tech-stack
     mandatory: true
+    confirmation_point: true
     retry: 1
     model: light
 
@@ -42,6 +45,7 @@ stages:
     name: "项目结构设计"
     skill_id: project-structure-designer
     mandatory: true
+    confirmation_point: true
     retry: 1
     model: light
 
@@ -51,6 +55,7 @@ stages:
     name: "功能模块拆解"
     skill_id: module-breakdown-designer
     mandatory: true
+    confirmation_point: true
     retry: 1
     model: light
 
@@ -58,6 +63,7 @@ stages:
     name: "模块依赖分析"
     skill_id: module-dependency-analyzer
     mandatory: true
+    confirmation_point: false
     retry: 1
     model: light
 
@@ -70,6 +76,7 @@ stages:
     name: "项目同步与模块调度"
     skill_id: project-dispatch-manager
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -77,11 +84,11 @@ stages:
     name: "模块设计子工作流调度"
     workflow: module-design-pipeline@1.0.0
     model: light
-    retry: 1
     parallel:
       source: s07-project-sync-and-dispatch
       max_instances: 10
     mandatory: true
+    confirmation_point: false
 
   # ==================== 阶段五：项目级同步检查（s09）====================
 
@@ -89,6 +96,7 @@ stages:
     name: "项目级同步矛盾检查"
     skill_id: project-sync-aggregator
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -103,16 +111,16 @@ edges:
   # -- s01 收集需求（确认点）--
   - from: s01-collect-requirements
     to: s02-architecture-selection
-    condition: success
+    condition: confirmed
     choice: "通过"
   - from: s01-collect-requirements
     to: s01-collect-requirements
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s01-collect-requirements
     to: s99-workflow-end
-    condition: success
+    condition: rejected
     choice: "放弃"
   - from: s01-collect-requirements
     to: s99-workflow-end
@@ -121,16 +129,16 @@ edges:
   # -- s02 架构选型（确认点）--
   - from: s02-architecture-selection
     to: s03-tech-stack-output
-    condition: success
+    condition: confirmed
     choice: "通过"
   - from: s02-architecture-selection
     to: s02-architecture-selection
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s02-architecture-selection
     to: s99-workflow-end
-    condition: success
+    condition: rejected
     choice: "放弃"
   - from: s02-architecture-selection
     to: s99-workflow-end
@@ -139,16 +147,16 @@ edges:
   # -- s03 技术栈输出（确认点）--
   - from: s03-tech-stack-output
     to: s04-project-structure-design
-    condition: success
+    condition: confirmed
     choice: "通过"
   - from: s03-tech-stack-output
     to: s03-tech-stack-output
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s03-tech-stack-output
     to: s99-workflow-end
-    condition: success
+    condition: rejected
     choice: "放弃"
   - from: s03-tech-stack-output
     to: s99-workflow-end
@@ -157,16 +165,16 @@ edges:
   # -- s04 项目结构设计（确认点）--
   - from: s04-project-structure-design
     to: s05-module-breakdown
-    condition: success
+    condition: confirmed
     choice: "通过"
   - from: s04-project-structure-design
     to: s04-project-structure-design
-    condition: success
+    condition: confirmed
     choice: "调整结构"
     max_loop: 3
   - from: s04-project-structure-design
     to: s99-workflow-end
-    condition: success
+    condition: rejected
     choice: "放弃"
   - from: s04-project-structure-design
     to: s99-workflow-end
@@ -175,16 +183,16 @@ edges:
   # -- s05 模块拆解（确认点）--
   - from: s05-module-breakdown
     to: s06-dependency-analysis
-    condition: success
+    condition: confirmed
     choice: "通过"
   - from: s05-module-breakdown
     to: s05-module-breakdown
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s05-module-breakdown
     to: s99-workflow-end
-    condition: success
+    condition: rejected
     choice: "放弃"
   - from: s05-module-breakdown
     to: s99-workflow-end
@@ -201,24 +209,24 @@ edges:
   # -- s07 项目同步与模块调度（确认点）--
   #
   # "确认调度"走中继确认（自循环）：用户确认后 SubAgent 继续执行，
-  # 根据用户选择产出 parallel_targets，然后上报 DONE → s08。
+  # 根据用户选择产出 parallel_targets，然后上报 DONE（success）→ s08。
   # 这样可以确保 parallel_targets 在 DONE 之前被正确产出。
   - from: s07-project-sync-and-dispatch
     to: s08-dispatch-modules
-    condition: always
+    condition: success
   - from: s07-project-sync-and-dispatch
     to: s07-project-sync-and-dispatch
-    condition: success
+    condition: confirmed
     choice: "确认调度"
     max_loop: 3
   - from: s07-project-sync-and-dispatch
     to: s07-project-sync-and-dispatch
-    condition: success
+    condition: confirmed
     choice: "重新选择"
     max_loop: 3
   - from: s07-project-sync-and-dispatch
     to: s99-workflow-end
-    condition: success
+    condition: rejected
     choice: "终止工作流"
   - from: s07-project-sync-and-dispatch
     to: s99-workflow-end
@@ -245,43 +253,43 @@ edges:
   #   "放弃" → s99（结束）
   - from: s09-project-sync-check
     to: s02-architecture-selection
-    condition: success
+    condition: confirmed
     choice: "修改技术栈"
     max_loop: 3
     loop_counter_stage: "s09-project-sync-check"
     cascade_reset_until: "s09-project-sync-check"
   - from: s09-project-sync-check
     to: s04-project-structure-design
-    condition: success
+    condition: confirmed
     choice: "调整项目结构"
     max_loop: 3
     loop_counter_stage: "s09-project-sync-check"
     cascade_reset_until: "s09-project-sync-check"
   - from: s09-project-sync-check
     to: s05-module-breakdown
-    condition: success
+    condition: confirmed
     choice: "调整模块边界"
     max_loop: 3
     loop_counter_stage: "s09-project-sync-check"
     cascade_reset_until: "s09-project-sync-check"
   - from: s09-project-sync-check
     to: s07-project-sync-and-dispatch
-    condition: success
+    condition: confirmed
     choice: "继续处理其他模块"
     max_loop: 3
     loop_counter_stage: "s09-project-sync-check"
     cascade_reset_until: "s09-project-sync-check"
   - from: s09-project-sync-check
     to: s99-workflow-end
-    condition: success
+    condition: confirmed
     choice: "接受差异"
   - from: s09-project-sync-check
     to: s99-workflow-end
-    condition: success
+    condition: confirmed
     choice: "终止工作流"
   - from: s09-project-sync-check
     to: s99-workflow-end
-    condition: success
+    condition: rejected
     choice: "放弃"
   - from: s09-project-sync-check
     to: s99-workflow-end

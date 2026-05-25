@@ -19,6 +19,7 @@ stages:
     name: "存量检测与增量路径判定"
     skill_id: existing-artifact-detector
     mandatory: true
+    confirmation_point: false
     retry: 1
     model: light
 
@@ -28,6 +29,7 @@ stages:
     name: "逆向推导意图与规格"
     skill_id: code-reverse-engineering-writer
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -37,6 +39,7 @@ stages:
     name: "差异对比与增量更新"
     skill_id: design-code-diff-updater
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -46,6 +49,7 @@ stages:
     name: "意图澄清与书写授权"
     skill_id: module-intent-writer
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -53,6 +57,7 @@ stages:
     name: "生成意图文档与冻结授权"
     skill_id: module-intent-writer
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -62,6 +67,7 @@ stages:
     name: "材料准备"
     skill_id: module-spec-writer
     mandatory: true
+    confirmation_point: false
     retry: 1
     model: light
 
@@ -69,6 +75,7 @@ stages:
     name: "技术决策预研"
     skill_id: spec-researcher
     mandatory: true
+    confirmation_point: false
     retry: 1
     model: light
 
@@ -76,6 +83,7 @@ stages:
     name: "生成设计文档"
     skill_id: module-spec-writer
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -83,6 +91,7 @@ stages:
     name: "契约协调"
     skill_id: contract-harmonizer
     mandatory: true
+    confirmation_point: false
     retry: 1
     model: light
 
@@ -90,6 +99,7 @@ stages:
     name: "最终规格输出"
     skill_id: module-spec-writer
     mandatory: true
+    confirmation_point: true
     retry: 0
     model: light
 
@@ -99,6 +109,7 @@ stages:
     name: "模块级同步矛盾上报"
     skill_id: module-sync-reporter
     mandatory: true
+    confirmation_point: false
     retry: 0
     model: light
 
@@ -152,16 +163,16 @@ edges:
   # 澄清为内部多轮问答，完成后请求书写授权
   - from: s03-intent-clarify-authorize
     to: s04-intent-generate-freeze
-    condition: success
+    condition: confirmed
     choice: "授权"
   - from: s03-intent-clarify-authorize
     to: s03-intent-clarify-authorize
-    condition: success
+    condition: rejected
     choice: "继续澄清"
     max_loop: 3
   - from: s03-intent-clarify-authorize
     to: s10-module-sync-report
-    condition: success
+    condition: rejected
     choice: "放弃模块"
   - from: s03-intent-clarify-authorize
     to: s10-module-sync-report
@@ -171,16 +182,16 @@ edges:
   # 生成文档并写入磁盘后，呈现冻结确认
   - from: s04-intent-generate-freeze
     to: s05-spec-prepare
-    condition: success
+    condition: confirmed
     choice: "确认冻结"
   - from: s04-intent-generate-freeze
     to: s03-intent-clarify-authorize
-    condition: success
+    condition: rejected
     choice: "重新澄清"
     max_loop: 3
   - from: s04-intent-generate-freeze
     to: s10-module-sync-report
-    condition: success
+    condition: rejected
     choice: "放弃模块"
   - from: s04-intent-generate-freeze
     to: s10-module-sync-report
@@ -207,16 +218,16 @@ edges:
   # -- s07 生成设计文档（确认点）--
   - from: s07-spec-design-doc
     to: s08-contract-harmonize
-    condition: success
+    condition: confirmed
     choice: "通过"
   - from: s07-spec-design-doc
     to: s07-spec-design-doc
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s07-spec-design-doc
     to: s10-module-sync-report
-    condition: success
+    condition: rejected
     choice: "放弃模块"
   - from: s07-spec-design-doc
     to: s10-module-sync-report
@@ -233,16 +244,16 @@ edges:
   # -- s09 最终规格输出（确认点）--
   - from: s09-spec-final
     to: s10-module-sync-report
-    condition: success
+    condition: confirmed
     choice: "输出规格"
   - from: s09-spec-final
     to: s09-spec-final
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s09-spec-final
     to: s10-module-sync-report
-    condition: success
+    condition: rejected
     choice: "放弃模块"
   - from: s09-spec-final
     to: s10-module-sync-report
@@ -254,25 +265,26 @@ edges:
   # 完成后跳过 s03-s04（意图澄清/授权/生成/冻结），直接汇入 s04 冻结逆推结果
   - from: s02-reverse-engineer-intent
     to: s04-intent-generate-freeze
-    condition: success
+    condition: confirmed
     choice: "确认逆推结果"
   - from: s02-reverse-engineer-intent
     to: s02-reverse-engineer-intent
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s02-reverse-engineer-intent
     to: s10-module-sync-report
-    condition: success
+    condition: rejected
     choice: "放弃模块"
   - from: s02-reverse-engineer-intent
     to: s10-module-sync-report
     condition: loop_exceeded
 
   # code_only 路径下 s04 冻结后进入 s08 契约协调（跳过 s05-s07 规格准备/预研/设计文档）
+  # s04 confirmed "确认冻结" → s05（全流程），s04 confirmed "冻结并进入契约协调" → s08（code_only）
   - from: s04-intent-generate-freeze
     to: s08-contract-harmonize
-    condition: success
+    condition: confirmed
     choice: "冻结并进入契约协调"
 
   # ==================== 差异对比路径：both_exist ====================
@@ -281,16 +293,16 @@ edges:
   # 完成后跳过意图编写和规格准备阶段，直接进入 s09 最终规格输出
   - from: s02-diff-and-update
     to: s09-spec-final
-    condition: success
+    condition: confirmed
     choice: "确认更新"
   - from: s02-diff-and-update
     to: s02-diff-and-update
-    condition: success
+    condition: confirmed
     choice: "继续完善"
     max_loop: 3
   - from: s02-diff-and-update
     to: s10-module-sync-report
-    condition: success
+    condition: rejected
     choice: "放弃模块"
   - from: s02-diff-and-update
     to: s10-module-sync-report
