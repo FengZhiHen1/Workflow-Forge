@@ -8,10 +8,10 @@
 
 ### SM-1 🤖 循环到底 (Loop Exhaustion)
 
-**攻击场景**：用户在每个确认点反复选择"继续完善"，直到 `max_loop` 耗尽。
+(已废弃) 确认点字段已移除。确认现在是 Skill 内部 AskUserQuestion 行为。
 
 **推演方式**：
-- 扫描所有 `confirmed(to=self)` edge
+- (已废弃) confirmed 边不再存在
 - 模拟 `loop_counter` 递推到 `max_loop`
 - 检查 `loop_exceeded` edge 是否存在
 - 追踪 `loop_exceeded` 出口是否可达终态
@@ -20,21 +20,21 @@
 
 ### SM-2 🤖 全部放弃 (All Reject)
 
-**攻击场景**：用户在每个确认点全部选择"放弃"。
+(已废弃) 确认点字段已移除。
 
 **推演方式**：
-- 遍历所有 `rejected` edge
-- 追踪每条 rejected 路径是否可达终态（s99 或安全无出边节点）
-- 无 rejected edge 的确认点 → warning
+- (已废弃) rejected 边不再存在
+- (已废弃)
+- (已废弃)
 
-**Severity**：rejected 路径不通终态 → critical；无 rejected 出口 → warning
+(已废弃)
 
 ### SM-3 🤖 选项组合穷举 (Choice Combination Enumeration)
 
-**攻击场景**：对所有确认点的所有 choice 值做笛卡尔积，检查是否所有组合都有活路。
+(已废弃) 确认点字段已移除。choice 路由现在由 SubAgent 通过 DONE + routing_choice 选择。
 
 **推演方式**：
-- 收集所有确认点的 choice 选项
+- (已废弃)
 - 笛卡尔积穷举（>1000 种时降级为 info，不穷举）
 - 每条组合推演到终态
 
@@ -42,7 +42,7 @@
 
 ### SM-4 🤖 失败路径检查 (Failure Exhaustion)
 
-**攻击场景**：非确认点 Stage 报 ERROR，retry 耗尽后无处可去。
+**攻击场景**：Stage 报 ERROR，retry 耗尽后无处可去。
 
 **推演方式**：
 - 遍历所有非确认、非虚拟 stage
@@ -94,12 +94,12 @@
 
 ## 三、用户行为攻击 (UB: User Behavior)
 
-### UB-1 🤖 rejected 回跳一致性
+### UB-1 🤖 (已废弃) rejected 回跳一致性
 
-**攻击场景**：用户确认点选择"拒绝"，回跳到上游 stage，但从上游无法再次到达当前 stage——用户被剥夺重试机会。
+(已废弃) 确认点字段已移除。rejected 边不再存在。回边检查现在由 wfctl domain/dag/validator.py 的通用回边可回复性检查覆盖。
 
 **推演方式**：
-- 对每个 rejected edge（to ≠ s99）
+- (已废弃)
 - BFS 判断从 `to` 能否回到 `from`
 
 **Severity**：不可达 → info（需结合业务语义判断是否为设计意图）
@@ -247,11 +247,11 @@
 
 **AI 检查要点**：
 - Skill 的 AskUserQuestion options 列表 → 提取每个 option 的 value（业务语义）
-- YAML edges（`from=<stage_id>`、`condition=confirmed|rejected`）→ 提取 `choice` 值（工作流语义）
+- (已废弃) confirmed/rejected 边不再存在
 - 判断映射关系：
   - **YAML choice 在 Skill 选项中无对应**：WORKFLOW.yaml 的 `confirm_questions` 未覆盖 Skill 的所有业务选项 → **工作流层问题**
   - **Skill 选项在 YAML edges 中无对应**：可能是工作流层遗漏了 edges，也可能是 Skill 内部逻辑选项（如"重新尝试"）不需要对应 edge → **需人工确认**
-  - **语义不一致（如 Skill 说"保存/放弃"，YAML 映射为 confirmed/rejected）**：正常框架映射，不标记为问题
+  - (已废弃)
 
 **责任归属**：
 
@@ -319,7 +319,7 @@
 
 **推演方式**：
 - `wfctl create` → 循环 `next`
-- 驱动到确认点 stage
+- (已废弃)
 - 写 AWAITING_CONFIRM Message → `wfctl next` → `wfctl confirm --choice "继续完善"`
 - 重复直到 `loop_counter >= max_loop`
 - 检查 instance 是否走向 FAILED（loop_exceeded 触发）
@@ -328,11 +328,11 @@
 
 ### LV-2 🤖 全部放弃 (All Reject Live)
 
-**攻击场景**：每个确认点都选"放弃"，验证 instance 终态。
+(已废弃) 确认点字段已移除。用户"放弃"由 SubAgent 通过 DONE + routing_choice 处理。
 
 **推演方式**：
 - `wfctl create` → 循环 `next`
-- 遇到 confirm action → 选 rejected choice → 写 AWAITING_CONFIRM → confirm
+- (已废弃)
 - 循环直到 instance COMPLETED 或 FAILED
 - 检查终态是否合法
 
@@ -343,7 +343,7 @@
 **攻击场景**：`wfctl confirm --choice "___NONEXISTENT___"`，传入 YAML edges 中不存在的 choice 值。
 
 **推演方式**：
-- 驱动到确认点 stage
+- (已废弃)
 - `wfctl confirm --choice` 传入不存在的值
 - 检查 wfctl 是否返回 error
 

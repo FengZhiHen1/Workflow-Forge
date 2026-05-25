@@ -38,8 +38,6 @@ except ImportError:
 COND_ALWAYS = "always"
 COND_SUCCESS = "success"
 COND_FAILURE = "failure"
-COND_CONFIRMED = "confirmed"
-COND_REJECTED = "rejected"
 COND_LOOP_EXCEEDED = "loop_exceeded"
 
 SEVERITY_CRITICAL = "critical"
@@ -56,7 +54,7 @@ MAX_NESTING_DEPTH = 3
 
 class Stage:
     __slots__ = ("stage_id", "name", "skill_id", "workflow", "mandatory",
-                 "confirmation_point", "retry", "timeout_seconds", "model",
+                 "retry", "timeout_seconds", "model",
                  "exclusive", "parallel", "parallel_source", "parallel_max_instances")
 
     def __init__(self, raw: dict):
@@ -65,7 +63,6 @@ class Stage:
         self.skill_id = raw.get("skill_id")
         self.workflow = raw.get("workflow")
         self.mandatory = raw.get("mandatory", True)
-        self.confirmation_point = raw.get("confirmation_point", False)
         self.retry = raw.get("retry", 0)
         if not isinstance(self.retry, int):
             self.retry = 0
@@ -118,13 +115,13 @@ def build_graph(stages: list[Stage], edges: list[Edge]) -> dict:
 
 def collect_choices(stages: list[Stage], edges: list[Edge]) -> list:
     """
-    收集所有确认点的 choice 选项，返回列表：
+    收集所有 SUCCESS + choice 边的选项，返回列表：
     [{stage_id, choices: [{value, condition, to_id}]}, ...]
     用于路径穷举的笛卡尔积。
     """
     choice_map = defaultdict(list)
     for e in edges:
-        if e.condition in (COND_CONFIRMED, COND_REJECTED) and e.choice:
+        if e.condition == COND_SUCCESS and e.choice:
             choice_map[e.from_id].append({
                 "value": e.choice,
                 "condition": e.condition,
@@ -134,7 +131,7 @@ def collect_choices(stages: list[Stage], edges: list[Edge]) -> list:
 
     result = []
     for s in stages:
-        if s.confirmation_point and s.stage_id in choice_map:
+        if s.stage_id in choice_map:
             result.append({
                 "stage_id": s.stage_id,
                 "choices": choice_map[s.stage_id],
@@ -167,11 +164,6 @@ def find_loop_exceeded_exit(adj: dict, stage_id: str) -> list[str]:
     """返回某 stage 的 loop_exceeded edge 指向的下游。"""
     return follow_edge(adj, stage_id, COND_LOOP_EXCEEDED)
 
-
-def find_rejected_exits(adj: dict, stage_id: str) -> list[str]:
-    """返回某 stage 的所有 rejected edge 指向的下游（不含 choice）。"""
-    candidates = adj.get(stage_id, [])
-    return [e.to_id for e in candidates if e.condition == COND_REJECTED]
 
 
 def find_failure_exits(adj: dict, stage_id: str) -> list[str]:
@@ -235,13 +227,11 @@ def _f(severity: str, category: str, attack: str, stages_involved: list[str],
 
 
 def audit_sm1_loop_exhaustion(stages: list[Stage], adj: dict, edges: list[Edge]) -> None:
-    """SM-1: 每个确认点的'继续完善'循环到底，检查 loop_exceeded 出口。"""
+    """SM-1: 检测 SUCCESS 自循环边是否缺少 loop_exceeded 出口。"""
     for s in stages:
-        if not s.confirmation_point:
-            continue
-        # 找 confirmed(to=self) 且有 max_loop 的 edge
+        # 找 SUCCESS(to=self) 且有 choice 的 edge
         self_loops = [e for e in adj.get(s.stage_id, [])
-                      if e.condition == COND_CONFIRMED
+                      if e.condition == COND_SUCCESS
                       and e.to_id == s.stage_id
                       and e.max_loop is not None]
         if not self_loops:
@@ -268,34 +258,13 @@ def audit_sm1_loop_exhaustion(stages: list[Stage], adj: dict, edges: list[Edge])
 
 
 def audit_sm2_all_reject(stages: list[Stage], adj: dict) -> None:
-    """SM-2: 每个确认点全部选'放弃'，检查每条 rejected 路径。"""
-    for s in stages:
-        if not s.confirmation_point:
-            continue
-        rejected_edges = [e for e in adj.get(s.stage_id, [])
-                          if e.condition == COND_REJECTED]
-        if not rejected_edges:
-            # 有确认点但没有 rejected 出边，用户被逼着只能通过
-            _f(SEVERITY_WARNING, "state_machine",
-               f"确认点 '{s.stage_id}' 缺少拒绝出口",
-               [s.stage_id],
-               f"stage '{s.stage_id}' confirmation_point=true 但没有 rejected 出边——用户只能确认不能拒绝",
-               "确认点应提供至少一个 rejected 出边，给用户'放弃'或'中止'的选项",
-               f"添加 from={s.stage_id} to=<终态/上游> condition=rejected choice='放弃' edge")
-            continue
-
-        for e in rejected_edges:
-            if not can_reach_terminal(adj, e.to_id):
-                _f(SEVERITY_CRITICAL, "state_machine",
-                   f"选择'{e.choice}'后路径不通终态",
-                   [s.stage_id, e.to_id],
-                   f"rejected edge from={s.stage_id} to={e.to_id} (choice={e.choice!r}) 无法到达终态",
-                   "拒绝后的路径应最终可达 s99 或安全终态",
-                   f"检查 '{e.to_id}' 的出边是否完整")
+    """SM-2 (已废弃): rejected 边条件已移除。确认现在是 Skill 内部 AskUserQuestion 行为，
+    用户选择由 SubAgent 通过 DONE + routing_choice 处理，不再有独立的 rejected 路径。"""
+    pass
 
 
 def audit_sm3_choice_combinations(stages: list[Stage], adj: dict, choices_info: list[dict]) -> None:
-    """SM-3: 选项组合穷举。对确认点做笛卡尔积，逐条路径推演。"""
+    """SM-3 (已废弃): 确认点字段已移除。choice 路由现在由 SubAgent 通过 DONE + routing_choice 选择。"""
     if not choices_info:
         return
 
@@ -344,7 +313,7 @@ def audit_sm3_choice_combinations(stages: list[Stage], adj: dict, choices_info: 
                 # self-loop——需要检查 max_loop
                 edge_obj = None
                 for e in adj.get(sid, []):
-                    if e.choice == choice_val and e.condition == COND_CONFIRMED and e.to_id == sid:
+                    if e.choice == choice_val and e.condition == COND_SUCCESS and e.to_id == sid:
                         edge_obj = e
                         break
                 if edge_obj and edge_obj.max_loop:
@@ -374,12 +343,11 @@ def audit_sm3_choice_combinations(stages: list[Stage], adj: dict, choices_info: 
 
 
 def audit_sm4_failure_exhaustion(stages: list[Stage], adj: dict) -> None:
-    """SM-4: 非确认点失败路径。模拟 ERROR + retry 耗尽。"""
+    """SM-4: 失败路径。模拟 ERROR + retry 耗尽。"""
     for s in stages:
         if is_virtual(s.stage_id):
             continue
-        if s.confirmation_point:
-            continue  # 确认点的 failure 语义不同
+        # 所有 stage 同等待遇
 
         failure_exits = find_failure_exits(adj, s.stage_id)
         if not failure_exits:
@@ -437,157 +405,10 @@ def audit_cc_aggregation_any(stages: list[Stage], edges: list[Edge]) -> None:
                f"确认 '{e.from_id}' 的并行分支是否为互斥替代方案")
 
 
-def audit_ub1_rejected_loop_back(stages: list[Stage], adj: dict) -> None:
-    """UB-1: rejected 回跳后的状态一致性——回到上游后能否再次到达当前 stage。"""
-    for s in stages:
-        if not s.confirmation_point:
-            continue
-        rejected_edges_out = [e for e in adj.get(s.stage_id, [])
-                              if e.condition == COND_REJECTED]
-        for e in rejected_edges_out:
-            # e.to_id 是回跳目标（通常是上游或 s99）
-            if e.to_id == END_STAGE:
-                continue  # 放弃到终态，正常
-            # 检查从回跳目标能否再次到达当前 stage
-            if not has_path_to(adj, e.to_id, s.stage_id):
-                _f(SEVERITY_INFO, "state_machine",
-                   f"rejected 回跳后可能无法重新到达 '{s.stage_id}'",
-                   [s.stage_id, e.to_id],
-                   f"rejected edge to={e.to_id}，但从 '{e.to_id}' 无法再次到达 '{s.stage_id}'——用户拒绝后没有重试路径",
-                   "如果 rejected 意图是'回去修改再提交'，回跳目标应能重新回到当前 stage",
-                   f"确认 '{e.to_id}' 是否能重新到达 '{s.stage_id}'")
-
-
-def audit_if1_timeout_retry_chain(stages: list[Stage], adj: dict) -> None:
-    """IF-1: 每个 Stage 超时 → retry 耗尽 → failure 链路完整性。"""
-    for s in stages:
-        if is_virtual(s.stage_id):
-            continue
-        if s.retry == 0 and s.confirmation_point:
-            continue  # 确认点 retry=0 是正常的
-
-        # 有 retry > 0 的 stage，检查 retry 耗尽后的出路
-        if s.retry > 0:
-            failure_exits = find_failure_exits(adj, s.stage_id)
-            loop_exits = find_loop_exceeded_exit(adj, s.stage_id)
-            if not failure_exits and not loop_exits:
-                _f(SEVERITY_WARNING, "infrastructure",
-                   f"stage '{s.stage_id}' retry={s.retry} 但没有 failure 或 loop_exceeded 出口",
-                   [s.stage_id],
-                   f"该 stage 允许 {s.retry} 次重试，但重试耗尽后无出口——实例将直接 FAILED",
-                   "有 retry 的 stage 应提供 failure 或 loop_exceeded edge",
-                   f"添加 failure 或 loop_exceeded edge")
-
-
-def audit_sw1_sub_workflow_failure_propagation(stages: list[Stage], adj: dict) -> None:
-    """SW-1: 子工作流 FAILED 传播——父 Stage 是否有 failure edge。"""
-    for s in stages:
-        if not s.workflow:
-            continue
-        failure_exits = find_failure_exits(adj, s.stage_id)
-        if not failure_exits:
-            _f(SEVERITY_CRITICAL, "sub_workflow",
-               f"子工作流 stage '{s.stage_id}' 缺少 failure 出口",
-               [s.stage_id],
-               f"stage '{s.stage_id}' 引用子工作流 '{s.workflow}'，但没有 failure edge——子工作流 FAILED 时无处传播",
-               "引用子工作流的 stage 必须有 failure edge",
-               f"添加 from={s.stage_id} condition=failure edge")
-            continue
-        for fexit_id in failure_exits:
-            if not can_reach_terminal(adj, fexit_id):
-                _f(SEVERITY_WARNING, "sub_workflow",
-                   f"子工作流 failure 出口 '{fexit_id}' 可能不可达终态",
-                   [s.stage_id, fexit_id],
-                   f"子工作流 '{s.workflow}' 的 failure edge to={fexit_id} 无法到达终态",
-                   "failure 出口应最终可达安全终态",
-                   f"检查 '{fexit_id}' 的后续路径")
-
-
-def audit_sw2_sub_workflow_blocking(stages: list[Stage], adj: dict) -> None:
-    """SW-2: 子工作流 AWAITING_CONFIRM 挂起是否不必要地阻塞其他父 Stage。"""
-    workflow_stages = [s for s in stages if s.workflow]
-    if not workflow_stages:
-        return
-
-    for s in workflow_stages:
-        # 检查是否有其他 stage 依赖于这个子工作流 stage 的下游
-        downstream = set()
-        for e in adj.get(s.stage_id, []):
-            downstream.add(e.to_id)
-
-        if not downstream:
-            continue  # 子工作流是最后一步，阻塞无所谓
-
-        _f(SEVERITY_INFO, "sub_workflow",
-           f"子工作流 '{s.stage_id}' 可能阻塞下游 stage {sorted(downstream)}",
-           [s.stage_id] + sorted(downstream),
-           f"子工作流 '{s.workflow}' 的下游有 {len(downstream)} 个 stage，如果子工作流内部 AWAITING_CONFIRM 挂起，下游将被阻塞",
-           "确认阻塞是否可接受；如不可接受，考虑异步化或设置 timeout",
-           f"评估下游 stage 是否可独立推进")
-
-
-def audit_sw3_nested_failure_cascade(workflow_refs: dict[str, str],
-                                     workflows_dir: Path | None,
-                                     skills_dir: Path | None,
-                                     resource_bases: list[Path] | None,
-                                     depth: int,
-                                     findings_out: list) -> int:
-    """SW-3: 嵌套子工作流逐级失败传播检查。返回最大嵌套深度。"""
-    if depth > MAX_NESTING_DEPTH:
-        findings_out.append({
-            "severity": SEVERITY_CRITICAL,
-            "category": "sub_workflow",
-            "attack": "嵌套深度超过 3 层",
-            "stages_involved": list(workflow_refs.keys()),
-            "finding": f"子工作流嵌套深度={depth}，超过上限 {MAX_NESTING_DEPTH}",
-            "expected": f"嵌套深度 ≤ {MAX_NESTING_DEPTH}",
-            "recommendation": "减少嵌套层级或合并子工作流",
-        })
-        return depth
-
-    child_max_depth = depth
-    if workflows_dir and workflows_dir.exists():
-        for stage_id, wf_ref in workflow_refs.items():
-            child_yaml = workflows_dir / wf_ref / "WORKFLOW.yaml"
-            if not child_yaml.exists():
-                continue
-            try:
-                text = child_yaml.read_text(encoding="utf-8")
-                child_data = yaml.safe_load(text)
-            except Exception:
-                continue
-            if not isinstance(child_data, dict):
-                continue
-
-            child_stages = [Stage(s) for s in child_data.get("stages", [])
-                            if isinstance(s, dict)]
-            child_edges = [Edge(e) for e in child_data.get("edges", [])
-                           if isinstance(e, dict)]
-            child_adj = build_graph(child_stages, child_edges)
-
-            # Phase 3: 对子工作流的 Skill 做交叉审计
-            child_wf_dir = workflows_dir / wf_ref
-            child_skills_dir = child_wf_dir / "skills"
-            child_search_dirs = [child_skills_dir, skills_dir] if skills_dir else [child_skills_dir]
-            # 子工作流的资源查找: 自身目录 + 传入的祖先资源目录
-            child_resource_bases = [child_wf_dir]
-            if resource_bases:
-                child_resource_bases.extend(resource_bases)
-            _run_phase3_on_stages(child_stages, child_search_dirs,
-                                  resource_search_bases=child_resource_bases,
-                                  workflow_label=f"子工作流 {wf_ref}")
-
-            # 对子工作流中的 workflow stage 递归
-            grandchild_refs = {}
-            for cs in child_stages:
-                if cs.workflow:
-                    grandchild_refs[cs.stage_id] = cs.workflow
-            if grandchild_refs:
-                child_max_depth = audit_sw3_nested_failure_cascade(
-                    grandchild_refs, workflows_dir, skills_dir,
-                    child_resource_bases, depth + 1, findings_out)
-
-    return max(depth, child_max_depth)
+def audit_ub1_backward_edge_returnability(stages: list, adj: dict, findings: list) -> None:
+    """UB-1 (已废弃): rejected 边条件已移除。SUCCESS 回边可回复性已由 wfctl domain/dag/validator.py 的
+    validate_rejected_returnability 改为通用回边检查。此检查不再需要独立的 rejected 语义。"""
+    pass
 
 
 # ─── skill cross-audit (Phase 3: mechanical) ──────────────────
@@ -774,7 +595,7 @@ def audit(workflow_yaml_path: Path, workflows_dir: Path | None,
     audit_cc_parallel_exclusive(stages)
     audit_cc_parallel_vs_max_agents(stages, max_parallel_agents)
     audit_cc_aggregation_any(stages, edges)
-    audit_ub1_rejected_loop_back(stages, adj)
+    audit_ub1_backward_edge_returnability(stages, adj)
     audit_if1_timeout_retry_chain(stages, adj)
     audit_sw1_sub_workflow_failure_propagation(stages, adj)
     audit_sw2_sub_workflow_blocking(stages, adj)
@@ -829,7 +650,7 @@ def audit(workflow_yaml_path: Path, workflows_dir: Path | None,
         "graph_stats": {
             "stage_count": len([s for s in stages if not is_virtual(s.stage_id)]),
             "edge_count": len(edges),
-            "confirmation_count": sum(1 for s in stages if s.confirmation_point),
+            "confirmation_count": 0  # (已废弃——confirmation_point 字段已移除),
             "parallel_stage_count": sum(1 for s in stages if s.parallel),
             "workflow_stage_count": len(workflow_refs),
             "nesting_max_depth": audit_sw3_nested_failure_cascade(

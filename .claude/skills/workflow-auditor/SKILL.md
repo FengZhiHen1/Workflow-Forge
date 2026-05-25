@@ -134,7 +134,7 @@ python <skill-path>/scripts/audit_workflow.py \
 |------|-------------------|
 | 状态机 | SM-1 循环到底、SM-2 全部放弃、SM-3 选项穷举、SM-4 失败路径 |
 | 并发 | CC-1 parallel+exclusive、CC-2 max_instances vs max_agents、CC-4 aggregation:any 标记 |
-| 用户行为 | UB-1 rejected 回跳一致性 |
+| 用户行为 | (已废弃) UB-1 |
 | 基础设施 | IF-1 超时→retry→failure 链路 |
 | 子工作流 | SW-1 FAILED 传播、SW-2 挂起阻塞、SW-3 嵌套深度 |
 
@@ -211,10 +211,10 @@ python <skill-path>/scripts/audit_workflow.py \
 ### SK-4：choice 值 ↔ confirm_questions 对齐
 
 ```markdown
-1. 找出所有 confirmation_point=true 的 stage
+1. (已废弃) confirmation_point 字段已移除
 2. 读取每个 stage 对应的 Skill SKILL.md
 3. 定位 AskUserQuestion 段落，提取每个 option 的 value 文本（业务语义）
-4. 从 WORKFLOW.yaml 的 edges 中提取 from=<stage_id>、condition=confirmed|rejected 的 choice 值（工作流语义）
+4. (已废弃) confirmed/rejected 边不再存在，choice 路由统一使用 SUCCESS 边
 5. 逐项比对，判断责任归属：
    - YAML choice 在 Skill 选项中无对应
      → 工作流层问题：confirm_questions 未覆盖 Skill 业务选项
@@ -281,7 +281,7 @@ python <skill-path>/scripts/audit_workflow_live.py \
 | 攻击 | 做法 | 规范预期 |
 |------|------|---------|
 | SM-1 循环到底 | 反复 confirm `--choice "继续完善"` 直到 `loop_counter >= max_loop` | wfctl 触发 `loop_exceeded` → instance FAILED |
-| SM-2 全部放弃 | 每个确认点选"放弃"选项 | instance → FAILED（有 rejected 出边）或 → COMPLETED（到 s99） |
+| SM-2 (已废弃) | 确认点字段已移除，user rejection 由 SubAgent 通过 DONE + routing_choice 处理 |
 | choice 不匹配 | `confirm --choice "___NONEXISTENT___"` | wfctl 返回 error |
 | IF-1 超时 | 临时设置 `timeout_seconds: 1`，不写任何 Message | wfctl 将 stage 置为 ERROR |
 | SW-1 子传播 | 手动写子 instance FAILED 状态 | 父 stage → ERROR |
@@ -306,7 +306,7 @@ python <skill-path>/scripts/audit_workflow_live.py \
 |------|-----|
 | 审计模式 | symbolic / symbolic+semantic |
 | 总 Stage 数 | N（业务 stage）+ 2（虚拟） |
-| 确认点数 | N |
+| 确认点数 | 0 (已废弃) |
 | 并行 Stage 数 | N |
 | 子工作流引用 | N（最大嵌套深度: N） |
 | 结果 | ✅ Pass / ⚠️ Conditional Pass / ❌ Fail |

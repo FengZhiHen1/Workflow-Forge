@@ -279,19 +279,19 @@ def _save_findings(sandbox: Path) -> None:
 
 
 def attack_sm1_loop_exhaustion(sandbox: Path, data: dict) -> None:
-    """SM-1: 在每个确认点反复选择'继续完善'，验证 loop_exceeded 触发。"""
+    """(已废弃)SM-1: 确认点字段已移除'继续完善'，验证 loop_exceeded 触发。"""
     stages = data.get("stages", [])
     edges = data.get("edges", [])
-    # 找第一个 confirmation_point=true 且有 self-loop 的 stage
+    # (已废弃) confirmation_point 不再存在
     cp_stages = [s for s in stages if isinstance(s, dict)
-                 and s.get("confirmation_point")
+  
                  and s.get("stage_id", "") not in (START_STAGE, END_STAGE)]
 
     for stage in cp_stages:
         sid = stage["stage_id"]
         self_loops = [e for e in edges if isinstance(e, dict)
                       and e.get("from") == sid and e.get("to") == sid
-                      and e.get("condition") == "confirmed" and e.get("max_loop")]
+                      and e.get("condition") == "success" and e.get("max_loop")]
         if not self_loops:
             continue
 
@@ -349,13 +349,13 @@ def attack_sm1_loop_exhaustion(sandbox: Path, data: dict) -> None:
 
 
 def attack_sm2_all_reject(sandbox: Path, data: dict) -> None:
-    """SM-2: 在所有确认点全选'放弃'，验证 rejected → 终态。"""
+    """(已废弃)SM-2: 确认点字段已移除'放弃'，验证 rejected → 终态。"""
     stages = data.get("stages", [])
-    # 构建 stage_id → confirmation_point 映射
+    # (已废弃)
     cp_map: dict[str, bool] = {}
     for s in stages:
         if isinstance(s, dict):
-            cp_map[s.get("stage_id", "")] = s.get("confirmation_point", False)
+            pass
 
     result = _run_wfctl(["create", "--workflow",
                          f"{data['workflow_id']}@{data['version']}"], sandbox)
@@ -366,7 +366,7 @@ def attack_sm2_all_reject(sandbox: Path, data: dict) -> None:
         return
 
     instance_dir = sandbox / ".agent" / "instances" / instance_id
-    rejected_count = 0
+    pass  # (已废弃)
 
     for _ in range(20):  # 安全上限
         next_result = _run_wfctl(["next", "--instance", instance_id], sandbox)
@@ -439,9 +439,9 @@ def attack_sm2_all_reject(sandbox: Path, data: dict) -> None:
 def attack_choice_mismatch(sandbox: Path, data: dict) -> None:
     """Choice 不匹配: wfctl confirm 传入 YAML edges 中不存在的 choice 值。"""
     stages = data.get("stages", [])
-    # 找第一个 confirmation_point=true 的 stage
+    # (已废弃) confirmation_point 不再存在
     cp_stages = [s for s in stages if isinstance(s, dict)
-                 and s.get("confirmation_point")
+  
                  and s.get("stage_id", "") not in (START_STAGE, END_STAGE)]
     if not cp_stages:
         return
@@ -480,7 +480,7 @@ def attack_if1_timeout(sandbox: Path, data: dict) -> None:
     stages = data.get("stages", [])
     candidates = [s for s in stages if isinstance(s, dict)
                   and s.get("stage_id", "") not in (START_STAGE, END_STAGE)
-                  and not s.get("confirmation_point")
+  
                   and s.get("retry", 0) > 0]
     if not candidates:
         return  # 没有可测的 stage
@@ -646,7 +646,7 @@ def _drive_to_stage(sandbox: Path, instance_id: str, instance_dir: Path,
                 break  # 重新调用 next
 
             elif act_type == "confirm":
-                # 上游确认点，选第一个 confirmed choice 通过
+                # (已废弃) 上游确认，选第一个 success choice 通过
                 pending = action.get("pending", [])
                 for p in pending:
                     psid = p.get("stage_id", "")

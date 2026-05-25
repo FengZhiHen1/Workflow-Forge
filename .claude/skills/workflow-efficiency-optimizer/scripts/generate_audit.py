@@ -8,7 +8,7 @@
   - 缓存友好度：基于 cache_hit_rate（0-1 → 0-10 分）
   - Prompt 精简度：基于平均 token/file 和重复块数
   - 并发利用度：基于 parallelism_ratio
-  - 确认点效率：基于 confirmation_point 占比（需 LLM 补充语义分析）
+  - (已废弃) 确认点效率：confirmation_point 字段已移除
   - 上下文传递效率：基于上游 report 字段估算（需 LLM 补充）
 
 用法：
@@ -74,7 +74,7 @@ def score_concurrency(dag_report: dict) -> int:
 def score_confirmation_efficiency(dag_report: dict) -> int:
     """确认点效率（仅基于统计数据，语义分析由 LLM 补充）"""
     total = dag_report.get("summary", {}).get("total_real_stages", 1)
-    conf = dag_report.get("summary", {}).get("confirmation_points", 0)
+    conf = 0  # (已废弃)
     ratio = conf / max(total, 1)
 
     if ratio <= 0.2:
@@ -171,7 +171,7 @@ def generate_recommendations(tokens_report, cache_report, dag_report, dupes_repo
     if conf_ratio > 0.33:
         recs.append({
             "id": "R05",
-            "dimension": "确认点效率",
+            "dimension": "(已废弃) 确认点效率",
             "title": f"确认点占比 {conf_ratio:.0%}，评估是否有可合并或异步化的确认点",
             "description": "需要 LLM 逐项审查每个 confirmation_point 的必要性",
             "estimated_time_saving": f"每移除一个确认点可节省约 1-2 分钟用户等待时间",
