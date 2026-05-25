@@ -22,6 +22,22 @@ from runtime.worktree.manager import (
 )
 
 
+def _ensure_wfctl_gitignore(worktree: Path) -> None:
+    """确保 worktree 的 .gitignore 排除了 wfctl 临时文件。"""
+    gitignore = worktree / ".gitignore"
+    rules = {".wfctl_identity.json", ".wfctl_commit_msg"}
+
+    existing: set[str] = set()
+    if gitignore.exists():
+        existing = {line.strip() for line in gitignore.read_text(encoding="utf-8").splitlines()}
+
+    missing = rules - existing
+    if missing:
+        with gitignore.open("a", encoding="utf-8") as f:
+            for rule in sorted(missing):
+                f.write(f"{rule}\n")
+
+
 def _generate_instance_id(root: Path) -> str:
     """生成 instance_id（YYYYMMDD-NNN），同时扫描活跃实例和归档实例，避免冲突。"""
     prefix = time.strftime("%Y%m%d") + "-"
@@ -211,6 +227,7 @@ def create_instance(
         }
         identity_file = worktree / ".wfctl_identity.json"
         identity_file.write_text(json.dumps(identity, indent=2, ensure_ascii=False), encoding="utf-8")
+        _ensure_wfctl_gitignore(worktree)
 
         return instance_state
     except Exception:
@@ -384,6 +401,7 @@ def _create_from_clone(
         identity_file.write_text(
             json.dumps(identity, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        _ensure_wfctl_gitignore(worktree)
 
         # 旧实例标记 FAILED
         if old_state.status != InstanceStatus.FAILED:
