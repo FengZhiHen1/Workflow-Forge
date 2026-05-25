@@ -172,10 +172,13 @@ class ConsumeMessagesProcessor:
         stage_order = [s.stage_id for s in ctx.spec.stages]
         for sid in list(cycle_meta.newly_done_stage_instance_ids):
             st = stage_index.get(sid)
-            if st is None or not st.routing_choice:
+            if st is None:
+                continue
+            routing_choice = st.routing_choice or delta.stage_updates.get(sid, {}).get("routing_choice", "")
+            if not routing_choice:
                 continue
             policy = TransitionPolicy.from_adjacency(ctx.adj, st.stage_id)
-            matched = policy.match_success_edge(st.routing_choice)
+            matched = policy.match_success_edge(routing_choice)
             if matched is None:
                 continue
             if not is_backward_edge(stage_order, st.stage_id, matched.to_stage):

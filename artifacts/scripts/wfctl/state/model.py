@@ -54,7 +54,7 @@ class StageState:
     def from_dict(cls, data: dict[str, Any]) -> StageState:
         """从 instance.json stage 条目解析。
 
-        静默跳过旧数据中的幽灵字段（如 confirmed）。
+        静默跳过旧数据中的幽灵字段（如 confirmed）和未知字段。
         """
         import dataclasses as dc
 
@@ -64,14 +64,27 @@ class StageState:
         raw.pop("confirmed_choice", None)
         raw.pop("confirmation_point", None)
 
+        # 过滤未知字段，防止传入 cls(**raw) 时触发 TypeError
+        valid_fields = set(cls.__dataclass_fields__.keys())
+        raw = {k: v for k, v in raw.items() if k in valid_fields}
+
         status_str = raw.pop("status", "PENDING")
         raw["status"] = StageStatus(status_str) if isinstance(status_str, str) else status_str
+        missing: list[str] = []
         for f_name, f_def in cls.__dataclass_fields__.items():
             if f_name not in raw:
                 if f_def.default is not dc.MISSING:
                     raw[f_name] = f_def.default
                 elif f_def.default_factory is not dc.MISSING:
                     raw[f_name] = f_def.default_factory()
+                else:
+                    missing.append(f_name)
+        if missing:
+            from infrastructure.errors import StateError
+            raise StateError(
+                f"StageState.from_dict missing required fields: {missing}",
+                code="STATE_CORRUPTED",
+            )
         return cls(**raw)
 
 
