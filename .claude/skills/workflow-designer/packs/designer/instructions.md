@@ -58,8 +58,7 @@ stages:
   - stage_id: s01-xxx
     name: "<中文名>"
     skill_id: <kebab-case>     # 与 workflow 字段互斥
-    mandatory: true|false
-    |false
+    mandatory: true             # true | false
     retry: 1                    # 整数，失败重试次数，默认 0 不重试
     timeout_seconds: 600        # 可选
     model: standard             # 可选: light/standard/heavy
@@ -72,7 +71,8 @@ stages:
     name: "..."
     workflow: sub-workflow@1.0.0  # 子工作流，与 skill_id 互斥
     mandatory: true
-    - stage_id: s99-workflow-end
+
+  - stage_id: s99-workflow-end
     name: "工作流终止"
 
 edges:

@@ -24,13 +24,27 @@ def extract_frontmatter(content: str) -> dict:
         return {}
     raw = m.group(1)
     result = {}
+    current_key = None
     for line in raw.split("\n"):
-        line = line.strip()
-        if ":" in line:
-            key, _, value = line.partition(":")
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" in stripped and not line.startswith(" "):
+            key, _, value = stripped.partition(":")
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            result[key] = value
+            current_key = key
+            if value in (">", "|"):
+                result[key] = ""  # 开始收集多行内容
+            else:
+                result[key] = value
+        elif current_key and line.startswith(" "):
+            # 多行内容的延续行
+            result[current_key] = result.get(current_key, "") + stripped + " "
+
+    # 清理尾部空格
+    for k in result:
+        result[k] = result[k].rstrip()
     return result
 
 

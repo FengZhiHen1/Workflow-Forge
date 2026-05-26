@@ -307,7 +307,12 @@ def validate_edges(edges: list, stage_ids: dict, stage_info: dict, errors: list)
             if not isinstance(max_loop, int) or isinstance(max_loop, bool) or max_loop < 1:
                 _err(f"{prefix}.max_loop 必须是正整数", errors)
             if cond not in ("failure", "loop_exceeded"):
-                _err(f"{prefix} 设置了 max_loop，但 condition={cond}（仅 failure/loop_exceeded 需要）", errors)
+                # 允许带 choice 的 success 边设置 max_loop（choice 路由循环，如 fix_impl/fix_test/recontract）
+                # 允许自环 success 边设置 max_loop（confirm + continue 循环）
+                has_choice = bool(edge.get("choice"))
+                is_self_loop = edge.get("from") == edge.get("to")
+                if not (cond == "success" and (has_choice or is_self_loop)):
+                    _err(f"{prefix} 设置了 max_loop，但 condition={cond}（仅 failure/loop_exceeded 需要）", errors)
 
         lcs = edge.get("loop_counter_stage")
         if lcs and lcs not in stage_ids:
@@ -507,23 +512,25 @@ def validate_cycles(adj, topo, errors: list) -> None:
                         )
         else:
             names = " → ".join(cycle)
-            has_max = any(
-                e.get("max_loop") and e.get("max_loop") > 0
-                for n in cycle
+            cycle_edges = [
+                e for n in cycle
                 for e in adj.outgoing.get(n, [])
                 if e.get("to") in cycle
-            )
-            if not has_max:
+            ]
+            has_max = any(e.get("max_loop") and e.get("max_loop") > 0 for e in cycle_edges)
+            has_failure_or_loop = any(e.get("condition") in ("failure", "loop_exceeded") for e in cycle_edges)
+            if not has_max and not has_failure_or_loop:
                 errors.append(
                     f"MULTI_NODE_CYCLE: 多节点环 [{names}] 中无任何边设置 max_loop 限制"
                 )
 
 
 def validate_back_edge_max_loop(topo, errors: list) -> None:
-    """检测回边是否误设了 max_loop。"""
+    """检测回边是否误设了 max_loop。failure/loop_exceeded 回边允许设置。"""
     for edge in topo.back_edges:
         ml = edge.get("max_loop")
-        if ml is not None and ml > 0:
+        cond = edge.get("condition", "")
+        if ml is not None and ml > 0 and cond not in ("failure", "loop_exceeded"):
             fr = edge.get("from")
             to = edge.get("to")
             errors.append(

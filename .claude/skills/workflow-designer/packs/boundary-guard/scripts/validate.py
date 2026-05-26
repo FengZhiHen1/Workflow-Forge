@@ -175,6 +175,10 @@ def validate_skill_boundary(skill_md_path: str) -> list[dict]:
                     if any(match.group() in s for s in backtick_contents):
                         continue
 
+                # 额外启发式：跳过 P0/P1/P2/P3 优先级标记（常见于文档/测试优先级，非 stage 引用）
+                if category == "stage_reference" and re.match(r"^P[0-3]$", match.group()):
+                    continue
+
                 # 额外启发式：如果是 YAML/Markdown 模板的键名或值（如 phase: P0, p4_adversarial_history: []）
                 if category == "stage_reference":
                     # 匹配 YAML 键值对：键名中包含匹配文本
@@ -229,6 +233,63 @@ def check_askuserquestion_present(skill_md_path: str) -> list[dict]:
     return results
 
 
+def check_choices_alignment(skill_md_path: str, expected_choices: list[str]) -> list[dict]:
+    """检查 SKILL.md 中是否至少有一处 AskUserQuestion 的选项包含所有 expected_choices。
+
+    策略：在每个 AskUserQuestion 出现位置的上下文（前后 500 字符）中提取引号字符串，
+    检查 expected_choices 是否全部被覆盖。若 Skill 有多个 AskUserQuestion（如内部澄清 +
+    路由选择），只要路由选择类的选项覆盖了 choices 即可通过。
+    """
+    content = Path(skill_md_path).read_text(encoding="utf-8")
+    results = []
+
+    if not expected_choices:
+        return results
+
+    auq_positions = [m.start() for m in re.finditer(r"AskUserQuestion", content)]
+    if not auq_positions:
+        results.append(
+            {
+                "category": "choices_mismatch",
+                "severity": "critical",
+                "message": "未找到 AskUserQuestion，无法校验 choices 对齐。",
+                "line": "N/A",
+                "line_num": 0,
+                "match": f"expected choices: {expected_choices}",
+            }
+        )
+        return results
+
+    # 收集每个 AskUserQuestion 上下文中的引号字符串
+    found_choices = set()
+    for pos in auq_positions:
+        context = content[max(0, pos - 300) : min(len(content), pos + 500)]
+        # 提取双引号字符串（选项文本常见写法）
+        quoted = set(re.findall(r'"([^"]+)"', context))
+        for choice in expected_choices:
+            if choice in quoted:
+                found_choices.add(choice)
+
+    missing = set(expected_choices) - found_choices
+    if missing:
+        results.append(
+            {
+                "category": "choices_mismatch",
+                "severity": "critical",
+                "message": (
+                    f"AskUserQuestion 选项与 edges choices 不匹配。"
+                    f"缺失的选项: {sorted(missing)}。"
+                    f"expected: {expected_choices}"
+                ),
+                "line": "N/A（多上下文搜索）",
+                "line_num": 0,
+                "match": f"missing choices: {sorted(missing)}",
+            }
+        )
+
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="校验 SKILL.md 是否遵守 Skill-工作流边界"
@@ -239,6 +300,7 @@ def main() -> int:
         action="store_true",
         help="要求 SKILL.md 必须包含 AskUserQuestion（用于需要用户交互的 Stage）",
     )
+    parser.add_argument("--choices", nargs="+", default=None, help="预期的 AskUserQuestion 选项值列表")
     args = parser.parse_args()
 
     if not Path(args.skill_md).exists():
@@ -250,6 +312,10 @@ def main() -> int:
     # 可选检查：需要用户交互的 Stage 要求 AskUserQuestion 存在
     if args.expect_askuserquestion:
         results.extend(check_askuserquestion_present(args.skill_md))
+
+    # 可选检查：路由选择类的 AskUserQuestion 选项须与 edges choices 对齐
+    if args.choices is not None:
+        results.extend(check_choices_alignment(args.skill_md, args.choices))
 
     critical = [r for r in results if r["severity"] == "critical"]
     warnings = [r for r in results if r["severity"] == "warning"]

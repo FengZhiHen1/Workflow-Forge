@@ -16,7 +16,7 @@ parallel:
 
 当 stage 同时满足以下两个条件时，存在一条**强制性设计约束**：
 
-1. 本 stage 设有 ``
+1. **本 stage 的 Skill 内部使用了 AskUserQuestion（需要用户裁决）**
 2. 存在下游 stage 通过 `parallel: {source: <本 stage>}` 引用本 stage 的输出
 
 **约束：该 stage 的确认点不可使用DONE 上报（`to` 指向下游 stage）。必须使用confirm + continue（`to` 指向自身，自循环），确保 SubAgent 在用户确认后能继续执行并产出 `parallel_targets`。**
