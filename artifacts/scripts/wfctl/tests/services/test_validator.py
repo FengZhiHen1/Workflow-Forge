@@ -45,3 +45,39 @@ def test_validate_ok(tmp_path):
     (repo / "src" / "main.py").write_text("x", encoding="utf-8")
     # 正常路径不应抛异常，返回 None 表示校验通过
     assert validate_modified_files(repo, ["src/main.py"], "s01") is None
+
+
+def test_pycache_under_claude_is_filtered(tmp_path):
+    """__pycache__ 在 .claude/ 下也不触发 ACCESS_VIOLATION（自动生成文件过滤）。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert validate_modified_files(
+        repo, [".claude/scripts/wfctl/__pycache__/foo.cpython-312.pyc"], "s01"
+    ) is None
+
+
+def test_pytest_cache_is_filtered(tmp_path):
+    """.pytest_cache 在任何路径下都不触发 ACCESS_VIOLATION。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert validate_modified_files(
+        repo, [".claude/.pytest_cache/v/cache/lastfailed"], "s01"
+    ) is None
+
+
+def test_pyc_file_is_filtered(tmp_path):
+    """*.pyc 文件在任何路径下都不触发 ACCESS_VIOLATION。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert validate_modified_files(
+        repo, [".agent/__pycache__/module.pyc"], "s01"
+    ) is None
+
+
+def test_legit_claude_still_blocked(tmp_path):
+    """非自动生成文件修改 .claude/ 仍触发 ACCESS_VIOLATION。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(ValidationError) as exc_info:
+        validate_modified_files(repo, [".claude/settings.json"], "s01")
+    assert exc_info.value.code == "ACCESS_VIOLATION"

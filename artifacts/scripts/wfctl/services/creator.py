@@ -23,9 +23,18 @@ from runtime.worktree.manager import (
 
 
 def _ensure_wfctl_gitignore(worktree: Path) -> None:
-    """确保 worktree 的 .gitignore 排除了 wfctl 临时文件。"""
+    """确保 worktree 的 .gitignore 排除了 wfctl 临时文件和自动生成文件。"""
     gitignore = worktree / ".gitignore"
-    rules = {".wfctl_identity.json", ".wfctl_commit_msg"}
+    rules = {
+        ".wfctl_identity.json",
+        ".wfctl_commit_msg",
+        "__pycache__/",
+        "*.pyc",
+        "*.pyo",
+        ".pytest_cache/",
+        ".mypy_cache/",
+        ".ruff_cache/",
+    }
 
     existing: set[str] = set()
     if gitignore.exists():
