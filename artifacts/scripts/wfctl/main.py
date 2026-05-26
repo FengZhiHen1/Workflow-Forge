@@ -26,7 +26,7 @@ from cli.workflow.restore import register_restore
 from cli.instance.terminate import register_terminate
 from cli.workflow.visualize import register_visualize
 from cli.instance.dashboard import register_dashboard
-from cli.instance.reset_running_agents import register_reset_running_agents
+from cli.stage.register_agent import register_register_agent
 
 
 def main():
@@ -51,7 +51,7 @@ def main():
     register_terminate(subparsers)
     register_visualize(subparsers)
     register_dashboard(subparsers)
-    register_reset_running_agents(subparsers)
+    register_register_agent(subparsers)
 
     args = parser.parse_args()
 

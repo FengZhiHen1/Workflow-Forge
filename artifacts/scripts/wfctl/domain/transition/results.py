@@ -57,7 +57,7 @@ class CascadeResetResult:
 
     reset_stage_instance_ids: 需重置为 PENDING 的 stage_instance_id 列表
     removed_stage_instance_ids: 需移除的 stage_instance_id（折叠为单条）
-    cleanup_running_agent_stage_ids: 需从 running_agents.json 清理的 stage_id 列表
+    cleanup_running_agent_stage_ids: 级联重置涉及的 stage_id 列表（其 system_agent_id 随重置自然失效）
     """
 
     reset_stage_instance_ids: list[str] = field(default_factory=list)

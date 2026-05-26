@@ -51,7 +51,7 @@ python .claude/scripts/wfctl/main.py <command> [options]
 | `references/subagent-prompt-template.md` | SubAgent prompt 构造模板，含全部占位符来源表和特殊场景处理 |
 | `references/model-mapping.yaml` | 模型档位映射表——按平台将 light/standard/heavy 解析为具体模型名 |
 | `references/action-handlers.md` | spawn/continue/conflict/merge_to_main/terminate/await 的完整 JSON 示例和执行步骤 |
-| `references/running-agents-mapping.md` | SubAgent 映射表 schema、生命周期、命中规则、编排器操作速查 |
+
 | `references/edge-cases.md` | 回退/暂停/跳过/终止/恢复等低频场景的完整操作流程 |
 | `.claude/contracts/common.md` | 通用契约（SubAgent 自行读取，编排器不读不转述） |
 
@@ -121,21 +121,9 @@ wfctl create --workflow <id>@<ver> --goal "<用户目标描述>"
 
 **禁止**跳过确认直接用 `wfctl create`、用纯文字代替 `AskUserQuestion`。
 
-### Step 2.5: 会话初始化（每次会话启动时执行一次）
-
-Claude Code 重启后，上一会话的 SubAgent 全部随进程退出，但 `.agent/running_agents.json` 仍残留旧条目。进入调度循环前必须清理：
-
-```
-wfctl reset-running-agents
-```
-
-此命令仅清空映射表，不影响实例状态、worktree、message 池。后续 `wfctl next` 会因映射表为空而为所有 stage 生成 `spawn`（而非 `continue`），这对新会话是正确的——所有 SubAgent 都需要重新启动。
-
-**仅在会话首次进入调度循环时执行**，同一会话内重复调 `wfctl next` 不需要再次清理。
-
 ### Step 3: 调度循环
 
-**SubAgent 映射表**存放在 `.agent/running_agents.json`（项目级唯一文件）。编排器在 `spawn`/`continue` 后维护此文件，`next` 自动读取并按 `instance_id` 过滤。
+**Agent 追踪**通过 stage state 中的 `system_agent_id` 字段实现。编排器 spawn 后调用 `wfctl register-agent` 写入，`next` 扫描同 instance 内同 skill 的 RUNNING/DONE stage 自动匹配。
 
 ```
 wfctl next --instance <instance_id>
@@ -176,7 +164,6 @@ wfctl next --instance <instance_id>
 | `terminate` | 报告终态，退出循环 | `references/action-handlers.md` §terminate |
 | `await` | 等待 SubAgent 完成通知 | `references/action-handlers.md` §await |
 | `reinforce` | 向 SubAgent 发送强化消息要求补交产出 | `references/action-handlers.md` §reinforce |
-| `reset-running-agents` | 清空 SubAgent 映射表 | `wfctl reset-running-agents [--instance <id>]` |
 
 ### spawn —— 启动新 SubAgent
 
@@ -184,9 +171,10 @@ wfctl next --instance <instance_id>
 2. 按 `references/subagent-prompt-template.md` 构造 prompt
 3. 按 `references/model-mapping.yaml` 解析 model 档位 → `Agent(model=...)`
 4. `Agent(worktree=<worktree>, model=<resolved>, prompt=<prompt>, run_in_background=true)`
-   - **禁止**传入 `isolation: "worktree"`——worktree 由 wfctl 管理（`create_instance_worktree` / `create_stage_worktree`），Agent 工具不应再创建第二层隔离
+   - **禁止**传入 `isolation: "worktree"`——worktree 由 wfctl 管理，Agent 工具不应再创建第二层隔离
    - `worktree` 参数仅用于设置 SubAgent 的工作目录，不是隔离模式
-5. 写 `.agent/running_agents.json`：`{skill_id, system_agent_id, stage_id, instance_id}`（按 `system_agent_id` 去重）
+   - `Agent()` 返回 `system_agent_id`（平台分配的 agent 标识）
+5. 调用 `wfctl register-agent --instance <id> --stage <id> --agent-id <system_agent_id>` 将 agent ID 写入 stage state
 6. 不等待——继续下一个 action
 
 JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
@@ -199,20 +187,15 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 4. 若 `SendMessage` 返回其他错误 → 向用户报告，不静默降级
 5. 不等待——继续下一个 action
 
-`next` 已自动更新映射表中的 `stage_id`。JSON 示例和完整步骤见 `references/action-handlers.md` §continue。
+`next` 已自动将 `system_agent_id` 写入当前 stage state。JSON 示例和完整步骤见 `references/action-handlers.md` §continue。
 
-### 映射表维护
+### Agent 追踪
 
-`.agent/running_agents.json` 格式：
-```json
-[
-  {"skill_id": "design-tech-stack", "system_agent_id": "agent-001", "stage_id": "s02", "instance_id": "20260519-001"}
-]
-```
+`system_agent_id` 存储在 stage state 中（`instance.json`），由 wfctl 独占维护：
 
-- **写入时机**：`spawn` 成功后追加
-- **更新时机**：`next` 生成 `continue` action 时自动更新 `stage_id`
-- **清理时机**：SubAgent 崩溃/超时后编排器移除对应条目；实例终止后编排器清理该实例的全部条目
+- **写入时机**：编排器 `spawn` 后调用 `wfctl register-agent --instance <id> --stage <id> --agent-id <system_agent_id>`
+- **读取时机**：`next` 扫描同 instance、同 skill 的 RUNNING/DONE stage，取 `system_agent_id` 生成 `continue`
+- **清理时机**：stage 级联重置后 `system_agent_id` 自然失效；实例删除后随 `instance.json` 一并清理
 
 ### confirm —— 呈现确认
 
@@ -368,7 +351,7 @@ wfctl 在每次 `next` 时自动同步。编排器无需额外操作。
 - `references/subagent-prompt-template.md` —— SubAgent prompt 构造模板，含全部占位符来源表和特殊场景处理。
 - `references/model-mapping.yaml` —— 按平台将抽象档位（light/standard/heavy）解析为具体模型名。
 - `references/action-handlers.md` —— 非 confirm action 的完整 JSON 示例和执行步骤。
-- `references/running-agents-mapping.md` —— SubAgent 映射表 schema、生命周期、命中规则、编排器操作速查。
+
 - `references/edge-cases.md` —— 回退、暂停、跳过、终止、中断恢复等低频场景的完整操作流程。
 
 ---

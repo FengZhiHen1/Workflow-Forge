@@ -53,17 +53,9 @@ class FinalizeProcessor:
 
     def _execute_merge(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
         """执行实例 worktree 合入主仓库。"""
-        from runtime.agent.manager import RunningAgentManager
-
         delta = StateDelta()
         actions: list[dict] = []
         side_effects: list[SideEffect] = []
-
-        def _cleanup_agents(iid: str) -> None:
-            try:
-                RunningAgentManager(ctx.root).remove_for_instance(iid)
-            except Exception:
-                pass
 
         def _silent_tag(iid: str, anchor: str) -> None:
             try:
@@ -83,11 +75,6 @@ class FinalizeProcessor:
                     kind="git_tag",
                     description="Final anchor",
                     execute=lambda iid=ctx.instance_id, a=anchor: _silent_tag(iid, a),
-                ))
-                side_effects.append(SideEffect(
-                    kind="json_write",
-                    description="Cleanup running_agents for completed instance",
-                    execute=lambda iid=ctx.instance_id: _cleanup_agents(iid),
                 ))
                 actions.append({"action": "merge_to_main", "status": "completed"})
             else:

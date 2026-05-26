@@ -65,14 +65,14 @@ wfctl 源码结构：
 ```
 wfctl next --instance <id>
   ↓ 返回 action 数组
-  - spawn   → Agent(run_in_background=true)，写入条目到 .agent/running_agents.json
-  - continue → SendMessage(to=system_agent_id)，next 自动更新文件中的 stage_id
+  - spawn   → Agent(run_in_background=true) → wfctl register-agent 写入 stage state
+  - continue → SendMessage(to=system_agent_id)，next 自动将 system_agent_id 写入 stage state
   - confirm → 呈现 AskUserQuestion → wfctl confirm
   - retry / await / conflict / merge_to_main / terminate
   ↓ 每条 action 执行后重新调用 next（循环）
 ```
 
-**映射表**：`.agent/running_agents.json`（项目级唯一文件），`next` 自动读取并按 `instance_id` 过滤。
+
 
 ## 产物区结构 (`artifacts/`)
 

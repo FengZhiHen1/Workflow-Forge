@@ -1,16 +1,14 @@
 """AllocateSpawnProcessor：worktree 分配 + spawn/continue action 生成。
 
 步骤 13：为就绪 stage 分配 worktree 并生成 spawn/continue action。
+agent 匹配通过扫描实例 stage state（system_agent_id），不再依赖 running_agents.json。
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 
 from domain.dag.graph import AdjacencyList
-from infrastructure.project import find_root
 from domain.workflow.spec import StageSpec, StageTargetType
 from infrastructure.timestamp import iso_timestamp
 from scheduler.context import ExecutionContext
@@ -28,14 +26,10 @@ class AllocateSpawnProcessor:
     """为就绪 stage 分配 worktree 并生成 action。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
-        from runtime.agent.manager import RunningAgentManager
-
         ready = state.cycle_meta.ready_candidates
         if not ready:
             return ProcessorResult()
 
-        agent_mgr = RunningAgentManager(ctx.root)
-        running_agents = agent_mgr.load()
         actions: list[dict] = []
         side_effects: list[SideEffect] = []
         delta = StateDelta()
@@ -60,11 +54,12 @@ class AllocateSpawnProcessor:
             is_parallel = stage_inst_id != stage_id or st.fan_out_target
 
             skill_id = stage_spec.target
-            matched_agent = None
+            matched_sys_id: str | None = None
+            matched_stage_id: str | None = None
             if not is_parallel:
-                matched_agent = agent_mgr.lookup(ctx.instance_id, skill_id)
+                matched_sys_id, matched_stage_id = _find_agent_by_skill(state, skill_id, ctx)
 
-            # worktree 分配（链式副作用：路径被后续 action 使用）
+            # worktree 分配
             if multi_ready or is_parallel:
                 if self._is_parallel_instance(stage_inst_id):
                     base_id, idx_str = stage_inst_id.rsplit("_", 1)
@@ -85,7 +80,7 @@ class AllocateSpawnProcessor:
                 worktree = ctx.root / ".tmp" / "worktrees" / f"instance-{ctx.instance_id}"
 
             # 更新 stage 状态
-            updates = {
+            updates: dict = {
                 "status": StageStatus.RUNNING,
                 "started_at": iso_timestamp(),
             }
@@ -101,9 +96,9 @@ class AllocateSpawnProcessor:
 
             routing_choices = self._collect_success_choices(ctx.adj, stage_id)
             updates["valid_routing_choices"] = routing_choices
-            updates["pending_choice"] = ""  # 清空（已注入到 action）
+            updates["pending_choice"] = ""
 
-            if matched_agent:
+            if matched_sys_id:
                 # Level 2 同步
                 sync_result = sync_stage_with_instance(ctx.instance_id, stage_inst_id)
                 if not sync_result.success:
@@ -116,32 +111,18 @@ class AllocateSpawnProcessor:
                         "stage_id": stage_id,
                         "stage_instance_id": stage_inst_id,
                         "worktree": str(worktree.relative_to(ctx.root)),
-                        "conflict_files": conflict_files,
+                        "conflict_files": sync_result.conflict_files,
                         "source_stage": stage_id,
                     })
                     continue
 
-                # 同 Skill 延续
-                prev_stage_id = matched_agent["stage_id"]
-                prev_st = state.first_stage_by_id(prev_stage_id)
+                # 同 Skill 延续：标记前一 stage 的 continued_to
+                prev_st = state.first_stage_by_id(matched_stage_id) if matched_stage_id else None
                 if prev_st:
                     delta.stage_updates[prev_st.stage_instance_id] = {"continued_to": st.stage_id}
 
-                sys_id = matched_agent["system_agent_id"]
-                updates["system_agent_id"] = sys_id
+                updates["system_agent_id"] = matched_sys_id
                 delta.stage_updates[st.stage_instance_id] = updates
-
-                agent_mgr.register({
-                    "skill_id": skill_id,
-                    "system_agent_id": sys_id,
-                    "stage_id": st.stage_id,
-                    "instance_id": ctx.instance_id,
-                })
-                side_effects.append(SideEffect(
-                    kind="json_write",
-                    description="Updated running_agents.json (register)",
-                    execute=None,
-                ))
 
                 actions.append({
                     "action": "continue",
@@ -149,7 +130,7 @@ class AllocateSpawnProcessor:
                     "stage_id": stage_id,
                     "skill_id": skill_id,
                     "worktree": str(worktree.relative_to(ctx.root)),
-                    "system_agent_id": sys_id,
+                    "system_agent_id": matched_sys_id,
                     "requires_parallel_targets": needs_targets,
                     "valid_routing_choices": routing_choices,
                     "pending_choice": st.pending_choice,
@@ -174,26 +155,6 @@ class AllocateSpawnProcessor:
     def _is_parallel_instance(self, stage_inst_id: str) -> bool:
         parts = stage_inst_id.rsplit("_", 1)
         return len(parts) == 2 and parts[1].isdigit()
-
-    def _save_running_agent(self, instance_id: str, skill_id: str, system_agent_id: str, stage_id: str) -> None:
-        from infrastructure.io import atomic_write_json
-        root = find_root()
-        path = root / ".agent" / "running_agents.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        agents: list[dict] = []
-        if path.exists():
-            try:
-                agents = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        agents = [a for a in agents if a.get("system_agent_id") != system_agent_id]
-        agents.append({
-            "skill_id": skill_id,
-            "system_agent_id": system_agent_id,
-            "stage_id": stage_id,
-            "instance_id": instance_id,
-        })
-        atomic_write_json(path, agents)
 
     def _build_context(self, stage_id: str, adj: AdjacencyList, state: InstanceState, stage_spec: StageSpec) -> dict:
         upstream_summaries = []
@@ -246,3 +207,31 @@ class AllocateSpawnProcessor:
             if e.condition.value == "success" and e.choice and e.choice not in choices:
                 choices.append(e.choice)
         return choices
+
+
+def _find_agent_by_skill(
+    state: InstanceState, skill_id: str, ctx: ExecutionContext,
+) -> tuple[str | None, str | None]:
+    """扫描当前实例的 stage state，查找同 skill 且有 system_agent_id 的记录。
+
+    优先 RUNNING（agent 正在执行当前 stage），其次 DONE（agent 刚完成前一 stage，
+    可被 continue 复用）。并行 stage 已在外层短路，此处不处理。
+
+    Returns:
+        (system_agent_id, stage_id) 或 (None, None)
+    """
+    target_stage_ids = {
+        sid for sid, spec in ctx.adj.stages.items()
+        if spec.target_type == StageTargetType.SKILL and spec.target == skill_id
+    }
+    done_match: tuple[str, str] | None = None
+    for st in state.stages:
+        if st.stage_id not in target_stage_ids or not st.system_agent_id:
+            continue
+        if st.status == StageStatus.RUNNING:
+            return st.system_agent_id, st.stage_id
+        if st.status == StageStatus.DONE and done_match is None:
+            done_match = (st.system_agent_id, st.stage_id)
+    if done_match:
+        return done_match
+    return None, None

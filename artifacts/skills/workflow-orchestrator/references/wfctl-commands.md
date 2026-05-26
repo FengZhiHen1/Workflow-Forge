@@ -139,7 +139,7 @@ wfctl create --workflow <id>@<ver> --fast-forward-to <stage_id> [--goal "..."]
 wfctl next --instance <id>
 ```
 
-同 Skill 延续检测：`next` 自动读取 `.agent/running_agents.json`（项目级文件），按 `instance_id` 过滤后查表。编排器在 `spawn`/`continue` 后维护此文件。
+同 Skill 延续检测：`next` 扫描同 instance、同 skill 的 RUNNING/DONE stage 的 `system_agent_id` 字段。编排器 spawn 后通过 `register-agent` 写入。
 
 返回：
 ```json
@@ -606,3 +606,16 @@ wfctl restore --instance <id>
 不可恢复的情况：
 - 归档不存在 → `{"status": "error", "code": "INSTANCE_NOT_FOUND"}`
 - 目标实例已存在 → `{"status": "error", "code": "INSTANCE_EXISTS"}`
+
+### 2.17 register-agent
+
+编排器 spawn 后调用，将 SubAgent 的 `system_agent_id` 写入 stage state。
+
+```bash
+wfctl register-agent --instance <id> --stage <id> --agent-id <system_agent_id>
+```
+
+返回：
+```json
+{"status": "ok", "instance_id": "20260519-001", "stage_id": "s01", "system_agent_id": "agent-abc123"}
+```

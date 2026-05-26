@@ -334,13 +334,6 @@ def test_next_continue_action_same_skill(setup_instance_worktree, monkeypatch):
     ]
     inst_path.write_text(json.dumps(data), encoding="utf-8")
 
-    # 写入 running_agents.json
-    agents_path = repo / ".agent" / "running_agents.json"
-    agents_path.parent.mkdir(parents=True, exist_ok=True)
-    agents_path.write_text(json.dumps([
-        {"skill_id": "design-tech-stack", "system_agent_id": "agent-001", "stage_id": "s01", "instance_id": inst_id},
-    ]), encoding="utf-8")
-
     result = run_next(inst_id)
     assert result["status"] == "ok"
 
@@ -394,13 +387,6 @@ def test_next_spawn_action_different_skill(setup_instance_worktree, monkeypatch)
     ]
     inst_path.write_text(json.dumps(data), encoding="utf-8")
 
-    # 写入 running_agents.json（同 skill 在 s01）
-    agents_path = repo / ".agent" / "running_agents.json"
-    agents_path.parent.mkdir(parents=True, exist_ok=True)
-    agents_path.write_text(json.dumps([
-        {"skill_id": "design-tech-stack", "system_agent_id": "agent-001", "stage_id": "s01", "instance_id": inst_id},
-    ]), encoding="utf-8")
-
     result = run_next(inst_id)
     assert result["status"] == "ok"
 
@@ -452,12 +438,6 @@ def test_next_continue_writes_continued_to(setup_instance_worktree, monkeypatch)
          "child_instance_id": None, "fan_out_target": None},
     ]
     inst_path.write_text(json.dumps(data), encoding="utf-8")
-
-    agents_path = repo / ".agent" / "running_agents.json"
-    agents_path.parent.mkdir(parents=True, exist_ok=True)
-    agents_path.write_text(json.dumps([
-        {"skill_id": "shared-skill", "system_agent_id": "agent-002", "stage_id": "s01", "instance_id": inst_id},
-    ]), encoding="utf-8")
 
     result = run_next(inst_id)
     assert result["status"] == "ok"

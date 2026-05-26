@@ -213,12 +213,8 @@ class ConsumeMessagesProcessor:
                         model=stage_spec.model if stage_spec else None,
                     ))
                 if cascade.cleanup_running_agent_stage_ids:
-                    side_effects.append(SideEffect(
-                        kind="json_write",
-                        description=f"Cascade reset cleanup running_agents for {cascade.cleanup_running_agent_stage_ids}",
-                        execute=lambda iid=ctx.instance_id, rids=list(cascade.cleanup_running_agent_stage_ids):
-                            _cleanup_running_agents_for_reset(iid, rids),
-                    ))
+                    # stage state 中的 system_agent_id 随 stage 重置自然失效，无需额外清理
+                    pass
 
         # 更新 consumed_message_ids
         delta.instance_updates["consumed_message_ids"] = frozenset(new_consumed)
@@ -251,22 +247,3 @@ class ConsumeMessagesProcessor:
             if s.status in (StageStatus.RUNNING, StageStatus.PENDING, StageStatus.ERROR, StageStatus.AWAITING_CONFIRM):
                 return s
         return candidates[0] if candidates else None
-
-
-def _cleanup_running_agents_for_reset(instance_id: str, reset_stage_ids: list[str]) -> None:
-    """从 running_agents.json 中移除被级联重置的 stage 条目。"""
-    import json
-    root = find_root()
-    path = root / ".agent" / "running_agents.json"
-    if not path.exists():
-        return
-    try:
-        agents = json.loads(path.read_text(encoding="utf-8"))
-        agents = [
-            a for a in agents
-            if not (a.get("instance_id") == instance_id
-                    and a.get("stage_id") in reset_stage_ids)
-        ]
-        path.write_text(json.dumps(agents, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass

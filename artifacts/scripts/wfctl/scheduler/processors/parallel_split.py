@@ -22,15 +22,8 @@ class ParallelSplitProcessor:
     """处理 parallel 拆分。"""
 
     def process(self, ctx: ExecutionContext, state: InstanceState) -> ProcessorResult:
-        from runtime.agent.manager import RunningAgentManager
-
-        agent_mgr = RunningAgentManager(ctx.root)
-        running_agents = agent_mgr.load()
         actions: list[dict] = []
         side_effects: list[SideEffect] = []
-        side_effects.append(SideEffect(
-            kind="file_read", description="Load running_agents.json", execute=None,
-        ))
         delta = StateDelta()
 
         for stage_spec in ctx.spec.stages:
@@ -59,7 +52,7 @@ class ParallelSplitProcessor:
             msg_id = source_stage.output_message_id
             if not msg_id:
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
-                    state, stage_spec, ctx.instance_id, source_stage_id, running_agents,
+                    state, stage_spec, ctx.instance_id, source_stage_id,
                     "上游 stage 已完成但未产出 output_message_id", side_effects,
                 )
                 actions.extend(reinforce_actions)
@@ -69,7 +62,7 @@ class ParallelSplitProcessor:
             msg_path = ctx.root / ".agent" / "instances" / ctx.instance_id / "messages" / f"{msg_id}.json"
             if not msg_path.exists():
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
-                    state, stage_spec, ctx.instance_id, source_stage_id, running_agents,
+                    state, stage_spec, ctx.instance_id, source_stage_id,
                     f"上游 stage 的消息文件 {msg_id}.json 不存在", side_effects,
                 )
                 actions.extend(reinforce_actions)
@@ -83,7 +76,7 @@ class ParallelSplitProcessor:
                 msg = json.loads(msg_path.read_text(encoding="utf-8"))
             except Exception:
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
-                    state, stage_spec, ctx.instance_id, source_stage_id, running_agents,
+                    state, stage_spec, ctx.instance_id, source_stage_id,
                     f"上游 stage 的消息文件 {msg_id}.json 解析失败", side_effects,
                 )
                 actions.extend(reinforce_actions)
@@ -96,7 +89,7 @@ class ParallelSplitProcessor:
                     f"（SubAgent 上报时未传 --parallel-targets）"
                 )
                 reinforce_actions, reinforce_delta = self._handle_missing_targets(
-                    state, stage_spec, ctx.instance_id, source_stage_id, running_agents, reason, side_effects,
+                    state, stage_spec, ctx.instance_id, source_stage_id, reason, side_effects,
                 )
                 actions.extend(reinforce_actions)
                 delta = delta.merge(reinforce_delta)
@@ -137,18 +130,15 @@ class ParallelSplitProcessor:
 
     def _handle_missing_targets(
         self, state: InstanceState, stage_spec, instance_id: str, source_stage_id: str,
-        running_agents: list[dict], reason: str, side_effects: list[SideEffect],
+        reason: str, side_effects: list[SideEffect],
     ) -> tuple[list[dict], StateDelta]:
         max_retry = 2
         retry_count = self._get_parallel_retry(state, stage_spec.stage_id)
 
-        source_agent = next(
-            (a for a in running_agents
-             if a.get("instance_id") == instance_id and a.get("stage_id") == source_stage_id),
-            None,
-        )
+        source_stage = state.first_stage_by_id(source_stage_id)
+        source_system_agent_id = source_stage.system_agent_id if source_stage else None
 
-        if source_agent and retry_count < max_retry:
+        if source_system_agent_id and retry_count < max_retry:
             new_count = retry_count + 1
             side_effects.append(SideEffect(
                 kind="deviation_write",
@@ -174,7 +164,7 @@ class ParallelSplitProcessor:
                 "type": "parallel_targets_missing",
                 "stage_id": stage_spec.stage_id,
                 "source_stage_id": source_stage_id,
-                "system_agent_id": source_agent["system_agent_id"],
+                "system_agent_id": source_system_agent_id,
                 "retry_count": new_count,
                 "max_retry": max_retry,
                 "message": (

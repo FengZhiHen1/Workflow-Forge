@@ -37,11 +37,8 @@
 3. 解析模型：读取 `references/model-mapping.yaml`，将 action 的 `model` 档位按当前平台映射为具体模型名，传入 `Agent(model=...)`。若 action 无 `model` 字段则省略，Agent 继承父级模型
 4. 启动 SubAgent：`Agent(worktree=<worktree>, model=<resolved_model>, prompt=<构造的prompt>, run_in_background=true)`
    - **禁止** `isolation: "worktree"`：worktree 已由 wfctl 管理，Agent 工具不应创建第二层隔离
-5. **写入映射表**：追加条目到 `.agent/running_agents.json`：
-   ```json
-   {"skill_id": "<skill_id>", "system_agent_id": "<平台返回的ID>", "stage_id": "<stage_id>", "instance_id": "<instance_id>"}
-   ```
-   （与已有条目按 `system_agent_id` 去重，同 ID 覆盖旧条目）
+   - `Agent()` 返回 `system_agent_id`
+5. **写入 stage state**：调用 `wfctl register-agent --instance <id> --stage <id> --agent-id <system_agent_id>` 将 agent ID 写入 stage state，供后续 `next` 匹配 continue
 6. **不等待**——继续处理下一个 action
 
 ---
@@ -71,7 +68,7 @@
 1. 按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt（单条消息，末尾包含自激活指令，无需额外激活消息）
 2. `next` 已自动更新 `.agent/running_agents.json` 中该条目的 `stage_id`
 3. **不**调用 `Agent()` 创建新实例——向已有 SubAgent（`system_agent_id`）发送继续消息：`SendMessage(to=<system_agent_id>, message=<构造的prompt>)`
-4. 若 `SendMessage` 返回 agent 已失效的错误（如 "No transcript found"、"stopped (completed)"、agent 已退出）→ **降级为 spawn**——使用 action 中已有的 `skill_id`、`worktree`、`context`、`valid_routing_choices` 等字段，按上方 spawn 步骤 1-6 启动新 SubAgent，并在 `.agent/running_agents.json` 中覆盖该 `skill_id` 的旧条目
+4. 若 `SendMessage` 返回 agent 已失效的错误（如 "No transcript found"、"stopped (completed)"、agent 已退出）→ **降级为 spawn**——使用 action 中已有的 `skill_id`、`worktree`、`context`、`valid_routing_choices` 等字段，按上方 spawn 步骤 1-6 启动新 SubAgent
 5. 若 `SendMessage` 返回其他错误（如网络超时、权限拒绝）→ **向用户报告错误**，不静默降级，交由用户决策
 6. **不等待**——继续处理下一个 action
 
