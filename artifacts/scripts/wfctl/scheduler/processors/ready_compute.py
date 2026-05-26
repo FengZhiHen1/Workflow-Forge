@@ -1,6 +1,6 @@
 """ReadyComputeProcessor：就绪计算 + 调度约束。
 
-步骤 9, 10：使用 InstanceState 原生 compute_ready，
+步骤 11：使用 InstanceState 原生 compute_ready，
 结果写入 cycle_meta.ready_candidates（替代 ctx.extra）。
 """
 

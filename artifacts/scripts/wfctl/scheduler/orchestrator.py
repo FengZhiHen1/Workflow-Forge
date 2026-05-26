@@ -50,8 +50,8 @@ class SchedulerOrchestrator:
         ErrorRecoveryProcessor,       # 09 - 基于 TransitionPolicy
         ConflictHandlerProcessor,     # 10 - 冲突自愈
         ReadyComputeProcessor,        # 11 - 就绪计算
-        AllocateSpawnProcessor,       # 12 - worktree 分配 + action 生成
-        ConfirmAggregateProcessor,    # 13 - 确认点聚合
+        ConfirmAggregateProcessor,    # 12 - 确认点聚合（仅在无就绪 stage 时产出）
+        AllocateSpawnProcessor,       # 13 - worktree 分配 + action 生成
         FinalizeProcessor,            # 14 - 收尾
     ])
 

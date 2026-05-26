@@ -1,6 +1,6 @@
 """AllocateSpawnProcessor：worktree 分配 + spawn/continue action 生成。
 
-步骤 11：为就绪 stage 分配 worktree 并生成 spawn/continue action。
+步骤 13：为就绪 stage 分配 worktree 并生成 spawn/continue action。
 """
 
 from __future__ import annotations
