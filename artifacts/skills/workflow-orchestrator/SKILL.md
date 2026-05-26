@@ -24,7 +24,7 @@ description: >
 - 不直接读/写 Message 文件（wfctl 独占）
 - 不计算 stage 就绪顺序（wfctl 的 DAG 引擎负责）
 - 不评估 SubAgent 产出质量——你是调度员，不是审查员
-- 但你必须判断确认时机——前置对齐（问"怎么做"）≠ 终审验收（问"做得对不对"）。混淆二者会导致 stage 在 SubAgent 未完成工作时被错误关闭
+- 阅读 SubAgent 的确认问题时理解其意图——问"怎么做"（对齐）还是问"做得对不对"（终审），但不改变你的行为：confirm 永远返回 PENDING + continue
 - 不跳过流程——"快一点"从来不是跳过流程的理由
 
 **每次行动前自问**：这个决策是我在算，还是 wfctl 在算？应该由 wfctl 算的 → 停手，调 wfctl。
@@ -217,26 +217,25 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 - `options`：预解析的结构化选项数组 `[{choice_key, description}, ...]`——**这是选项的权威来源**，编排器无需自行解析
 
 执行步骤：
-0. **确认时机判断**：读取每条 pending 的 options 内容，判断是前置对齐还是终审验收（详见「确认时机判断」章节）
+
 1. **以 `options` 为权威构造 AskUserQuestion**：
 
-   每条 pending 条目已包含预解析的 `options` 数组，直接使用 `choice_key` 和 `description`：
+   每条 pending 条目已包含预解析的 `options` 数组，直接使用：
 
    构造 `AskUserQuestion`：
    - `header`: `"确认 {stage_id} 阶段"`
-   - `options`: `[{label: "<choice_key>", description: "<description>"}, ...]`
+   - `options`: `[{label: "<choice_key>", description: ""}, ...]`
 
    用户选择后，答案即为 `label`（即 `choice_key`），直接用作 `--choice`。
    
-   **关键**：每条 pending 独立构造一个 AskUserQuestion question，**禁止**将不同 `stage_id` 的 options 合并到同一个 question 中。
+   **关键**：每条 pending 独立构造一个 AskUserQuestion question。选项文本即 SubAgent 传入的 --questions，不加额外描述。
 
-2. 若判断为前置对齐，在 description 中按「确认时机判断」的呈现方式追加警告
-3. 用户选择后，**使用 `pending` 条目中的 `instance_id`**（不是父实例 ID）调用：
+2. 用户选择后，**使用 `pending` 条目中的 `instance_id`**（不是父实例 ID）调用：
    ```
    wfctl confirm --instance <pending条目.instance_id> --stage <stage_id> --choice "<choice_key>" [--feedback "..."]
    ```
-4. 父实例自身的确认 → 确认后调 `wfctl next --instance <父实例>`。子实例确认 → 确认后**对父实例**调 `wfctl next`，父 `next` 会感知到子实例状态变化并聚合下一轮 confirm
-5. **关键**：`confirm` action 是当前时刻的快照。你选取 stage 逐个呈现，而不是一次性全部展示。确认的 `--instance` 始终取 pending 条目中的 `instance_id`
+3. 父实例自身的确认 → 确认后调 `wfctl next --instance <父实例>`。子实例确认 → 确认后**对父实例**调 `wfctl next`，父 `next` 会感知到子实例状态变化并聚合下一轮 confirm
+4. **关键**：`confirm` action 是当前时刻的快照。你选取 stage 逐个呈现，而不是一次性全部展示。确认的 `--instance` 始终取 pending 条目中的 `instance_id`
 
 **`__merge__` 伪 stage**：一级实例全部 stage DONE 后，wfctl 自动产生。`stage_id` 为 `__merge__`，options 为 `yes`/`no`。处理方式与普通 confirm 一致——调 `wfctl confirm --stage __merge__ --choice yes`（或 `no` 推迟）。
 
@@ -249,7 +248,6 @@ wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITIN
 1. 对 `pending` 中的**每个**条目，使用其 `options` 数组直接构造 question。多条 pending → 多个 question，**每个 question 明确标注其 `stage_id`**
 2. **一次性**通过 `AskUserQuestion` 呈现所有 question（`questions` 数组，`multiSelect: false`）
    - 每个 question 的 `header` 使用 `"确认 {stage_id} 阶段"`，方便用户区分
-   - 若某条 question 判断为前置对齐，在其 `description` 中追加警告
 3. 用户一次性回答所有问题后，按 question 逐一映射回 `(instance_id, stage_id, choice)`：
    ```
    对每条回答：
@@ -265,49 +263,14 @@ wfctl `next` 返回的 `confirm` action 是**快照**——当前所有 `AWAITIN
 
 ---
 
-## 确认时机判断（防误判）
+## 确认时机判断
 
-`AWAITING_CONFIRM` 有两种语义，混淆会导致 stage 在 SubAgent 未完成实际工作时被错误标记 DONE。
+confirm 永远返回 PENDING + continue，SubAgent 拿回用户选择后自行决定继续工作或 DONE + routing_choice。编排器无需根据判断改变行为——此处仅用于帮助编排器理解 SubAgent 意图。
 
-### 两种确认
+**前置对齐**：问"怎么做"（范围、格式、粒度、方案选择）
+**终审验收**：问"做得对不对"（正确性、完整性、满意度）
 
-| 类型 | SubAgent 在问 | 工作状态 | 正确动作 |
-|------|-------------|---------|---------|
-| **前置对齐** | "怎么做"——范围、格式、粒度、约束、方案选择 | 尚未开始或仅完成准备 | confirm → PENDING + continue → SubAgent 拿到选择后完成实际工作 |
-| **终审验收** | "做得对不对"——正确性、完整性、满意度 | 已完成交付物 | 用户选择 → confirm → continue → SubAgent 收到选择 → DONE + routing_choice |
-
-### 判断方法
-
-阅读 `questions` 中每个问题的内容，按特征分类：
-
-**前置对齐的典型问题**（问执行方式）：
-- 询问范围/边界："拆解范围是按功能还是按层次？"、"需要覆盖哪些模块？"
-- 询问输出格式："输出格式用表格还是列表？"、"文档结构用哪种模板？"
-- 询问方法/粒度："拆解粒度到一级目录还是二级？"、"按什么维度分类？"
-- 询问约束/偏好："是否有长度限制？"、"是否需要包含示例代码？"
-
-**终审验收的典型问题**（问结果评价）：
-- 询问满意度："最终产物是否满意？"、"是否需要调整？"
-- 询问正确性："模块划分方案是否合理？"、"技术选型是否正确？"
-- 询问完整性："是否还有遗漏？"、"覆盖是否全面？"
-
-**关键判别原则**：问"怎么做"→对齐；问"做得对不对"→终审。读问题时不看 SubAgent 的自我表述（"我已经完成了…"），只看问题本身的语义指向。
-
-### 不确定时的兜底
-
-若问题语义模糊、无法确定：
-1. 调用 `wfctl status --instance <id>` 查看该 stage 是否有产出文件路径在 checkpoint 中
-2. 兜底原则：**宁可误判为对齐（多跑一轮），不可误判为终审（错误关闭 stage）**
-
-### 呈现方式
-
-**若判断为前置对齐**，在 `AskUserQuestion` 的 description 中追加：
-
-> ⚠️ 此为前置对齐确认——SubAgent 正在询问「如何执行」，尚未产出最终交付物。
-> 建议：选择「拒绝」并将你的决定写入反馈，SubAgent 重新启动后会拿到反馈、继续完成实际工作。
-> 若选择「通过」，该阶段将被标记为完成，SubAgent 不会继续执行，下游阶段将拿到空产出。
-
-**若判断为终审验收**，正常呈现，无需额外标注。
+呈现选项时只使用 `options` 中的 `choice_key` 作为 label，不加额外描述或警告文字。
 
 ---
 
