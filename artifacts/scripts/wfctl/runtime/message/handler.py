@@ -60,6 +60,9 @@ def write_message(
                     if not is_temp_file(filename):
                         modified_files.append({"path": filename, "status": file_status})
 
+    # 自动清理空文件（SubAgent 经常产出无意义的空占位文件）
+    _cleanup_empty_files(worktree, modified_files)
+
     # 防线前移：status 必须为合法 StageStatus 枚举值
     from domain.workflow.spec import StageStatus as _StageStatus
     _valid_statuses = {s.value for s in _StageStatus}
@@ -215,8 +218,28 @@ def inject_modified_files(msg: dict, worktree: Path) -> dict:
                 if not is_temp_file(filename):
                     modified_files.append({"path": filename, "status": status})
 
+    _cleanup_empty_files(worktree, modified_files)
+
     msg["modified_files"] = modified_files
     return msg
+
+
+def _cleanup_empty_files(worktree: Path, modified_files: list[dict]) -> None:
+    """删除空文件并从 modified_files 列表中移除对应条目。"""
+    if not worktree or not worktree.exists():
+        return
+    i = 0
+    while i < len(modified_files):
+        entry = modified_files[i]
+        fpath = worktree / entry["path"]
+        try:
+            if fpath.is_file() and fpath.stat().st_size == 0:
+                fpath.unlink()
+                modified_files.pop(i)
+                continue
+        except OSError:
+            pass
+        i += 1
 
 
 def _map_git_status_xy(xy: str) -> str:

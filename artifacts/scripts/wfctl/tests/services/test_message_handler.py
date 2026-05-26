@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.message.handler import inject_modified_files, scan_messages, write_message
+from runtime.message.handler import _cleanup_empty_files, inject_modified_files, scan_messages, write_message
 
 
 def test_write_message(monkeypatch, tmp_path: Path):
@@ -81,3 +81,48 @@ def test_inject_modified_files(tmp_path: Path):
     # 验证对象包含 status 字段
     if result["modified_files"]:
         assert "status" in result["modified_files"][0]
+
+
+class TestCleanupEmptyFiles:
+    def test_deletes_empty_file_and_removes_from_list(self, tmp_path: Path):
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        (wt / "empty.txt").write_text("", encoding="utf-8")
+        (wt / "nonempty.txt").write_text("content", encoding="utf-8")
+
+        files = [
+            {"path": "empty.txt", "status": "?"},
+            {"path": "nonempty.txt", "status": "?"},
+        ]
+        _cleanup_empty_files(wt, files)
+
+        assert not (wt / "empty.txt").exists()
+        assert (wt / "nonempty.txt").exists()
+        assert len(files) == 1
+        assert files[0]["path"] == "nonempty.txt"
+
+    def test_skips_directories(self, tmp_path: Path):
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        (wt / "subdir").mkdir()
+
+        files = [{"path": "subdir", "status": "?"}]
+        _cleanup_empty_files(wt, files)
+
+        assert (wt / "subdir").exists()
+        assert len(files) == 1
+
+    def test_ignores_permission_errors(self, tmp_path: Path):
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        (wt / "locked.txt").write_text("", encoding="utf-8")
+
+        files = [{"path": "locked.txt", "status": "?"}]
+        # 不会因为权限问题崩溃
+        _cleanup_empty_files(wt, files)
+        assert not (wt / "locked.txt").exists()
+
+    def test_none_worktree_noop(self):
+        files = [{"path": "x.txt", "status": "?"}]
+        _cleanup_empty_files(None, files)  # 不崩溃
+        assert len(files) == 1
