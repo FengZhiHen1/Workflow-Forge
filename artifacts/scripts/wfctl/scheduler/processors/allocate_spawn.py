@@ -62,7 +62,7 @@ class AllocateSpawnProcessor:
             skill_id = stage_spec.target
             matched_agent = None
             if not is_parallel:
-                matched_agent = agent_mgr.lookup(skill_id)
+                matched_agent = agent_mgr.lookup(ctx.instance_id, skill_id)
 
             # worktree 分配（链式副作用：路径被后续 action 使用）
             if multi_ready or is_parallel:
@@ -174,12 +174,6 @@ class AllocateSpawnProcessor:
     def _is_parallel_instance(self, stage_inst_id: str) -> bool:
         parts = stage_inst_id.rsplit("_", 1)
         return len(parts) == 2 and parts[1].isdigit()
-
-    def _lookup_running_agent(self, running_agents: list[dict], skill_id: str) -> dict | None:
-        for agent in running_agents:
-            if agent.get("skill_id") == skill_id:
-                return agent
-        return None
 
     def _save_running_agent(self, instance_id: str, skill_id: str, system_agent_id: str, stage_id: str) -> None:
         from infrastructure.io import atomic_write_json

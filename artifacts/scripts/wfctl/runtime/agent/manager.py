@@ -42,10 +42,13 @@ class RunningAgentManager:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self._path, agents)
 
-    def lookup(self, skill_id: str) -> dict[str, Any] | None:
-        """按 skill_id 查找存活的 SubAgent（多条命中时取第一条）。"""
+    def lookup(self, instance_id: str, skill_id: str) -> dict[str, Any] | None:
+        """按 (instance_id, skill_id) 查找存活的 SubAgent（多条命中时取第一条）。
+
+        instance_id 参与匹配，防止 agent 跨实例复用导致身份混乱。
+        """
         for agent in self.load():
-            if agent.get("skill_id") == skill_id:
+            if agent.get("instance_id") == instance_id and agent.get("skill_id") == skill_id:
                 return agent
         return None
 
@@ -89,3 +92,7 @@ class RunningAgentManager:
         agents = self.load()
         agents = [a for a in agents if a.get("system_agent_id") != system_agent_id]
         self.save(agents)
+
+    def clear_all(self) -> None:
+        """清空 running_agents.json（用于会话启动时重置）。"""
+        self.save([])

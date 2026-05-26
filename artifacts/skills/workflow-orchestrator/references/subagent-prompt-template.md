@@ -152,13 +152,16 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 
 ### continue action
 
-continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id 命中映射表）。SubAgent 已持有身份和契约——只需注入新 worktree 和 task。
+continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id 命中映射表）。SubAgent 已持有身份和契约——只需注入新 stage 的任务。
 
-**发送机制**：编排器分两条消息发送。第一条注入 continue prompt（恢复上下文），第二条触发工具调用回合。原因是 `SendMessage` 首次到达时仅恢复会话上下文，不自动创建新的工具调用回合——需要第二条消息推动实际执行。
+**发送机制**：单条消息。prompt 以明确的动作指令开头（`cd` + 读取 SKILL.md），末尾以"现在开始执行"收束，确保 agent 收到后立即触发工具调用回合，无需额外激活消息。
 
-**第一条消息**（continue prompt）：
+**continue prompt**：
 ```
-你正在继续处理 stage `<stage_id>`（`<stage_name>`）。工作目录已切换到 `<worktree>`，请执行 `cd <worktree>` 后重新读取文件以获取最新状态。
+你正在继续处理 stage `<stage_id>`（`<stage_name>`）。请立即执行以下步骤：
+
+1. 切换到新工作目录：`cd <worktree>`
+2. 重新读取 `<skill_path>` 以确认本 stage 的执行范围
 
 本 stage 的任务目标：`<stage_task>`
 
@@ -169,12 +172,7 @@ continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id
 <若有 feedback：>
 用户反馈：`<feedback>`
 
-继续按 SKILL.md 的指导完成本阶段工作。上报规则不变。
-```
-
-**第二条消息**（激活）：
-```
-收到请开始执行上述任务。
+现在开始执行本 stage 的工作。上报规则不变。
 ```
 
 | 占位符 | 来源 |
@@ -182,6 +180,7 @@ continue action 用于已有 SubAgent 继续执行下一个 stage（同 skill_id
 | `<stage_id>` | action 的 `stage_id` |
 | `<stage_name>` | WORKFLOW.yaml 中该 stage 的 `name` 字段 |
 | `<worktree>` | action 的 `worktree` |
+| `<skill_path>` | 编排器按 skill 路径查找规则解析（同 spawn 模板） |
 | `<stage_task>` | WORKFLOW.yaml 中该 stage 的 `name` 字段（不暴露 stage_id） |
 | `<successor_stages_block>` | 同上（successor_stages_block 生成规则），基于新 stage 的 DAG 后继计算 |
 | `<pending_choice>` | action 的 `pending_choice` 字段 |

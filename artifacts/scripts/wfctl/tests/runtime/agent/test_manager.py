@@ -52,13 +52,23 @@ class TestRunningAgentManager:
             "stage_id": "s01",
             "instance_id": "inst-1",
         })
-        found = mgr.lookup("skill-x")
+        found = mgr.lookup("inst-1", "skill-x")
         assert found is not None
         assert found["system_agent_id"] == "sys-x"
 
     def test_lookup_not_found(self, tmp_path: Path):
         mgr = RunningAgentManager(root=tmp_path)
-        assert mgr.lookup("nonexistent") is None
+        assert mgr.lookup("inst-1", "nonexistent") is None
+
+    def test_lookup_wrong_instance_not_found(self, tmp_path: Path):
+        mgr = RunningAgentManager(root=tmp_path)
+        mgr.register({
+            "skill_id": "skill-x",
+            "system_agent_id": "sys-x",
+            "stage_id": "s01",
+            "instance_id": "inst-1",
+        })
+        assert mgr.lookup("inst-2", "skill-x") is None
 
     def test_remove_for_instance_all(self, tmp_path: Path):
         mgr = RunningAgentManager(root=tmp_path)
@@ -137,6 +147,23 @@ class TestRunningAgentManager:
         (agent_dir / "running_agents.json").write_text("{corrupt", encoding="utf-8")
 
         mgr = RunningAgentManager(root=tmp_path)
+        assert mgr.load() == []
+
+    def test_clear_all(self, tmp_path: Path):
+        mgr = RunningAgentManager(root=tmp_path)
+        mgr.register({
+            "skill_id": "skill-a",
+            "system_agent_id": "sys-a",
+            "stage_id": "s01",
+            "instance_id": "inst-1",
+        })
+        mgr.register({
+            "skill_id": "skill-b",
+            "system_agent_id": "sys-b",
+            "stage_id": "s02",
+            "instance_id": "inst-1",
+        })
+        mgr.clear_all()
         assert mgr.load() == []
 
     def test_save_persistence(self, tmp_path: Path):

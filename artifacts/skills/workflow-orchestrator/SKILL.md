@@ -121,6 +121,18 @@ wfctl create --workflow <id>@<ver> --goal "<用户目标描述>"
 
 **禁止**跳过确认直接用 `wfctl create`、用纯文字代替 `AskUserQuestion`。
 
+### Step 2.5: 会话初始化（每次会话启动时执行一次）
+
+Claude Code 重启后，上一会话的 SubAgent 全部随进程退出，但 `.agent/running_agents.json` 仍残留旧条目。进入调度循环前必须清理：
+
+```
+wfctl reset-running-agents
+```
+
+此命令仅清空映射表，不影响实例状态、worktree、message 池。后续 `wfctl next` 会因映射表为空而为所有 stage 生成 `spawn`（而非 `continue`），这对新会话是正确的——所有 SubAgent 都需要重新启动。
+
+**仅在会话首次进入调度循环时执行**，同一会话内重复调 `wfctl next` 不需要再次清理。
+
 ### Step 3: 调度循环
 
 **SubAgent 映射表**存放在 `.agent/running_agents.json`（项目级唯一文件）。编排器在 `spawn`/`continue` 后维护此文件，`next` 自动读取并按 `instance_id` 过滤。
@@ -157,13 +169,14 @@ wfctl next --instance <instance_id>
 | action | 行为 | 详情 |
 |--------|------|------|
 | `spawn` | 解析 skill 路径 → 构造 prompt → `Agent(run_in_background=true)` → 写映射表 | 下方 §spawn |
-| `continue` | 构造 prompt → `SendMessage` 两条 → 不等待 | 下方 §continue |
+| `continue` | 构造 prompt → `SendMessage` 一条 → 不等待 | 下方 §continue |
 | `confirm` | 判断时机 → `AskUserQuestion` → `wfctl confirm` → 立即 `next` | 下方 §confirm（完整） |
 | `conflict` | 启动 conflict-resolver SubAgent 消解 | `references/action-handlers.md` §conflict |
 | `merge_to_main` | 一级实例先经 `__merge__` 确认；子实例直接合入 | `references/action-handlers.md` §merge_to_main |
 | `terminate` | 报告终态，退出循环 | `references/action-handlers.md` §terminate |
 | `await` | 等待 SubAgent 完成通知 | `references/action-handlers.md` §await |
 | `reinforce` | 向 SubAgent 发送强化消息要求补交产出 | `references/action-handlers.md` §reinforce |
+| `reset-running-agents` | 清空 SubAgent 映射表 | `wfctl reset-running-agents [--instance <id>]` |
 
 ### spawn —— 启动新 SubAgent
 
@@ -180,10 +193,11 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
 
 ### continue —— 延续已有 SubAgent
 
-1. **先验证 agent 存活**：`SendMessage` 探测。若返回 "No transcript found"，降级为 spawn——action 中已含 `skill_id`、`worktree`、`context` 等全部 spawn 所需字段，按 spawn 流程启动新 SubAgent 并覆盖 `running_agents.json` 中对应条目
-2. agent 存活时，按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt
-3. 向 `system_agent_id` 发两条消息：第一条注入 continue prompt，第二条 "收到请开始执行上述任务" 触发工具调用
-4. 不等待——继续下一个 action
+1. 按 `references/subagent-prompt-template.md` 的 continue 模板构造 prompt（单条消息，末尾自激活，无需额外激活消息）
+2. 向 `system_agent_id` 发送：`SendMessage(to=<system_agent_id>, message=<prompt>)`
+3. 若 `SendMessage` 返回 agent 已失效（"No transcript found"、"stopped (completed)" 等）→ 降级为 spawn，使用 action 中已有的全部字段按 spawn 流程启动新 SubAgent
+4. 若 `SendMessage` 返回其他错误 → 向用户报告，不静默降级
+5. 不等待——继续下一个 action
 
 `next` 已自动更新映射表中的 `stage_id`。JSON 示例和完整步骤见 `references/action-handlers.md` §continue。
 
