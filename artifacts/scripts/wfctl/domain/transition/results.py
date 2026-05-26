@@ -32,7 +32,7 @@ class ConfirmResult:
     """确认操作的纯决策结果。
 
     正常情况返回 PENDING + continue，将用户选择传回 SubAgent。
-    唯一例外：loop_counter ≥ loop_exceeded_edge.max_loop 时返回 DONE + spawn，
+    唯一例外：loop_counter ≥ 自环边 max_loop 时返回 DONE + spawn，
     触发 loop_exceeded 逃生路径。
     """
 

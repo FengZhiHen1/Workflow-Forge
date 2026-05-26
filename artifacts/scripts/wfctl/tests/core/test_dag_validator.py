@@ -97,7 +97,8 @@ class TestValidateWorkflow:
         assert result.has_errors
         assert any(i.category == "PARALLEL_SOURCE_MISSING" for i in result.issues)
 
-    def test_multi_node_cycle(self):
+    def test_multi_node_cycle_allowed(self):
+        """多节点环本身被允许，不报错。"""
         spec = _make_spec(
             stages=[
                 StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a"),
@@ -111,7 +112,24 @@ class TestValidateWorkflow:
             ],
         )
         result = validate_workflow(spec)
-        assert any(i.category == "MULTI_NODE_CYCLE" for i in result.issues)
+        assert not any(i.category == "MULTI_NODE_CYCLE_MAX_LOOP" for i in result.issues)
+
+    def test_multi_node_cycle_max_loop_forbidden(self):
+        """多节点环中的边设置 max_loop 应报错（max_loop 仅限于自环边）。"""
+        spec = _make_spec(
+            stages=[
+                StageSpec(stage_id="s01", name="a", target_type=StageTargetType.SKILL, target="skill-a"),
+                StageSpec(stage_id="s02", name="b", target_type=StageTargetType.SKILL, target="skill-b"),
+                StageSpec(stage_id="s03", name="c", target_type=StageTargetType.SKILL, target="skill-c"),
+            ],
+            edges=[
+                EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS),
+                EdgeSpec(from_stage="s02", to_stage="s03", condition=EdgeCondition.SUCCESS),
+                EdgeSpec(from_stage="s03", to_stage="s01", condition=EdgeCondition.SUCCESS, max_loop=3),
+            ],
+        )
+        result = validate_workflow(spec)
+        assert any(i.category == "MULTI_NODE_CYCLE_MAX_LOOP" for i in result.issues)
 
     def test_choice_duplicate(self):
         spec = _make_spec(

@@ -63,10 +63,11 @@ def _make_full_adj() -> AdjacencyList:
         ],
         edges=[
             EdgeSpec(from_stage="s00", to_stage="s01", condition=EdgeCondition.ALWAYS),
+            EdgeSpec(from_stage="s01", to_stage="s01", condition=EdgeCondition.ALWAYS, max_loop=2),
             EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.SUCCESS, choice="通过"),
             EdgeSpec(from_stage="s01", to_stage="s03", condition=EdgeCondition.SUCCESS, choice="放弃"),
             EdgeSpec(from_stage="s01", to_stage="s04", condition=EdgeCondition.FAILURE),
-            EdgeSpec(from_stage="s01", to_stage="s05", condition=EdgeCondition.LOOP_EXCEEDED, max_loop=2),
+            EdgeSpec(from_stage="s01", to_stage="s05", condition=EdgeCondition.LOOP_EXCEEDED),
             EdgeSpec(from_stage="s01", to_stage="s99", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s02", to_stage="s99", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s03", to_stage="s99", condition=EdgeCondition.SUCCESS),
@@ -220,9 +221,9 @@ class TestOnError:
         assert result.next_status == StageStatus.ERROR
 
     def test_loop_exceeded_activates(self):
-        """loop_counter >= loop_exceeded_edge.max_loop → LOOP_EXCEEDED 路径。"""
+        """loop_counter >= 自环边 max_loop → LOOP_EXCEEDED 路径。"""
         adj = _make_full_adj()
-        policy = TransitionPolicy.from_adjacency(adj, "s01")  # has loop_exceeded_edge max_loop=2
+        policy = TransitionPolicy.from_adjacency(adj, "s01")  # 自环边 max_loop=2
         state = StageState(
             stage_id="s01", stage_instance_id="s01",
             status=StageStatus.ERROR, attempt_count=1, loop_counter=2,
@@ -233,7 +234,7 @@ class TestOnError:
         # removed: assert result.target_stage_id == "s05"
 
     def test_loop_not_yet_exceeded(self):
-        """loop_counter < loop_exceeded_edge.max_loop → 走 failure_edge。"""
+        """loop_counter < 自环边 max_loop → 走 failure_edge。"""
         adj = _make_full_adj()
         policy = TransitionPolicy.from_adjacency(adj, "s01")
         state = StageState(

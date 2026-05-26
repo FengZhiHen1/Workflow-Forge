@@ -187,24 +187,25 @@ class ErrorRecoveryProcessor:
     @staticmethod
     def _is_loop_exceeded(st: StageState, ctx: ExecutionContext) -> bool:
         """判断 stage 是否通过 loop_exceeded 路径恢复。"""
-        from domain.dag.graph import get_loop_exceeded_edge
-        edge = get_loop_exceeded_edge(ctx.adj, st.stage_id)
-        if edge is None:
+        from domain.dag.graph import get_loop_exceeded_edge, get_self_loop_max_loop
+        if get_loop_exceeded_edge(ctx.adj, st.stage_id) is None:
             return False
-        max_loop = edge.max_loop or 0
+        max_loop = get_self_loop_max_loop(ctx.adj, st.stage_id)
+        if max_loop is None:
+            return False
         return st.loop_counter >= max_loop
 
     @staticmethod
     def _is_failure_edge_path(st: StageState, ctx: ExecutionContext) -> bool:
         """判断 stage 是否通过 failure_edge 路径恢复。"""
-        from domain.dag.graph import get_failure_edge, get_loop_exceeded_edge
+        from domain.dag.graph import get_failure_edge, get_loop_exceeded_edge, get_self_loop_max_loop
         failure = get_failure_edge(ctx.adj, st.stage_id)
         if failure is None:
             return False
         loop_edge = get_loop_exceeded_edge(ctx.adj, st.stage_id)
         if loop_edge is not None:
-            max_loop = loop_edge.max_loop or 0
-            if st.loop_counter >= max_loop:
+            max_loop = get_self_loop_max_loop(ctx.adj, st.stage_id)
+            if max_loop is not None and st.loop_counter >= max_loop:
                 return False  # loop_exceeded 优先
         return True
 

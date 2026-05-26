@@ -37,7 +37,7 @@ def repo():
 
 
 def test_git_command_construction(repo):
-    """验证 git 命令正确构造：-C + repo + 子命令。"""
+    """验证 git 命令正确构造：-C + repo + 子命令（含 core.quotePath=false）。"""
     with patch("runtime.worktree.git.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="M file.txt\n", stderr="")
         rc, stdout, stderr = git_status_porcelain(repo)
@@ -46,8 +46,10 @@ def test_git_command_construction(repo):
         assert cmd[0] == "git"
         assert cmd[1] == "-C"
         assert cmd[2] == str(repo)
-        assert cmd[3] == "status"
-        assert cmd[4] == "--porcelain"
+        assert cmd[3] == "-c"
+        assert cmd[4] == "core.quotePath=false"
+        assert cmd[5] == "status"
+        assert cmd[6] == "--porcelain"
 
 
 def test_git_error_propagation(repo):
@@ -209,7 +211,7 @@ def test_status_porcelain(repo):
         mock_git.return_value = (0, "M file.txt\n", "")
         rc, stdout, stderr = git_status_porcelain(repo)
         assert rc == 0
-        mock_git.assert_called_once_with(repo, "status", "--porcelain")
+        mock_git.assert_called_once_with(repo, "-c", "core.quotePath=false", "status", "--porcelain")
 
 
 # ─── git_merge_base ───────────────────────────────────────────────────

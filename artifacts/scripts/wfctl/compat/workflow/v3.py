@@ -115,10 +115,7 @@ class V3WorkflowAdapter:
                 code="SCHEMA_VALIDATION_ERROR",
             )
 
-        if condition in (EdgeCondition.FAILURE, EdgeCondition.LOOP_EXCEEDED):
-            max_loop = int(raw["max_loop"]) if "max_loop" in raw else None
-        else:
-            max_loop = None
+        max_loop = int(raw["max_loop"]) if "max_loop" in raw else None
 
         cascade_reset_until = str(raw["cascade_reset_until"]) if "cascade_reset_until" in raw else None
 

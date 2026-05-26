@@ -166,6 +166,14 @@ def get_loop_exceeded_edge(adj: AdjacencyList, stage_id: str) -> EdgeSpec | None
     return None
 
 
+def get_self_loop_max_loop(adj: AdjacencyList, stage_id: str) -> int | None:
+    """获取自环边上的 max_loop，无自环边则返回 None。"""
+    for edge in adj.outgoing.get(stage_id, []):
+        if edge.from_stage == stage_id and edge.to_stage == stage_id:
+            return edge.max_loop
+    return None
+
+
 def is_backward_edge(stage_order: list[str], from_stage: str, to_stage: str) -> bool:
     """检测边是否回指拓扑序中更前的 stage（用于 cascade reset 判断）。"""
     try:

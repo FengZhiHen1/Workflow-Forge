@@ -69,6 +69,16 @@ class TransitionPolicy:
             loop_exceeded_edge=loop_exceeded,
         )
 
+    def _get_max_loop(self) -> int | None:
+        """从自环边获取 max_loop 限制（搜索所有出边）。"""
+        all_edges = list(self.ready_edges)
+        if self.failure_edge:
+            all_edges.append(self.failure_edge)
+        for edge in all_edges:
+            if edge.from_stage == self.stage_id and edge.to_stage == self.stage_id:
+                return edge.max_loop
+        return None
+
     def is_upstream_satisfied(self, upstream: StageState, edge: EdgeSpec) -> bool:
         """检查上游 stage 状态是否满足给定边的条件。
 
@@ -118,8 +128,8 @@ class TransitionPolicy:
 
         loop_edge = self.loop_exceeded_edge
         if loop_edge is not None:
-            max_loop = loop_edge.max_loop or 0
-            if state.loop_counter >= max_loop:
+            max_loop = self._get_max_loop()
+            if max_loop is not None and state.loop_counter >= max_loop:
                 return TransitionResult(
                     next_status=StageStatus.PENDING,
                     target_stage_id=loop_edge.to_stage,
@@ -181,15 +191,15 @@ class TransitionPolicy:
         """确认操作的纯决策。
 
         正常返回 PENDING + continue，将用户选择传回 SubAgent。
-        唯一例外：loop_counter ≥ loop_exceeded_edge.max_loop 时返回 DONE，
+        唯一例外：loop_counter ≥ 自环边 max_loop 时返回 DONE，
         触发 loop_exceeded 逃生路径。
         """
         loop_counter = stage.loop_counter
 
         # loop_exceeded 逃生检查
         if self.loop_exceeded_edge is not None:
-            max_loop = self.loop_exceeded_edge.max_loop or 0
-            if max_loop > 0 and loop_counter >= max_loop:
+            max_loop = self._get_max_loop()
+            if max_loop is not None and max_loop > 0 and loop_counter >= max_loop:
                 return ConfirmResult(
                     next_status=StageStatus.DONE,
                     choice=choice,

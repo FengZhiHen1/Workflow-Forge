@@ -37,7 +37,7 @@ def _make_workflow_spec() -> WorkflowSpec:
             EdgeSpec(from_stage="s02", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS),
             EdgeSpec(from_stage="s02", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS, choice="确认继续?"),
             EdgeSpec(from_stage="s03", to_stage="s99-workflow-end", condition=EdgeCondition.SUCCESS),
-            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.FAILURE, max_loop=2),
+            EdgeSpec(from_stage="s01", to_stage="s02", condition=EdgeCondition.FAILURE),
         ],
     )
 
@@ -103,7 +103,7 @@ def setup_repo(tmp_path: Path):
         '  - from: s02\n    to: s99-workflow-end\n    condition: success\n'
         '  - from: s02\n    to: s99-workflow-end\n    condition: success\n    choice: "确认继续?"\n'
         '  - from: s03\n    to: s99-workflow-end\n    condition: success\n'
-        '  - from: s01\n    to: s02\n    condition: failure\n    max_loop: 2\n',
+        '  - from: s01\n    to: s02\n    condition: failure\n',
         encoding="utf-8",
     )
     _init_git_repo(repo)
@@ -523,7 +523,8 @@ def test_next_loop_exceeded_converges_to_report(tmp_path, monkeypatch):
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
         '  - from: s01\n    to: s02\n    condition: success\n'
-        '  - from: s01\n    to: s02\n    condition: failure\n    max_loop: 3\n'
+        '  - from: s01\n    to: s01\n    condition: always\n    max_loop: 3\n'
+        '  - from: s01\n    to: s02\n    condition: failure\n'
         '  - from: s01\n    to: s13-report\n    condition: loop_exceeded\n'
         '  - from: s02\n    to: s99-workflow-end\n    condition: success\n'
         '  - from: s13-report\n    to: s99-workflow-end\n    condition: success\n',
@@ -596,6 +597,7 @@ def test_next_loop_exceeded_converges_to_end(tmp_path, monkeypatch):
         '  - from: s00-workflow-start\n    to: s01-init\n    condition: always\n'
         '  - from: s01-init\n    to: s99-workflow-end\n    condition: success\n    choice: "确认"\n'
         '  - from: s01-init\n    to: s99-workflow-end\n    condition: success\n    choice: "放弃"\n'
+        '  - from: s01-init\n    to: s01-init\n    condition: always\n    max_loop: 0\n'
         '  - from: s01-init\n    to: s99-workflow-end\n    condition: loop_exceeded\n',
     )
 
@@ -657,7 +659,8 @@ def test_next_max_loop_zero_boundary(tmp_path, monkeypatch):
         'edges:\n'
         '  - from: s00-workflow-start\n    to: s01\n    condition: always\n'
         '  - from: s01\n    to: s99-workflow-end\n    condition: success\n'
-        '  - from: s01\n    to: s99-workflow-end\n    condition: failure\n    max_loop: 0\n'
+        '  - from: s01\n    to: s01\n    condition: always\n    max_loop: 0\n'
+        '  - from: s01\n    to: s99-workflow-end\n    condition: failure\n'
         '  - from: s01\n    to: s13-report\n    condition: loop_exceeded\n'
         '  - from: s13-report\n    to: s99-workflow-end\n    condition: success\n',
     )

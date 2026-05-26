@@ -82,7 +82,7 @@ def validate_workflow(spec: WorkflowSpec) -> ValidationResult:
 # ── 循环检测 ──
 
 def _check_cycles(adj: AdjacencyList, topo: TopologyResult) -> list[ValidationIssue]:
-    """检测自环无 max_loop 和多节点环。"""
+    """检测自环无 max_loop 和多节点环误设 max_loop。"""
     issues: list[ValidationIssue] = []
 
     for cycle in topo.cycles:
@@ -99,19 +99,18 @@ def _check_cycles(adj: AdjacencyList, topo: TopologyResult) -> list[ValidationIs
                             edge_to=node,
                         ))
         else:
-            names = " → ".join(cycle)
-            has_max = any(
-                e.max_loop and e.max_loop > 0
-                for n in cycle
-                for e in adj.outgoing.get(n, [])
-                if e.to_stage in cycle
-            )
-            if not has_max:
-                issues.append(ValidationIssue(
-                    "MULTI_NODE_CYCLE",
-                    f"多节点环 [{names}] 中无任何边设置 max_loop 限制",
-                    stage_id=cycle[0],
-                ))
+            # max_loop 仅限于自环边；多节点环中的边不应设置 max_loop
+            for n in cycle:
+                for edge in adj.outgoing.get(n, []):
+                    if edge.to_stage in cycle and edge.max_loop is not None:
+                        issues.append(ValidationIssue(
+                            "MULTI_NODE_CYCLE_MAX_LOOP",
+                            f"多节点环中的边 '{edge.from_stage}'→'{edge.to_stage}' "
+                            f"设置了 max_loop={edge.max_loop}，max_loop 仅限于自环边",
+                            stage_id=n,
+                            edge_from=edge.from_stage,
+                            edge_to=edge.to_stage,
+                        ))
 
     return issues
 
@@ -119,10 +118,13 @@ def _check_cycles(adj: AdjacencyList, topo: TopologyResult) -> list[ValidationIs
 # ── 回边验证 ──
 
 def _check_back_edges(topo: TopologyResult) -> list[ValidationIssue]:
-    """检测回边是否误设了 max_loop（回边的 max_loop 应由目标 stage 的边控制）。"""
+    """检测回边是否误设了 max_loop（回边的 max_loop 应由目标 stage 的自环边上设置）。"""
     issues: list[ValidationIssue] = []
 
     for edge in topo.back_edges:
+        # 自环边的 max_loop 是合法的，无需检查
+        if edge.from_stage == edge.to_stage:
+            continue
         if edge.max_loop is not None and edge.max_loop > 0:
             issues.append(ValidationIssue(
                 "BACK_EDGE_MAX_LOOP",

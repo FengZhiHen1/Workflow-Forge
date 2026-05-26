@@ -222,12 +222,13 @@ class TestInputInjection:
 
     def test_transition_result_retry_exhausted_loop_exceeded_priority(self):
         """retry 耗尽 + loop_counter >= max_loop 时优先走 loop_exceeded。"""
-        loop_edge = _make_edge("s01", "s13-report", condition=EdgeCondition.LOOP_EXCEEDED, max_loop=2)
+        loop_edge = _make_edge("s01", "s13-report", condition=EdgeCondition.LOOP_EXCEEDED)
         failure_edge = _make_edge("s01", "s02", condition=EdgeCondition.FAILURE)
+        self_loop = _make_edge("s01", "s01", condition=EdgeCondition.ALWAYS, max_loop=2)
         spec = StageSpec(stage_id="s01", name="test", target_type=StageTargetType.SKILL, target="skill", retry=2)
         policy = TransitionPolicy(
             stage_id="s01", spec=spec,
-            ready_edges=[], failure_edge=failure_edge, loop_exceeded_edge=loop_edge,
+            ready_edges=[self_loop], failure_edge=failure_edge, loop_exceeded_edge=loop_edge,
         )
         state = _make_stage("s01", status=StageStatus.ERROR, attempt_count=2, loop_counter=3)
         result = policy.on_error(state)
@@ -799,8 +800,9 @@ class TestTransitionPolicyBoundary:
                     _make_skill_stage("s02"), _make_virtual_stage("end")],
             edges=[
                 _make_edge("start", "s01"),
+                _make_edge("s01", "s01", condition=EdgeCondition.ALWAYS, max_loop=3),
                 _make_edge("s01", "s02", condition=EdgeCondition.SUCCESS),
-                _make_edge("s01", "s02", condition=EdgeCondition.LOOP_EXCEEDED, max_loop=3),
+                _make_edge("s01", "s02", condition=EdgeCondition.LOOP_EXCEEDED),
                 _make_edge("s02", "end", condition=EdgeCondition.SUCCESS),
             ],
         )
