@@ -228,9 +228,19 @@ class ConsumeMessagesProcessor:
                 state, st.stage_id, matched.to_stage, stage_order,
             )
             if cascade.removed_stage_instance_ids or cascade.reset_stage_instance_ids:
-                delta.remove_stage_instance_ids.extend(cascade.removed_stage_instance_ids)
                 spec_stage_map = {s.stage_id: s for s in ctx.spec.stages}
+                wf_stage_ids = {
+                    sid for sid, spec in spec_stage_map.items()
+                    if spec.target_type == "workflow"
+                }
+                # WORKFLOW stage 是子实例容器——重置父引用不撤销子实例
+                delta.remove_stage_instance_ids.extend(
+                    iid for iid in cascade.removed_stage_instance_ids
+                    if iid not in wf_stage_ids
+                )
                 for reset_sid in cascade.reset_stage_instance_ids:
+                    if reset_sid in wf_stage_ids:
+                        continue
                     stage_spec = spec_stage_map.get(reset_sid)
                     delta.append_stages.append(StageState(
                         stage_id=reset_sid,
@@ -238,9 +248,6 @@ class ConsumeMessagesProcessor:
                         status=StageStatus.PENDING,
                         model=stage_spec.model if stage_spec else None,
                     ))
-                if cascade.cleanup_running_agent_stage_ids:
-                    # stage state 中的 system_agent_id 随 stage 重置自然失效，无需额外清理
-                    pass
 
         # 更新 consumed_message_ids
         delta.instance_updates["consumed_message_ids"] = frozenset(new_consumed)
