@@ -4,6 +4,7 @@ from pathlib import Path
 
 from infrastructure.errors import ValidationError
 from infrastructure.project import find_root
+from infrastructure.temp_files import is_temp_file
 
 
 def _normalize_modified_files(raw: list) -> list[dict]:
@@ -13,18 +14,6 @@ def _normalize_modified_files(raw: list) -> list[dict]:
     if isinstance(raw[0], str):
         return [{"path": p, "status": "M"} for p in raw]
     return raw
-
-
-_AUTO_GENERATED_PATTERNS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-
-
-def _is_auto_generated(path: str) -> bool:
-    """判断文件是否为自动生成/缓存文件（应被忽略，不参与保护区校验）。"""
-    parts_lower = [p.lower() for p in Path(path).parts]
-    # __pycache__ 出现在路径任一层级即为自动生成
-    if any(p in _AUTO_GENERATED_PATTERNS or p.endswith(".pyc") or p.endswith(".pyo") for p in parts_lower):
-        return True
-    return False
 
 
 def validate_modified_files(worktree: Path, modified_files: list, stage_id: str) -> None:
@@ -42,7 +31,7 @@ def validate_modified_files(worktree: Path, modified_files: list, stage_id: str)
     entries = _normalize_modified_files(modified_files)
     for entry in entries:
         f = entry["path"]
-        if _is_auto_generated(f):
+        if is_temp_file(f):
             continue
         p = Path(f)
         parts = [part.lower() for part in p.parts]

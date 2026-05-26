@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from infrastructure.project import find_root
+from infrastructure.temp_files import is_temp_file
 from infrastructure.timestamp import iso_timestamp
 from services.resolver import find_workflow_dir
 from compat.workflow.registry import load_workflow
@@ -213,6 +214,8 @@ def _collect_instance_data(instance_id: str) -> dict | None:
             raw_files = msg.get("modified_files", [])
             msg_ts = msg.get("timestamp", "")
             for entry in _normalize_modified_files(raw_files):
+                if is_temp_file(entry["path"]):
+                    continue
                 link, badge = _build_file_link(instance_id, s_inst_id, entry["path"])
                 files.append({
                     "path": entry["path"],

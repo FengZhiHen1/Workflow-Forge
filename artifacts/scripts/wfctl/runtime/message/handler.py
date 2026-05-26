@@ -9,6 +9,7 @@ from compat.instance.registry import load_instance_state
 from infrastructure.io import atomic_write_json
 from infrastructure.timestamp import iso_timestamp
 from infrastructure.errors import ValidationError
+from infrastructure.temp_files import is_temp_file
 from runtime.worktree.git import git_status_porcelain
 from infrastructure.project import find_root
 from services.validator import validate_modified_files
@@ -56,7 +57,8 @@ def write_message(
                     else:
                         filename = rest
                     file_status = _map_git_status_xy(xy)
-                    modified_files.append({"path": filename, "status": file_status})
+                    if not is_temp_file(filename):
+                        modified_files.append({"path": filename, "status": file_status})
 
     # 防线前移：status 必须为合法 StageStatus 枚举值
     from domain.workflow.spec import StageStatus as _StageStatus
@@ -210,7 +212,8 @@ def inject_modified_files(msg: dict, worktree: Path) -> dict:
                 else:
                     filename = rest
                 status = _map_git_status_xy(xy)
-                modified_files.append({"path": filename, "status": status})
+                if not is_temp_file(filename):
+                    modified_files.append({"path": filename, "status": status})
 
     msg["modified_files"] = modified_files
     return msg
