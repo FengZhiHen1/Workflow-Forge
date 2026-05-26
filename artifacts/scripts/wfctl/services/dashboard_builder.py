@@ -10,6 +10,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from infrastructure.project import find_root
 from infrastructure.temp_files import is_temp_file
@@ -106,10 +107,15 @@ def _build_file_link(instance_id: str, stage_instance_id: str, file_path: str) -
         if alt_path.exists():
             abs_path = alt_path
 
-    # Windows 路径转 URI：反斜杠 -> 正斜杠，带盘符时前面加 /
+    # Windows 路径转 URI：反斜杠 -> 正斜杠
     path_str = str(abs_path).replace("\\", "/")
     if path_str[1:2] == ":":
-        path_str = "/" + path_str
+        # 保留盘符中的 ASCII 冒号，编码其余特殊字符（中文等）
+        drive = path_str[:2]  # e.g. "E:"
+        rest = quote(path_str[2:], safe="/")
+        path_str = f"/{drive}{rest}"
+    else:
+        path_str = quote(path_str, safe="/")
 
     return f"vscode://file{path_str}", badge
 

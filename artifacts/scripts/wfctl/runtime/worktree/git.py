@@ -8,7 +8,7 @@ from typing import Optional
 def _git(repo: Path, *args: str) -> tuple[int, str, str]:
     """执行 git 命令，统一返回 (returncode, stdout, stderr)。"""
     cmd = ["git", "-C", str(repo)] + list(args)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return result.returncode, result.stdout, result.stderr
 
 
