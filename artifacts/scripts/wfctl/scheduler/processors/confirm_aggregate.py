@@ -52,22 +52,15 @@ class ConfirmAggregateProcessor:
 
 
 def _parse_questions(questions: list[str]) -> list[dict]:
-    """将 "choice_key：描述" 格式的问题列表预解析为结构化选项。
+    """将问题列表预解析为结构化选项。
 
-    编排器不再需要自行解析 `：` 分隔符——直接使用 choice_key 和 description。
+    选项文本即 key——SubAgent 传入的每项直接作为 choice_key 和 label，
+    不再要求 "choice_key：描述" 两段式格式。
     """
     result: list[dict] = []
     for q in questions:
+        q = q.strip()
         if not q:
             continue
-        if "：" in q:
-            key, _, desc = q.partition("：")
-            key = key.strip()
-            desc = desc.strip()
-        else:
-            key = q.strip()
-            desc = ""
-        if not key:
-            continue
-        result.append({"choice_key": key, "description": desc})
+        result.append({"choice_key": q, "description": ""})
     return result

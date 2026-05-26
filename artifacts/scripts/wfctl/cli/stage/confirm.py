@@ -67,6 +67,9 @@ def _handle_confirm(args) -> dict:
             code="INVALID_ARGUMENT",
         )
 
+    # 校验 choice 合法性：优先对 confirm_questions，兜底对 valid_routing_choices
+    _validate_choice(args.choice, stage.confirm_questions, adj, args.stage)
+
     # 纯决策：永远返回 PENDING + continue
     policy = TransitionPolicy.from_adjacency(adj, args.stage)
     result = policy.on_confirm(stage, args.choice, bool(args.feedback))
@@ -95,6 +98,32 @@ def _handle_confirm(args) -> dict:
         "matched": args.choice,
         "loop": stage.loop_counter + 1,
     }
+
+
+def _validate_choice(choice: str, confirm_questions: list[str], adj, stage_id: str) -> None:
+    """校验 --choice 是否合法。
+
+    1. 若 confirm_questions 非空 → choice 须为其中一项（纯文本匹配）
+    2. 若 confirm_questions 为空 → 兜底校验 valid_routing_choices
+    3. 若两者均为空 → 接受任意值（SubAgent 未声明预期选项）
+    """
+    if confirm_questions:
+        valid_keys = {q.strip() for q in confirm_questions if q.strip()}
+        if choice not in valid_keys:
+            raise InputError(
+                f"无效选项 '{choice}'。stage {stage_id} 当前可选：{sorted(valid_keys)}",
+                code="INVALID_CHOICE",
+            )
+        return
+
+    # 兜底：按 valid_routing_choices 校验
+    policy = TransitionPolicy.from_adjacency(adj, stage_id)
+    valid = policy.valid_routing_choices()
+    if valid and choice not in valid:
+        raise InputError(
+            f"无效选项 '{choice}'。stage {stage_id} 合法路由：{valid}",
+            code="INVALID_CHOICE",
+        )
 
 
 def _handle_merge_confirm(args, state) -> dict:

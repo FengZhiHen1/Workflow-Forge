@@ -55,8 +55,8 @@ SubAgent 的业务能力来自 Skill 本身——模板中注入 `<skill_path>`�
 1. 先将 report 写入临时文件（如 `/tmp/wfctl_report.txt`）
 2. `python .claude/scripts/wfctl/main.py message write ... --status DONE --report-file /tmp/wfctl_report.txt --checkpoint "..." [--choice "..."]`
 
-对应 SKILL.md 中的 AskUserQuestion——需要用户确认时调用（--questions 每项一个参数，空格分隔，每项格式为 "choice_key：描述"，使用中文全角冒号 `：` 分隔，至少 1 项、最多 4 项）：
-  python .claude/scripts/wfctl/main.py message write --instance <instance_id> --stage <stage_id> --status AWAITING_CONFIRM --report "..." --questions "授权：授权继续执行" "放弃：终止当前模块"
+对应 SKILL.md 中的 AskUserQuestion——需要用户确认时调用（--questions 每项一个参数，空格分隔，每项即为选项文本，至少 1 项、最多 4 项）：
+  python .claude/scripts/wfctl/main.py message write --instance <instance_id> --stage <stage_id> --status AWAITING_CONFIRM --report "..." --questions "授权继续执行" "终止当前模块"
 
 遇到无法恢复的错误时调用：
   python .claude/scripts/wfctl/main.py message write --instance <instance_id> --stage <stage_id> --status ERROR --report "失败原因"

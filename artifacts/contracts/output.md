@@ -109,26 +109,25 @@ python .claude/scripts/wfctl/main.py message write \
 
 ## 七、confirm_questions 规范
 
-> 仅当 `status=AWAITING_CONFIRM` 时适用。confirm_questions 是自由格式的选项列表，选项值不再需要匹配工作流边定义。SubAgent 通过后续 continue prompt 获取用户选择并自行决定后续行为（包括通过 DONE + routing_choice 选择下游路径）。
+> 仅当 `status=AWAITING_CONFIRM` 时适用。confirm_questions 是一个纯文本选项列表，每项即为面向用户的选项标签。SubAgent 通过后续 continue prompt 的 `pending_choice` 获取用户选中项，自行决定后续行为（包括通过 DONE + routing_choice 选择下游路径）。
 
-### 7.1 格式约定
+### 7.1 格式
 
-建议使用 **`<choice值>：<显示文本>`** 格式，中文冒号分隔：
+每项为纯文本字符串，使用面向用户的自然语言：
 
 ```
-"<choice值>：<面向用户的自然语言描述>"
+"<选项文本>"
 ```
 
-- `：`（中文全角冒号）**之前**的部分 = 编排器取此前缀作为 `--choice` 参数传给 `wfctl confirm`
-- `：`**之后**的部分 = 面向用户的显示文本，可以是自然语言、含括号注释等
+无需 `choice_key：描述` 两段式分隔——选项文本即 key，用户看到什么，选中的就是什么。
 
 ### 7.2 示例
 
 ```json
 [
-  "full_design：全新设计，从意图澄清开始走完整流程",
-  "code_only：存量代码逆向，从反向工程开始",
-  "放弃：终止本工作流实例"
+  "全新设计，从意图澄清开始",
+  "存量代码逆向，从反向工程开始",
+  "终止本工作流实例"
 ]
 ```
 

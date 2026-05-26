@@ -237,7 +237,7 @@ confirm：
     {
       "stage_id": "s02",
       "instance_id": "20260517-001",
-      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"]
+      "questions": ["全新设计，从意图澄清开始", "存量代码逆向"]
     },
     {"stage_id": "s01-scheme-design", "instance_id": "child-001", "parent_stage_id": "p2-question-solution", "questions": ["确认方案设计？"]}
   ]

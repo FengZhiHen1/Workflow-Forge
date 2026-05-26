@@ -223,7 +223,7 @@ JSON 示例和完整步骤见 `references/action-handlers.md` §spawn。
     {
       "stage_id": "s02",
       "instance_id": "20260519-003",
-      "questions": ["full_design：全新设计，从意图澄清开始", "code_only：存量代码逆向"]
+      "questions": ["全新设计，从意图澄清开始", "存量代码逆向"]
     }
   ]
 }
