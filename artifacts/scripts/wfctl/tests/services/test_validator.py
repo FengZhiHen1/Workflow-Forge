@@ -81,3 +81,21 @@ def test_legit_claude_still_blocked(tmp_path):
     with pytest.raises(ValidationError) as exc_info:
         validate_modified_files(repo, [".claude/settings.json"], "s01")
     assert exc_info.value.code == "ACCESS_VIOLATION"
+
+
+def test_directory_entry_is_filtered(tmp_path):
+    """git status 中 untracked 目录（以 / 结尾）被过滤。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert validate_modified_files(
+        repo, [".claude/docs/some-dir/"], "s01"
+    ) is None
+
+
+def test_pua_filename_is_filtered(tmp_path):
+    """包含 PUA 私用区字符 (U+F02A) 的文件名被过滤。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert validate_modified_files(
+        repo, [".claude/file.txt"], "s01"
+    ) is None
