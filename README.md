@@ -157,7 +157,7 @@
 │   ├── workflows/                   # 工作流定义（5 个现行）
 │   │   ├── mathematical-model@3.0.0/
 │   │   ├── project-design-pipeline@3.0.0/
-│   │   ├── module-design-pipeline@1.0.0/
+│   │   ├── module-design-pipeline@1.1.0/
 │   │   ├── question-solution@1.0.0/
 │   │   └── study-note-processor@1.3.1/
 │   ├── skills/                      # 全局 Skill（5 个）

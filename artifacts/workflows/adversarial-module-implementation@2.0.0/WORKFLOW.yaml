@@ -71,7 +71,7 @@ stages:
       - incremental_update：差异驱动增量更新
       - code_only：逆向工程后补充设计文档与测试
       - code_design_conflict：差异仲裁后修正代码或设计
-      参考 module-design-pipeline@1.0.0 的 s02-determine-incremental-path 模式。
+      参考 module-design-pipeline@1.1.0 的 s02-determine-incremental-path 模式。
 
   # ===========================================================================
   # 路径 1：full_implementation（完整实现）

@@ -129,8 +129,8 @@ proposed_edges:
 
 sub_workflows:
   - parent_stage_id: s03
-    workflow_ref: module-design-pipeline@1.0.0
-    path: artifacts/workflows/module-design-pipeline@1.0.0/
+    workflow_ref: module-design-pipeline@1.1.0
+    path: artifacts/workflows/module-design-pipeline@1.1.0/
     stage_count: 0
     confirmation_count: 0
     issues: []
